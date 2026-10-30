@@ -27,7 +27,7 @@
       <button id="settingsBtn" type="button" class="ghost-btn labeled-btn" data-i18n-title="settings" title="Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h5m4 0h7M4 17h2m4 0h10"/><circle cx="11" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg><span data-i18n="settings">הגדרות</span></button>
       <span id="integrationsGate" class="topbar-gate" role="group" tabindex="0" title="חיבור ל־MakerWorld נעול. פתח אודות ← מצב מפתחים כדי לפתוח אותו."><button id="integrationsBtn" type="button" class="ghost-btn labeled-btn" data-i18n-title="makerworldSetup" title="MakerWorld Setup" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/><circle cx="12" cy="12" r="9"/></svg><span data-i18n="makerworldSetup">MakerWorld Setup</span></button></span>
       <button id="aboutBtn" type="button" class="ghost-btn labeled-btn" title="About" aria-haspopup="dialog" aria-controls="aboutDialog"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5h.01"/></svg><span id="aboutBtnLabel">אודות</span></button>
-      <div class="language-switch" role="group" aria-label="Language">
+      <div class="language-switch" role="group" aria-label="שפה" data-i18n-aria-label="languageLabel">
         <button id="heBtn" type="button" lang="he">עברית</button>
         <button id="enBtn" type="button" lang="en">EN</button>
       </div>
@@ -109,7 +109,7 @@
         <div class="panel-title"><span class="section-number">03</span><h2 data-i18n="resultsTitle">תוצאות ודוח המרה</h2></div>
         <div class="report-header-actions"><div class="report-counts" id="reportCounts"></div><button id="clearResultsBtn" type="button" class="text-btn clear-results-btn" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v6M14 11v6"/></svg><span data-i18n="clearResults">נקה תוצאות</span></button></div>
       </div>
-      <div class="results-scroll" id="resultList" role="region" tabindex="0" aria-label="Conversion results">
+      <div class="results-scroll" id="resultList" role="region" tabindex="0" aria-label="תוצאות המרה" data-i18n-aria-label="resultsTitle">
         <div class="empty-state">
           <div class="empty-icon">↗</div>
           <h3 data-i18n="emptyTitle">מוכן להמרה</h3>
@@ -142,12 +142,12 @@
       <small>SliceBridge makes your 3D printing workflow more open, flexible, and connected.</small>
     </div>
   </section>
-  <section class="conversion-progress" role="group" aria-label="Conversion progress">
+  <section class="conversion-progress" role="group" aria-label="התקדמות ההמרה" data-i18n-aria-label="conversionProgressLabel">
     <div class="conversion-progress-labels">
       <span id="progressDescription" data-i18n="progressIdle" role="status" aria-live="polite">Ready to convert</span>
       <span id="progressPercent">0%</span>
     </div>
-    <div id="progressTrack" class="progress-track" role="progressbar" aria-label="Conversion progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+    <div id="progressTrack" class="progress-track" role="progressbar" aria-label="התקדמות ההמרה" data-i18n-aria-label="conversionProgressLabel" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
       <div id="progressFill" class="progress-fill"></div>
     </div>
   </section>
@@ -170,7 +170,7 @@
       <div class="printer-filter-row">
         <label class="field manufacturer-filter-field" for="printerManufacturerFilter">
           <span id="printerManufacturerLabel">יצרן</span>
-          <select id="printerManufacturerFilter" aria-label="בחירת יצרן"><option value="">בחר יצרן…</option></select>
+          <select id="printerManufacturerFilter" aria-label="בחירת יצרן" data-i18n-aria-label="manufacturerLabel"><option value="">בחר יצרן…</option></select>
         </label>
         <label class="field printer-search-field" for="printerCatalogSearch">
           <span id="printerSearchLabel">או חיפוש דגם</span>
@@ -183,7 +183,7 @@
       </div>
       <p id="catalogPickerHint" class="catalog-picker-hint" role="status">בחר יצרן או חפש דגם כדי להציג מדפסות.</p>
       <p id="catalogSearchCount" class="catalog-search-count" role="status"></p>
-      <div id="catalogModelList" class="catalog-model-list" role="group" aria-label="Catalogue models"></div>
+      <div id="catalogModelList" class="catalog-model-list" role="group" aria-label="דגמי מדפסות" data-i18n-aria-label="catalogModelsLabel"></div>
       <p id="myPrintersStatus" class="dialog-status" role="alert"></p>
     </div>
     <footer class="dialog-actions">
@@ -223,7 +223,7 @@
       </div>
       <button type="button" id="closeSettingsBtn" class="ghost-btn close-dialog" aria-label="סגירה" data-i18n-title="close">×</button>
     </header>
-    <nav class="settings-tabs" id="settingsTabs" aria-label="Printer selection"></nav>
+    <nav class="settings-tabs" id="settingsTabs" aria-label="בחירת מדפסת" data-i18n-aria-label="printerSelectionLabel"></nav>
     <div class="dialog-scroll">
       <label class="field">
         <span data-i18n="physicalNozzle">דיזה המותקנת במדפסת</span>
@@ -288,7 +288,7 @@
         </div></div>
         <div class="integration-install-row">
           <label for="browserTargetSelect" data-i18n="browserLabel">Browser</label>
-          <select id="browserTargetSelect" aria-label="Browser">
+          <select id="browserTargetSelect" aria-label="דפדפן" data-i18n-aria-label="browserLabel">
             <option value="edge">Microsoft Edge</option>
             <option value="chrome">Google Chrome</option>
             <option value="brave">Brave</option>

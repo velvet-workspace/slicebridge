@@ -127,3 +127,32 @@ test('dialog close controls keep localized accessible names in Hebrew and Englis
   assert.match(js,/close:'סגירה'/);
   assert.match(js,/close:'Close'/);
 });
+
+test('accessibility region and form names follow Hebrew and English language switches',()=>{
+  const html=read('frontend/dist/index.html');
+  const js=read('frontend/dist/app.js');
+  const names=new Map([
+    ['resultList','resultsTitle'],
+    ['progressTrack','conversionProgressLabel'],
+    ['printerManufacturerFilter','manufacturerLabel'],
+    ['catalogModelList','catalogModelsLabel'],
+    ['settingsTabs','printerSelectionLabel'],
+    ['browserTargetSelect','browserLabel'],
+  ]);
+  for(const [id,key] of names){
+    const line=html.split('\n').find(line=>line.includes('id="'+id+'"'));
+    assert.ok(line,'missing accessibility element: '+id);
+    assert.match(line,new RegExp('data-i18n-aria-label="'+key+'"'));
+    assert.match(line,/aria-label="[^"]+"/);
+  }
+  assert.match(html,/class="language-switch" role="group" aria-label="שפה" data-i18n-aria-label="languageLabel"/);
+  assert.match(html,/class="conversion-progress" role="group" aria-label="התקדמות ההמרה" data-i18n-aria-label="conversionProgressLabel"/);
+  assert.match(js,/document\.querySelectorAll\('\[data-i18n-aria-label\]'\)/);
+  assert.match(js,/elem\.setAttribute\('aria-label',t\(elem\.dataset\.i18nAriaLabel\)\)/);
+  for(const marker of [
+    "languageLabel:'שפה'","languageLabel:'Language'",
+    "catalogModelsLabel:'דגמי מדפסות'","catalogModelsLabel:'Catalogue models'",
+    "manufacturerLabel:'בחירת יצרן'","manufacturerLabel:'Select manufacturer'",
+    "printerSelectionLabel:'בחירת מדפסת'","printerSelectionLabel:'Printer selection'",
+  ])assert.ok(js.includes(marker),'missing localized accessible name: '+marker);
+});

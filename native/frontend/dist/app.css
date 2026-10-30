@@ -431,6 +431,8 @@ body[dir="ltr"] .result-path,body[dir="ltr"] .queue-file-details strong{directio
 @media(prefers-reduced-motion:reduce){
   .progress-fill{transition:none}
   .progress-track.is-working .progress-fill{animation:none}
+  .activity-icon.busy:after{animation:none}
+  button,.target-option{transition:none!important}
 }
 
 /* MakerWorld onboarding: three actionable steps, not static settings cards. */

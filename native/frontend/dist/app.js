@@ -7,6 +7,8 @@ const translations = {
     brandTagline:'מחברים בין סלייסרים',settings:'הגדרות',makerworldSetup:'חיבור ל־MakerWorld',checkUpdates:'בדיקת עדכונים',
     dismiss:'סגירה',workspaceTitle:'סביבת המרה',
     workspaceSubtitle:'המרת פרויקטים לכמה מדפסות, בלי לשנות את המקור.',
+    languageLabel:'שפה',catalogModelsLabel:'דגמי מדפסות',manufacturerLabel:'בחירת יצרן',
+    printerSelectionLabel:'בחירת מדפסת',browserLabel:'דפדפן',conversionProgressLabel:'התקדמות ההמרה',
     localOnly:'עיבוד מקומי בלבד',queueTitle:'קובצי מקור',clear:'ניקוי',
     addFiles:'הוסף קבצים',addFolder:'הוסף תיקייה',queuedFiles:'קבצים שנבחרו',
     dropHint:'גרור קובצי 3MF או תיקייה לכאן',queueFootnote:'עד 200 קובצי 3MF, כולל תיקיות משנה.',
@@ -75,6 +77,8 @@ const translations = {
     brandTagline:'Bridge your prints',settings:'Settings',makerworldSetup:'MakerWorld Setup',checkUpdates:'Check for updates',
     dismiss:'Dismiss',workspaceTitle:'Conversion workspace',
     workspaceSubtitle:'Convert projects for multiple printers without altering your originals.',
+    languageLabel:'Language',catalogModelsLabel:'Catalogue models',manufacturerLabel:'Select manufacturer',
+    printerSelectionLabel:'Printer selection',browserLabel:'Browser',conversionProgressLabel:'Conversion progress',
     localOnly:'Completely local',queueTitle:'Source projects',clear:'Clear',
     addFiles:'Add files',addFolder:'Add folder',queuedFiles:'Selected source files',
     dropHint:'Drop 3MF files or folders here',queueFootnote:'Up to 200 projects, including subfolders.',
@@ -205,6 +209,7 @@ function renderCopy(){
   document.body.dir=document.documentElement.dir;
   document.querySelectorAll('[data-i18n]').forEach((elem)=>{elem.textContent=t(elem.dataset.i18n);});
   document.querySelectorAll('[data-i18n-title]').forEach((elem)=>{elem.title=t(elem.dataset.i18nTitle);elem.setAttribute('aria-label',t(elem.dataset.i18nTitle));});
+  document.querySelectorAll('[data-i18n-aria-label]').forEach((elem)=>{elem.setAttribute('aria-label',t(elem.dataset.i18nAriaLabel));});
   el('heBtn').classList.toggle('active',language==='he');
   el('enBtn').classList.toggle('active',language==='en');
   el('heBtn').setAttribute('aria-pressed',language==='he');

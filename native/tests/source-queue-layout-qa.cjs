@@ -29,6 +29,7 @@ const fixtureScript=[
   "  const query=new URL(location.href).searchParams;",
   "  const count=Number(query.get('files')||'0');",
   "  const lang=query.get('lang')||'he';",
+  "  const motion=query.get('motion')||'default';",
   "  document.documentElement.lang=lang;",
   "  document.documentElement.dir=lang==='he'?'rtl':'ltr';",
   "  document.body.dir=document.documentElement.dir;",
@@ -61,10 +62,15 @@ const fixtureScript=[
   "    return {x:r.x,y:r.y,width:r.width,height:r.height,bottom:r.bottom};}",
   "  function report(){",
   "    const add=document.getElementById('addFilesBtn');",
+  "    if(motion==='reduce')document.getElementById('activityIcon').classList.add('busy');",
   "    const out={",
   "      viewport:{width:innerWidth,height:innerHeight},",
   "      language:document.documentElement.lang,",
   "      files:count,",
+  "      motion:{enabled:matchMedia('(prefers-reduced-motion: reduce)').matches,",
+  "        buttonTransition:getComputedStyle(add).transitionDuration,",
+  "        targetTransition:getComputedStyle(document.querySelector('.target-option')).transitionDuration,",
+  "        busySpinner:getComputedStyle(document.getElementById('activityIcon'),'::after').animationName},",
   "      panel:rect('.queue-panel'),",
   "      targets:rect('.targets-panel'),",
   "      banner:rect('.brand-banner'),",
@@ -135,7 +141,10 @@ const trials=process.env.QUEUE_LAYOUT_SINGLE?[[1280,900,Number(process.env.QUEUE
   [900,620,2,'en'],
   [720,500,2,'he'],
   [720,500,2,'en'],
-  [1100,750,0,'he']
+  [1100,750,0,'he'],
+  // The same renderer also tests actual computed styles under OS motion preference.
+  [1100,750,0,'he','reduce'],
+  [1100,750,0,'en','reduce']
 ];
 // The whole geometry suite must pass in a real Chromium renderer. A headless
 // launch failure is not a layout failure: report it and try another installed
@@ -180,21 +189,29 @@ function renderWithChromium(args,url,scenario,requestedWidth,requestedHeight){
   throw Error('No headless Chromium renderer could complete '+scenario+': '+JSON.stringify(failures));
 }
 try{
-  for(const [w,h,files,lang] of trials){
-    const url=pathToFileURL(htmlPath).href+'?files='+files+'&lang='+lang;
+  for(const [w,h,files,lang,motion='default'] of trials){
+    const url=pathToFileURL(htmlPath).href+'?files='+files+'&lang='+lang+'&motion='+motion;
     const args=[
       '--headless=new','--disable-gpu','--disable-extensions',
       '--disable-background-networking','--disable-background-mode',
       '--disable-component-update','--disable-sync',
       '--no-first-run','--no-default-browser-check','--no-sandbox',
       '--window-size='+w+','+h,
-      '--virtual-time-budget=2500','--dump-dom'
+      '--virtual-time-budget=2500','--dump-dom',
+      ...(motion==='reduce'?['--force-prefers-reduced-motion=reduce']:[])
     ];
     const p=renderWithChromium(args,url,w+'x'+h+' '+lang+' files='+files,w,h);
     const m=p.stdout.match(/data-layout-qa="([^"]+)"/);
     if(!m)throw Error('No computed-geometry report: '+p.stdout.slice(-1000)+' '+p.stderr.slice(-1000));
     const q=JSON.parse(decodeURIComponent(m[1]));
     assert.equal(q.language,lang);
+    if(motion==='reduce'){
+      assert.equal(q.motion.enabled,true,'Chromium did not enable reduced motion');
+      assert.equal(q.motion.buttonTransition,'0s','button still animates under reduced motion');
+      assert.equal(q.motion.targetTransition,'0s','printer option still animates under reduced motion');
+      assert.equal(q.motion.busySpinner,'none','busy activity icon still spins under reduced motion');
+      console.log('REDUCED_MOTION_RENDER_PASS',lang,JSON.stringify(q.motion));
+    }
     assert.ok(q.bannerText.y>=q.banner.y-2 && q.bannerText.bottom<=q.banner.bottom+2,
       'fixed banner text is clipped in this viewport: '+JSON.stringify(q));
     // Use the actual Chromium viewport; its virtual chrome may reduce height.
