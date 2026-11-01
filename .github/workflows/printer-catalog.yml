@@ -30,7 +30,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Python 3.12
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Verify profile source precedence, references, hashes and nozzles
@@ -51,7 +51,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Python 3.12
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Generate checked metadata bundle and checksum
