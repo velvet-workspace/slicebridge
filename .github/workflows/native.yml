@@ -80,7 +80,7 @@ jobs:
           $sha = git rev-parse HEAD
           & "$env:USERPROFILE\go\bin\wails.exe" build -s -ldflags "-X main.buildCommit=$sha"
       - name: Install Python for the Prusa conversion sidecar
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Test, build and stage bundled Panda2Prusa engine
@@ -170,7 +170,7 @@ jobs:
           sha=$(git rev-parse HEAD)
           "$(go env GOPATH)/bin/wails" build -s -ldflags "-X main.buildCommit=$sha"
       - name: Install Python for the Prusa conversion sidecar
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Test, build and stage bundled Panda2Prusa engine
