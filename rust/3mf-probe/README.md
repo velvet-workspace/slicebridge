@@ -466,6 +466,49 @@ do **not** compare equivalent library boundaries. The numbers
 are exploratory, not representative of large real-world projects;
 the Go library remains the production performance baseline.
 
+### Fail-closed number normalization and source rewrite verification
+
+The full Rust converter now uses a recursive source-settings comparator
+that accepts Go-equivalent JSON numeric representations (`1`, `1.0`,
+`1e0`, `-0.0`), while requiring exact keys, types, array positions
+and material mappings. Different values and numbers outside IEEE-754
+safe-integer precision are still rejected if their representations
+differ. The independent `TestRustNumericSourceSnapshotFullArchiveParity`
+converts a synthetic 3MF ZIP containing mixed-format numbers and
+matches actual Go ZIP output; separate negative tests reject stale
+numeric values and ambiguous 2^53+1 integers.
+
+The source snapshot now performs a second, byte-for-byte comparison
+against the same originally opened source file descriptor after
+copying (up to 250 MB). This rejects same-size in-place writes
+that the previous file-length check missed. A deterministic Rust
+test overwrites the same-length source after capture and checks
+verification refuses it; more concurrent write fault injection
+remains pending. It costs an extra read of source and snapshot.
+
+### Native Snapmaker Orca geometry import — isolated Windows CLI
+
+The installed `Snapmaker Orca` CLI supports `--info` with a
+temporary `--datadir`. On Chris Windows, two Go-created U1
+and two Rust-created U1 OEM 3MF packages returned the same mesh
+dimensions, facet counts and volumes (2 pairs, 4 files).
+An opt-in repeatable test
+`TestRustSnapmakerOrcaInstalledOEMMeshImportParity` uses
+`SLICEBRIDGE_NATIVE_SNAPMAKER_EXE` and an explicit
+`SLICEBRIDGE_SLICER_OUTPUT_DIR` pointing at scratch OEM outputs;
+it isolates APPDATA/LOCALAPPDATA and checks source checksums.
+
+**Scope is geometry-only**: even these readable 3MF packages emitted
+plate/XML warning logs, and the tiny fixture mesh is non-manifold.
+This is not an interactive slicer project preview, material/tool-change
+verification, G-code validation or a usable physical print. Source
+Bambu and QIDI OEM files were not accepted by that *different vendor's*
+Snapmaker CLI; QIDI exports specifically triggered a 1-vs-5
+`filament_is_support` slot mismatch. This does **not** prove that
+QIDIStudio would reject them. An isolated `qidi-studio.exe --info`
+attempt returned no mesh metrics, so QIDIStudio's native import
+remains **UNVERIFIED**.
+
 ## Next steps
 
 - Expand the new full-Rust 3MF ZIP comparison against real, multi-material
@@ -475,9 +518,9 @@ the Go library remains the production performance baseline.
   integration. Reject an unknown printer or filament rather than assuming
   hardware compatibility.
 - Stress-test streaming model XML at large production sizes (including
-  a bounded 200 MB model), exact JSON numeric equivalence and multiple plates. Source-path replacement
-  during conversion is now isolated by an immutable snapshot; direct concurrent
-  in-place writes during initial capture still require fault-injection testing.
+  a bounded 200 MB model) and real multi-plate source projects. JSON numeric
+  equivalence now has passing synthetic Go/Rust end-to-end parity; extend
+  numeric tests for real vendor settings and concurrent in-place source edits.
 - Validate complete, inheritance-flattened installed vendor machine/material
   bundles and user-permitted multi-material 3MF examples. Selected raw material
   values alone are not a verified installed-target profile.

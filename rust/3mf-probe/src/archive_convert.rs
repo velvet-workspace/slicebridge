@@ -11,7 +11,7 @@ use quick_xml::{Reader, XmlVersion};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, Read, Write};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -53,7 +53,7 @@ fn fresh_stage_path(parent: &Path, label: &str) -> Result<PathBuf, String> {
 }
 
 fn snapshot_source(source: &Path, parent: &Path) -> Result<Stage, String> {
-    let input = File::open(source).map_err(|e| format!("source open: {e}"))?;
+    let mut input = File::open(source).map_err(|e| format!("source open: {e}"))?;
     let meta = input
         .metadata()
         .map_err(|e| format!("source metadata: {e}"))?;
@@ -66,14 +66,70 @@ fn snapshot_source(source: &Path, parent: &Path) -> Result<Stage, String> {
         .create_new(true)
         .open(&snapshot.0)
         .map_err(|e| format!("cannot create private source snapshot: {e}"))?;
-    let bytes = std::io::copy(&mut input.take(MAX_COMPRESSED_BYTES + 1), &mut file)
+    let bytes = std::io::copy(&mut (&mut input).take(MAX_COMPRESSED_BYTES + 1), &mut file)
         .map_err(|e| format!("source snapshot: {e}"))?;
     if bytes != meta.len() || bytes > MAX_COMPRESSED_BYTES {
         return Err("source changed size while being captured; refusing conversion".into());
     }
     file.sync_all()
         .map_err(|e| format!("source snapshot sync: {e}"))?;
+    drop(file);
+    // A size check alone cannot detect an editor overwriting the open file
+    // with different same-length bytes *during* capture. Compare every byte
+    // against the same original file handle after copying. This may cost a
+    // second sequential source read, but avoids accepting mixed 3MF content.
+    verify_source_snapshot(&mut input, &snapshot.0, bytes)?;
     Ok(snapshot)
+}
+
+fn verify_source_snapshot(
+    input: &mut File,
+    captured_path: &Path,
+    expected: u64,
+) -> Result<(), String> {
+    const CHUNK: usize = 64 << 10;
+    if input
+        .metadata()
+        .map_err(|e| format!("source restat: {e}"))?
+        .len()
+        != expected
+    {
+        return Err("source size changed during snapshot capture".into());
+    }
+    input
+        .seek(SeekFrom::Start(0))
+        .map_err(|e| format!("source rewind for snapshot verification: {e}"))?;
+    let snapshot =
+        File::open(captured_path).map_err(|e| format!("source snapshot verification open: {e}"))?;
+    let mut original = BufReader::new(input);
+    let mut captured = BufReader::new(snapshot);
+    let mut original_chunk = [0u8; CHUNK];
+    let mut captured_chunk = [0u8; CHUNK];
+    let mut compared = 0u64;
+    loop {
+        let size = original
+            .read(&mut original_chunk)
+            .map_err(|e| format!("source snapshot verify: {e}"))?;
+        if size == 0 {
+            break;
+        }
+        captured
+            .read_exact(&mut captured_chunk[..size])
+            .map_err(|_| "source snapshot differs from in-place source change".to_owned())?;
+        if original_chunk[..size] != captured_chunk[..size] {
+            return Err("source changed while snapshot bytes were captured".into());
+        }
+        compared += size as u64;
+    }
+    if compared != expected
+        || captured
+            .read(&mut captured_chunk)
+            .map_err(|e| e.to_string())?
+            != 0
+    {
+        return Err("source size changed during snapshot verification".into());
+    }
+    Ok(())
 }
 
 fn read_part(mut entry: impl Read, label: &str) -> Result<Vec<u8>, String> {
@@ -87,6 +143,45 @@ fn read_part(mut entry: impl Read, label: &str) -> Result<Vec<u8>, String> {
         return Err(format!("{label} exceeds bounded XML/JSON limit"));
     }
     Ok(data)
+}
+
+// Match Go's decoding of JSON numeric literals when comparing an explicit
+// source snapshot to the actual input ZIP. Go unmarshals untyped numbers into
+// float64, so 1.0, 1e0 and 1 may re-serialize differently despite having
+// the same value. Keep all object keys, types and arrays exact. Values outside
+// the IEEE-754 safe integer range fail closed if number forms differ: never
+// silently accept a distinct large integer rounded to the same float.
+fn source_settings_semantically_equal(actual: &Value, declared: &Value) -> bool {
+    match (actual, declared) {
+        (Value::Object(a), Value::Object(b)) => {
+            a.len() == b.len()
+                && a.iter().all(|(key, value)| {
+                    b.get(key)
+                        .is_some_and(|v| source_settings_semantically_equal(value, v))
+                })
+        }
+        (Value::Array(a), Value::Array(b)) => {
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b)
+                    .all(|(a, b)| source_settings_semantically_equal(a, b))
+        }
+        (Value::Number(a), Value::Number(b)) if a == b => true,
+        (Value::Number(a), Value::Number(b)) => {
+            const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+            match (a.as_f64(), b.as_f64()) {
+                (Some(x), Some(y)) => {
+                    x.is_finite()
+                        && y.is_finite()
+                        && x.abs() <= MAX_SAFE_INTEGER
+                        && y.abs() <= MAX_SAFE_INTEGER
+                        && x == y
+                }
+                _ => false,
+            }
+        }
+        _ => actual == declared,
+    }
 }
 
 fn mapping(plan: &Value, slot_count: usize) -> Result<FilamentMapping, String> {
@@ -395,7 +490,13 @@ pub fn convert_archive_experimental(
             .cloned()
             .ok_or_else(|| "source project settings are not a JSON object".to_owned())?;
     }
-    if actual_source != *source_settings {
+    if actual_source.len() != source_settings.len()
+        || actual_source.iter().any(|(key, value)| {
+            !source_settings
+                .get(key)
+                .is_some_and(|declared| source_settings_semantically_equal(value, declared))
+        })
+    {
         return Err("source_settings snapshot differs from actual input 3MF".into());
     }
     audit_source_material_references(&mut src, &paint_map)?;
@@ -527,6 +628,77 @@ mod snapshot_tests {
         drop(snapshot);
         assert!(!snapshot_path.exists(), "source snapshot was not cleaned");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn snapshot_verification_rejects_same_length_in_place_source_mutation() {
+        let dir = scratch_dir();
+        let source = dir.join("editable.3mf");
+        let original = b"original source bytes, length is fixed";
+        fs::write(&source, original).unwrap();
+        let snapshot = snapshot_source(&source, &dir).expect("first snapshot is stable");
+        // Same-sized in-place rewrite is invisible to the old size-only
+        // check. The new byte-for-byte verification must reject it.
+        let rewrite = b"modified source bytes, length is fixed";
+        assert_eq!(original.len(), rewrite.len());
+        fs::write(&source, rewrite).unwrap();
+        let mut still_open = File::open(&source).unwrap();
+        assert!(
+            verify_source_snapshot(&mut still_open, &snapshot.0, original.len() as u64).is_err()
+        );
+        assert_eq!(fs::read(&snapshot.0).unwrap(), original);
+        drop(snapshot);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn numeric_source_snapshot_follows_safe_go_number_semantics() {
+        fn decoded(input: &str) -> Value {
+            serde_json::from_str(input).expect("valid test JSON")
+        }
+        for (actual, declared) in [
+            (r#"{"n":1.0}"#, r#"{"n":1}"#),
+            (r#"{"n":1e0}"#, r#"{"n":1}"#),
+            (r#"{"n":-0.0}"#, r#"{"n":0}"#),
+            (
+                r#"{"nested":[1.0,{"x":2.50}]}"#,
+                r#"{"nested":[1,{"x":2.5}]}"#,
+            ),
+            (r#"{"n":-99}"#, r#"{"n":-99.0}"#),
+        ] {
+            assert!(
+                source_settings_semantically_equal(&decoded(actual), &decoded(declared)),
+                "Go-compatible numeric form refused: {actual} vs {declared}"
+            );
+        }
+
+        for (actual, declared) in [
+            (r#"{"n":1.5}"#, r#"{"n":1}"#),
+            (r#"{"n":"1.0"}"#, r#"{"n":1}"#),
+            (r#"{"n":false}"#, r#"{"n":0}"#),
+            (r#"{"n":[1,2]}"#, r#"{"n":[2,1]}"#),
+            (r#"{"n":1,"s":"original"}"#, r#"{"n":1,"s":"stale"}"#),
+            (r#"{"n":1,"missing":true}"#, r#"{"n":1}"#),
+            (r#"{"n":9007199254740993}"#, r#"{"n":9007199254740992.0}"#),
+            (r#"{"n":9007199254740992}"#, r#"{"n":9007199254740992.0}"#),
+            (
+                r#"{"n":18446744073709551615}"#,
+                r#"{"n":18446744073709551614}"#,
+            ),
+        ] {
+            assert!(
+                !source_settings_semantically_equal(&decoded(actual), &decoded(declared)),
+                "stale or non-exact numeric snapshot accepted: {actual} vs {declared}"
+            );
+        }
+        assert!(
+            source_settings_semantically_equal(
+                &decoded(r#"{"n":9007199254740993}"#),
+                &decoded(r#"{"n":9007199254740993}"#)
+            ),
+            "byte-identical large numeric values should remain valid"
+        );
     }
 
     #[test]
