@@ -509,6 +509,52 @@ QIDIStudio would reject them. An isolated `qidi-studio.exe --info`
 attempt returned no mesh metrics, so QIDIStudio's native import
 remains **UNVERIFIED**.
 
+### Installed OEM material-bound production-path parity (Windows scratch)
+
+The opt-in `TestRustInstalledOEMProductionPlanParity` now verifies
+the **real production Go `ConvertTarget` planning/publishing path**
+against the standalone Rust 3MF ZIP converter, using copied locally
+resolved 0.4 mm Snapmaker U1 and QIDI X-Plus 5 OEM bundles.
+Unlike earlier machine-only OEM parity tests, this gate calls the
+native Go material binder and preserves verified source process
+settings before composing the Rust request. It compares every 3MF
+member semantically and verifies material-profile names, color
+identity, per-material temperature/flow settings where provided,
+unchanged machine-owned firmware/nozzle IDs and source immutability.
+
+The six isolated scratch scenarios are: one-color Bambu source,
+five-color Bambu source, and a synthetic **mixed PLA/PETG five-slot
+painted source**, for each installed U1 and QIDI bundle.
+
+- **5 successful Go/Rust full-ZIP matches**: U1 one/five-color,
+  QIDI one/five-color and QIDI mixed PLA/PETG.
+- **1 required safety refusal**: the installed U1 PETG material
+  preset supplies `nozzle_temperature_range_high=270` but omits
+  the material's lower `nozzle_temperature_range_low`, whereas
+  the PLA preset has its own lower bound. The Go production
+  planner correctly rejects the mixed case without creating a 3MF.
+  Tests intentionally require this rejection; the converter MUST
+  NOT guess a PETG limit or inherit an unsafe PLA value.
+- Another real installed U1 material issue was resolved in the
+  draft branch: a material preset may omit `filament_settings_id`
+  or hold an empty placeholder while the fully resolved installed
+  `profile.filament_profiles` explicitly names the native PLA
+  and PETG profiles. Both Go and Rust now bind those IDs from the
+  verified map, without substituting a generic material; missing
+  native material identity still fails closed. Synthetic Go/Rust
+  positive/negative regression cases pass.
+
+Ten opt-in material-bound output artifacts (five Go/Rust pairs)
+remain in private Windows scratch, not installed slicer folders.
+The separate
+`TestRustSnapmakerOrcaMaterialBoundOEMMeshImportParity` passed:
+the installed Snapmaker Orca `--info` accepted all **4 new
+material-bound U1 Go/Rust files** with identical mesh metrics.
+This adds actual native CLI geometry-read evidence, **not**
+slicer GUI material/tool readiness, an approved mixed U1 PETG
+profile, valid slicing or a print-ready project. The QIDIStudio
+native GUI import/tool preview also remains UNVERIFIED.
+
 ### Bounded local Rust JSONL worker — persistent-process experiment
 
 The optional `--convert-archive-stdio` mode processes a **finite**
