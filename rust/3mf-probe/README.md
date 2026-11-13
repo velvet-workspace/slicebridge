@@ -431,6 +431,26 @@ snapshot may need manual cleanup. Copying the snapshot adds I/O,
 particularly on large projects; benchmark it separately before
 adopting this pipeline.
 
+### Streaming 3MF model XML beyond 8 MB
+
+The full-archive converter now audits triangle paint references and
+rewrites model XML using buffered `quick-xml` events, rather than
+allocating an entire model XML byte array. Model entries are capped at
+the existing inspector's **200 MB uncompressed model XML limit**;
+the standalone `--remap-model` JSON API remains bounded to 8 MB.
+The archive converter still requires a verified 250 MB maximum
+compressed input and a complete explicit source filament mapping.
+
+A new Rust unit test streams an XML model containing more than 8 MB
+of many small vertex tokens and verifies precise paint transformation.
+A separate opt-in `TestRustLargeModelArchiveParity` enlarges an
+existing synthetic Bambu fixture to more than 8 MB of XML, converts
+the complete ZIP with actual Go and standalone Rust, compares every
+package member semantically, and verifies source immutability plus
+scratch cleanup. The **Mac pilot passed** on this synthetic fixture.
+It is not a validated 200 MB stress test, nor a real print-ready
+manufacturing project.
+
 ## Next steps
 
 - Expand the new full-Rust 3MF ZIP comparison against real, multi-material
@@ -439,8 +459,8 @@ adopting this pipeline.
   printer safety policies and source settings snapshots before any application
   integration. Reject an unknown printer or filament rather than assuming
   hardware compatibility.
-- Add more source XML/ZIP edge cases, including large model XML assets,
-  exact JSON numeric equivalence and multiple plates. Source-path replacement
+- Stress-test streaming model XML at large production sizes (including
+  a bounded 200 MB model), exact JSON numeric equivalence and multiple plates. Source-path replacement
   during conversion is now isolated by an immutable snapshot; direct concurrent
   in-place writes during initial capture still require fault-injection testing.
 - Validate complete, inheritance-flattened installed vendor machine/material

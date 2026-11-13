@@ -3,6 +3,7 @@
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, Writer};
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{BufRead, Write};
 
 const MAX_PAINT_HEX: usize = 4 << 20;
 const MAX_MODEL_XML: usize = 8 << 20;
@@ -188,11 +189,25 @@ pub fn rewrite_model_paint_xml(
     if raw.is_empty() || raw.len() > MAX_MODEL_XML {
         return Err("model XML is empty or exceeds 8 MB".into());
     }
-    let mut reader = Reader::from_reader(raw);
-    let mut writer = Writer::new(Vec::with_capacity(raw.len()));
+    let mut result = Vec::with_capacity(raw.len());
+    rewrite_model_paint_stream(raw, &mut result, mapping)?;
+    Ok(result)
+}
+
+/// Stream a potentially large 3MF model's XML without holding it all in
+/// memory. Only the current XML token and the selected paint attribute are
+/// materialized; the caller owns compressed-input and output-size bounds.
+pub(crate) fn rewrite_model_paint_stream<R: BufRead, W: Write>(
+    input: R,
+    output: W,
+    mapping: &BTreeMap<u32, u32>,
+) -> Result<(), String> {
+    let mut reader = Reader::from_reader(input);
+    let mut writer = Writer::new(output);
+    let mut buf = Vec::new();
     loop {
         let event = reader
-            .read_event()
+            .read_event_into(&mut buf)
             .map_err(|e| format!("invalid model XML: {e}"))?;
         match event {
             Event::Start(start) if start.local_name().as_ref() == "triangle" => {
@@ -210,8 +225,9 @@ pub fn rewrite_model_paint_xml(
                 .write_event(other)
                 .map_err(|e| format!("model XML output: {e}"))?,
         }
+        buf.clear();
     }
-    Ok(writer.into_inner())
+    Ok(())
 }
 
 #[cfg(test)]
@@ -263,5 +279,27 @@ mod unit_tests {
         assert!(result.contains("mmu_segmentation=\"4\""));
         assert!(result.contains("paint_color=\"0C\""));
         assert!(result.contains("<meta paint_color=\"4\""));
+    }
+}
+
+#[cfg(test)]
+mod streaming_large_tests {
+    use super::*;
+
+    #[test]
+    fn streaming_model_rewrite_accepts_large_geometry_without_full_xml_buffer() {
+        let mut raw = String::from("<model><mesh><vertices>");
+        for _ in 0..370_000 {
+            raw.push_str("<vertex x=\"0\" y=\"0\" z=\"0\"/>");
+        }
+        raw.push_str("</vertices><triangles><triangle v1=\"0\" v2=\"1\" v3=\"2\" paint_color=\"4\"/></triangles></mesh></model>");
+        assert!(raw.len() > 8 << 20, "model must exceed legacy 8 MB cap");
+        let mapping = BTreeMap::from([(1, 2)]);
+        let mut written = Vec::new();
+        rewrite_model_paint_stream(raw.as_bytes(), &mut written, &mapping)
+            .expect("streaming large model XML remapping");
+        assert_eq!(written.len(), raw.len());
+        assert!(written.ends_with(b"paint_color=\"8\"/></triangles></mesh></model>"));
+        assert!(written.starts_with(b"<model><mesh><vertices><vertex x=\"0\""));
     }
 }

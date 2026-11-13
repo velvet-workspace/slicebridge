@@ -3,15 +3,15 @@
 //! An explicit caller-provided target profile and mapping are mandatory;
 //! outputs are created as new files and never submitted to a printer.
 use crate::{
-    compose_project_settings, inspect_package, rewrite_model_paint_xml, rewrite_model_settings,
-    rewrite_slice_info_xml, strip_slice_cache_preserving, SliceInfoSlot, MAX_COMPRESSED_BYTES,
+    compose_project_settings, inspect_package, rewrite_model_settings, rewrite_slice_info_xml,
+    strip_slice_cache_preserving, SliceInfoSlot, MAX_COMPRESSED_BYTES, MAX_MODEL_XML_BYTES,
 };
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -189,11 +189,15 @@ fn audit_source_material_references(
         if !model && !defaults {
             continue;
         }
-        let data = read_part(entry, &name)?;
-        let mut xml = Reader::from_reader(data.as_slice());
+        let limit = if model { MAX_MODEL_XML_BYTES } else { MAX_XML };
+        if entry.size() > limit {
+            return Err(format!("{name}: XML exceeds {} MB limit", limit >> 20));
+        }
+        let mut xml = Reader::from_reader(BufReader::new(entry.take(limit + 1)));
+        let mut buf = Vec::new();
         loop {
             let event = xml
-                .read_event()
+                .read_event_into(&mut buf)
                 .map_err(|e| format!("{name}: invalid XML: {e}"))?;
             match event {
                 Event::Start(ref start) | Event::Empty(ref start)
@@ -237,6 +241,7 @@ fn audit_source_material_references(
                 Event::Eof => break,
                 _ => {}
             }
+            buf.clear();
         }
     }
     if !missing_painted.is_empty() || !missing_defaults.is_empty() {
@@ -409,6 +414,20 @@ pub fn convert_archive_experimental(
     for index in 0..src.len() {
         let mut entry = src.by_index(index).map_err(|e| e.to_string())?;
         let name = entry.name().to_owned();
+        if name.ends_with(".model") {
+            if entry.size() > MAX_MODEL_XML_BYTES {
+                return Err(format!("{name}: model XML exceeds 200 MB limit"));
+            }
+            let options = entry.options();
+            dst.start_file(&name, options)
+                .map_err(|e| format!("3MF ZIP output {name}: {e}"))?;
+            crate::paint::rewrite_model_paint_stream(
+                BufReader::new(entry.by_ref().take(MAX_MODEL_XML_BYTES + 1)),
+                &mut dst,
+                &paint_map,
+            )?;
+            continue;
+        }
         let edited = match name.as_str() {
             "Metadata/project_settings.config" => {
                 had_settings = true;
@@ -422,10 +441,6 @@ pub fn convert_archive_experimental(
                 had_slice_info = true;
                 let bytes = read_part(entry.by_ref(), &name)?;
                 Some(rewrite_slice_info_xml(&bytes, &padded, &xml_map, model_id)?)
-            }
-            _ if name.ends_with(".model") => {
-                let bytes = read_part(entry.by_ref(), &name)?;
-                Some(rewrite_model_paint_xml(&bytes, &paint_map)?)
             }
             _ => None,
         };

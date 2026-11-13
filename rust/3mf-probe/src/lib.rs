@@ -28,7 +28,7 @@ use zip::ZipArchive;
 pub(crate) const MAX_COMPRESSED_BYTES: u64 = 250 << 20;
 const MAX_UNCOMPRESSED_BYTES: u64 = 1024 << 20;
 const MAX_ENTRIES: usize = 10_000;
-const MAX_MODEL_XML_BYTES: u64 = 200 << 20;
+pub(crate) const MAX_MODEL_XML_BYTES: u64 = 200 << 20;
 const MAX_SETTINGS_BYTES: u64 = 8 << 20;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
