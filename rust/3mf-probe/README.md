@@ -322,6 +322,77 @@ tool assignment, supports, tool changes or slicer preview. OrcaSlicer,
 Bambu Studio, QIDI Studio and Snapmaker Orca were found installed but
 have not yet passed an independent native import equivalence test.
 
+## Live installed Snapmaker U1 / QIDI vendor profile milestone
+
+The real `Snapmaker Orca 2.4.1` process preset
+`0.20mm Standard @Snapmaker U1 (0.4 nozzle).json` and its
+`fdm_process_common.json` parent have a *leading UTF-8 BOM* (EF BB BF).
+The existing native/presets catalog reader refused these valid JSON
+resources, preventing the target profile from resolving at all.
+**The draft branch now removes only the exact leading three-byte BOM**
+at all three vendor JSON entrypoints; malformed JSON, UTF-16, embedded
+BOM and incomplete signatures remain rejected. Synthetic inheritance,
+Orca-discovery and invalid-input regression tests passed on both
+MacMiniOffice.local and Chris Windows PC. No installed OEM or user file
+was changed.
+
+After the patch, the **installed** `presets.LoadConfigured` resolver
+successfully flattened Snapmaker U1 0.4 mm and QIDI X-Plus 5 0.4 mm
+machine/process/material chains on Windows Chris, using the installed
+authoritative code rather than hand-authored fallback profiles. Read-only
+local snapshots were saved **only** in a scratch QA directory (not
+tracked by Git). Snapmaker U1 used the canonical
+`Snapmaker U1 (0.4 nozzle)` process/machine identity; the installed OEM
+leaf contained a conflicting raw `MyToolChanger ... - Copy` setting
+ID, correctly overridden in the resolved project identity.
+
+The production **Go bridge** converted source files with these real
+installed bundles (one and five source materials for each target:
+**4/4 passes**, no printer operation). The converted 3MF project
+settings preserved nine selected OEM-owned machine/script/identity
+settings in **all four outputs**. This confirms that the earlier
+observed differences from the *old built-in Go U1 template* do
+not constitute script-loss in the installed-vendor conversion path.
+
+A new opt-in integration test
+`TestRustFullArchiveInstalledVendorProfileParity`, given
+`SLICEBRIDGE_INSTALLED_BUNDLE_DIR` (explicit local resolved JSON
+snapshots) and `SLICEBRIDGE_RUST_PROBE`, independently converted the
+same two pinned source models to each of the two OEM targets using
+the Go upstream converter and standalone Rust ZIP converter.
+**All four full ZIP comparisons passed** on Windows, including
+semantic XML/JSON and unchanged raw payloads; the test specifically
+guards the real installed OEM start/end/tool-change scripts. This is a
+lower-level equal-baseline conversion comparison and **does not
+replicate native material binding or profile discovery in Rust**.
+
+An explicit opt-in scratch-only exporter produced twelve 3MF files
+(four source/Go/Rust triplets). PrusaSlicer 2.9.6 imported all
+**12/12**; dimensions, facets, parts and volume matched across each
+triplet, and input SHA-256 files remained unchanged. No target-slicer
+UI preview, G-code generation or actual print was tested.
+
+### Benchmark: integration-boundary cost, not a Rust speed claim
+
+The committed `BenchmarkRustGo3MFArchive` compares *in-process*
+Go conversion plus Go cache sanitization against a **new Rust CLI
+process per source** including Rust sanitization. On tiny pinned 3MF
+files, with Go benchmark `-benchtime=300ms`:
+
+| Host | Go in-process | Rust subprocess | Model |
+| --- | --- | --- | --- |
+| Windows Chris / i9-14900K | 3.31–3.53 ms/op | 15.84–16.91 ms/op | one / five materials |
+| MacMiniOffice.local / Apple M4 | 11.23–11.26 ms/op | 69.53–69.91 ms/op | one / five materials |
+
+This does **not** show Rust is intrinsically slower: the Rust test
+includes process startup, OS launch overhead and I/O; the Go test is
+a direct library call. Different hosts and external/portable
+toolchain configurations are not cross-host performance comparisons.
+For a desktop migration, evaluate a persistent Rust process, native
+library interface or another authorized integration after hardware
+profile and slicer import gates close. Larger production-sized
+3MF sources remain unbenchmarked.
+
 ## Next steps
 
 - Expand the new full-Rust 3MF ZIP comparison against real, multi-material
