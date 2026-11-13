@@ -50,8 +50,7 @@ func TestRustInstalledOEMProductionPlanParity(t *testing.T) {
 				dir := t.TempDir()
 				source := filepath.Join(dir, sourceKind)
 				if sourceKind == "mixed-five.3mf" {
-					fixture(t, source, 5)
-					mutateFiveSlotSource(t, source, false, "PETG")
+					createPinnedNativeReadableMixedFiveSource(t, source)
 				} else {
 					raw, err := os.ReadFile(filepath.Join("..", "..", "tests", "fixtures", sourceKind))
 					if err != nil {
@@ -249,6 +248,7 @@ func TestRustInstalledOEMProductionPlanParity(t *testing.T) {
 						t.Fatalf("explicit material-bound OEM output directory unavailable: %v", err)
 					}
 					for _, entry := range [][2]string{
+						{source, "bound-source-" + target + "-" + sourceKind},
 						{goOutput, "bound-go-" + target + "-" + sourceKind},
 						{rustOutput, "bound-rust-" + target + "-" + sourceKind},
 					} {
