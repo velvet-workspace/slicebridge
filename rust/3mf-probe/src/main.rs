@@ -1,7 +1,8 @@
 use serde_json::{json, Value};
 use slicebridge_3mf_probe::{
-    inspect_package, map_native_material_settings, remap_paint_hex, rewrite_model_paint_xml,
-    rewrite_model_settings, source_slot_plan, strip_slice_cache_preserving,
+    compose_project_settings, convert_archive_experimental, inspect_package,
+    map_native_material_settings, remap_paint_hex, rewrite_model_paint_xml, rewrite_model_settings,
+    rewrite_slice_info_xml, source_slot_plan, strip_slice_cache_preserving, SliceInfoSlot,
 };
 use std::collections::BTreeMap;
 use std::env;
@@ -14,7 +15,7 @@ use std::process;
 const MAX_JSON_INPUT_BYTES: u64 = 8 << 20;
 
 fn usage() -> String {
-    "usage: slicebridge-3mf-probe <file.3mf> | --strip-cache [--preserve KEY]... <source.3mf> <output.3mf> | --plan-slots <request.json> | --map-materials <request.json> | --remap-paint <request.json> | --remap-model <request.json> | --rewrite-model-settings <request.json>"
+    "usage: slicebridge-3mf-probe <file.3mf> | --strip-cache [--preserve KEY]... <source.3mf> <output.3mf> | --plan-slots <request.json> | --map-materials <request.json> | --remap-paint <request.json> | --remap-model <request.json> | --rewrite-model-settings <request.json> | --compose-project-settings <request.json> | --rewrite-slice-info <request.json> | --convert-archive <plan.json> <source.3mf> <output.3mf>"
         .to_owned()
 }
 
@@ -69,6 +70,15 @@ fn run(args: &[OsString]) -> Result<Value, String> {
                 }
             })
         }),
+        [flag, plan_file, source, destination] if flag == OsStr::new("--convert-archive") => {
+            let plan = read_request(plan_file)?;
+            let removed = convert_archive_experimental(
+                PathBuf::from(source),
+                PathBuf::from(destination),
+                &plan,
+            )?;
+            Ok(json!({"ok": true, "removed": removed, "experimental": true}))
+        }
         [flag, source] if flag == OsStr::new("--plan-slots") => {
             let value = read_request(source)?;
             let result = source_slot_plan(&value)?;
@@ -78,6 +88,56 @@ fn run(args: &[OsString]) -> Result<Value, String> {
             let value = read_request(source)?;
             let result = map_native_material_settings(&value)?;
             Ok(json!({"ok": true, "project_settings": result["project_settings"]}))
+        }
+        [flag, source] if flag == OsStr::new("--compose-project-settings") => {
+            let input = read_request(source)?;
+            let settings = compose_project_settings(&input)?;
+            Ok(json!({"ok": true, "project_settings": settings}))
+        }
+        [flag, source] if flag == OsStr::new("--rewrite-slice-info") => {
+            let input = read_request(source)?;
+            let mut mapping = BTreeMap::new();
+            for (original, target) in request_mapping(&input)? {
+                let original = i32::try_from(original).map_err(|_| {
+                    "slice_info source filament ID exceeds signed integer limit".to_owned()
+                })?;
+                mapping.insert(original, target as i32);
+            }
+            let xml = input
+                .get("slice_info_xml")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "slice_info_xml must be a UTF-8 XML string".to_owned())?;
+            let model_id = input
+                .get("model_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "model_id must be a string".to_owned())?;
+            let entries = input
+                .get("slots")
+                .and_then(Value::as_array)
+                .ok_or_else(|| "slots must be an array".to_owned())?;
+            if entries.is_empty() || entries.len() > 64 {
+                return Err("slots must contain 1..64 target entries".into());
+            }
+            let mut slots = Vec::with_capacity(entries.len());
+            for (index, item) in entries.iter().enumerate() {
+                let color = item
+                    .get("color")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("slot {index} color must be a string"))?;
+                let material = item
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("slot {index} type must be a string"))?;
+                slots.push(SliceInfoSlot {
+                    color: color.to_owned(),
+                    material: material.to_owned(),
+                });
+            }
+            let output = rewrite_slice_info_xml(xml.as_bytes(), &slots, &mapping, model_id)?;
+            Ok(
+                json!({"ok": true, "slice_info_xml": String::from_utf8(output)
+                .map_err(|e| format!("slice info output not UTF-8: {e}"))?}),
+            )
         }
         [flag, source] if flag == OsStr::new("--remap-paint") => {
             let value = read_request(source)?;

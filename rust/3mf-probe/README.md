@@ -35,15 +35,34 @@ production conversion engine and the Go/Wails desktop app remain unchanged.
    port of Go's metadata-extruder ID remapping and virtual `filament_maps`
    rebuilding for 1..64 slots. XML entities, namespaces and non-target
    attributes are preserved; invalid XML and directives are refused.
+7. **Project-settings composition** (`--compose-project-settings`) exactly
+   rebuilds the target material color/type/profile arrays, re-sizes existing
+   filament and flush-volume arrays, and carries support overrides from an
+   explicit Go-printer-profile snapshot. It refuses invalid slot counts.
+8. **Slice/plate metadata** (`--rewrite-slice-info`): Claude Code separately
+   authored an in-memory Go-equivalent XML rewrite that preserves independent
+   plate material usage, aggregates mapped filament metres/grams, pads target
+   slots and updates the target printer label. Integrated only after independent
+   tests and comparison with actual converted Go 3MF outputs.
+9. **Experimental complete ZIP assembly** (`--convert-archive`) accepts an
+   explicitly supplied conversion plan (no discovery), converts model paint,
+   object settings, slice/plate metadata and project settings, removes stale
+   G-code and OPC references, and atomically publishes a brand-new 3MF file
+   without overwriting anything. It validates source ZIP structure, rejects
+   stale source-settings snapshots, undeclared paint/extruder source IDs,
+   incomplete/extra/invalid filament mappings and mismatched printer slot
+   capacities, then reinspects the staged converted ZIP before publication.
 
 Cache cleanup now supports Go's `stripSliceCache(source, destination, preserved)`
 contract, including named process-setting overrides supplied through repeated
 `--preserve` options. It preserves existing process keys, expands the settings
 array to the number of filament slots plus two and keeps unrelated settings.
-The new slot-planning and material-mapping entrypoints are **read-only
-planning helpers**. They do not discover or authorize installed target
-presets and do not convert a 3MF file. Full printer-specific 3MF conversion,
-profile loading/verification and slicer compatibility remain in Go.
+The standalone slot-planning and material-mapping modes are read-only.
+The **experimental ZIP assembler does produce complete 3MF files** from
+an explicit, already vetted plan, but it **does not** verify or load the
+real installed target printer, nozzle, material presets or hardware.
+Only the production Go bridge is authorized to resolve those dependencies,
+validate native profile compatibility and operate the installed application.
 
 No physical printer is contacted and no print command is generated or sent.
 
@@ -192,6 +211,39 @@ material mapper retains a deliberate 64-slot input limit, unlike an isolated
 Go binder called directly with an oversized, synthetic installed profile;
 the real Go conversion plan separately enforces the same 64-slot bound.
 
+## Independent end-to-end Rust ZIP experiment (not production ready)
+
+In addition to the standalone components, the opt-in
+`--convert-archive plan.json input.3mf new-output.3mf` command accepts:
+
+`profile` (Go printer.Profile snapshot, including exact machine settings and
+filament slot capacity), `slots` (fully specified source material channels),
+`slot_count` (equal to the profile capacity), `mapping` (one canonical source
+filament ID per declared source filament, each destination limited to one
+of the explicitly chosen slots), `source_settings` (exact source project
+settings JSON), `supports` (boolean), and optional `preserved` (print
+settings key list). The JSON plan is bounded to 8 MB. No target printer
+profile is downloaded, discovered, installed or used to send printer commands.
+
+On MacMiniOffice.local, the experimental independent Rust ZIP output matched
+Go converted+sanitized output in **six separate conversion scenarios**:
+1→4, 4→4 (with/without supports), 6→6 and 6→4 (with/without supports).
+Checks cover every ZIP member, XML semantics, JSON settings, raw unchanged
+payloads, the original source remaining identical and existing-output
+non-overwrite. **Ten negative input cases** (source settings mismatch,
+incomplete/extra/invalid source mappings, mapping into unallocated bays,
+profile count mismatch, missing native material ID, empty material type,
+undeclared default extruder, undeclared paint ID) are required to refuse
+output. The experimental model is **not approved for print**.
+
+Known fail-closed limitations: project and XML members over 8 MiB,
+3MF projects without declared slice_info filament IDs, unsupported XML DTDs,
+and source JSON number representation differences (e.g. 1 versus 1.0).
+Vendor preset inheritance, target machine authenticity, slicing and real
+filament/tool assignment are still owned by Go and require new end-to-end
+validation. No installed printer, actual slicer import or physical print has
+been tested with the Rust output.
+
 ## Independent parallel verification of model XML transforms
 
 A separate scoped Claude Code worker implemented model-settings XML handling
@@ -213,17 +265,23 @@ rewrite the ZIP archive or create printable files**.
 
 ## Next steps
 
-- Port remaining slice-info XML and project-settings composition with full
-  differential validation before assembling a new Rust 3MF conversion pipeline.
-- Test more real-world 3MF sources and adverse ZIP/XML edge cases.
+- Expand the new full-Rust 3MF ZIP comparison against real, multi-material
+  projects and full, inheritance-flattened vendor profiles (with authorization).
+- Add independent verification of installed target machine/nozzle identity,
+  printer safety policies and source settings snapshots before any application
+  integration. Reject an unknown printer or filament rather than assuming
+  hardware compatibility.
+- Add more source XML/ZIP edge cases, including large assets, float semantics,
+  multiple plates, compressed-source limits and concurrency races.
 - Validate complete, inheritance-flattened installed vendor machine/material
   bundles and user-permitted multi-material 3MF examples. Selected raw material
   values alone are not a verified installed-target profile.
-- Add actual end-to-end 3MF conversion and printer-profile resolution in
-  independently gated slices; refuse unmapped filament materials.
+- Integrate target profile and nozzle validation as independently gated
+  slices; retain the established Go authority until Rust safety parity is
+  demonstrated for real installed slicer environments.
 - Benchmark Rust versus Go only after file-level output parity is proven.
-- Run the Windows binary on a Windows host and test generated 3MF files in
-  real slicers before considering a user-visible integration.
+- Run the new full-archive Rust implementation on Windows and test generated
+  files in real slicers before considering user-visible integration.
 - Consider Tauri 2 as a separate UI decision after compatibility testing.
 
 Do not enable this crate in the current application, remove Go/Wails, or

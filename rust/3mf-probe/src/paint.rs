@@ -2,7 +2,7 @@
 //! bitstream remapper. No printer commands or source-file writes.
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, Writer};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_PAINT_HEX: usize = 4 << 20;
 const MAX_MODEL_XML: usize = 8 << 20;
@@ -13,6 +13,19 @@ const MAX_NODES: usize = 1_000_000;
 /// The hexadecimal encoding is parsed in reverse nibble order, least-significant
 /// bit first, exactly like Go pkg/paint.Remap. Unmapped states stay unchanged.
 pub fn remap_paint_hex(s: &str, mapping: &BTreeMap<u32, u32>) -> Result<String, String> {
+    remap_paint_hex_with_refs(s, mapping).map(|(paint, _)| paint)
+}
+
+/// Read every original painted filament ID, before any remapping. The full
+/// converter uses this to refuse stale references to undeclared filaments.
+pub(crate) fn inspect_paint_ids(s: &str) -> Result<BTreeSet<u32>, String> {
+    remap_paint_hex_with_refs(s, &BTreeMap::new()).map(|(_, ids)| ids)
+}
+
+fn remap_paint_hex_with_refs(
+    s: &str,
+    mapping: &BTreeMap<u32, u32>,
+) -> Result<(String, BTreeSet<u32>), String> {
     if s.is_empty() || s.len() > MAX_PAINT_HEX {
         return Err("paint hex is empty or exceeds the 4 MB input limit".into());
     }
@@ -31,7 +44,16 @@ pub fn remap_paint_hex(s: &str, mapping: &BTreeMap<u32, u32>) -> Result<String, 
     let mut pos = 0usize;
     let mut rewritten = Vec::with_capacity(bits.len());
     let mut nodes = 0usize;
-    remap_node(&bits, &mut pos, &mut rewritten, mapping, 0, &mut nodes)?;
+    let mut references = BTreeSet::new();
+    remap_node(
+        &bits,
+        &mut pos,
+        &mut rewritten,
+        mapping,
+        &mut references,
+        0,
+        &mut nodes,
+    )?;
     if pos != bits.len() {
         return Err(format!(
             "paint: {} trailing bits after decoding",
@@ -48,7 +70,9 @@ pub fn remap_paint_hex(s: &str, mapping: &BTreeMap<u32, u32>) -> Result<String, 
         encoded.push(b"0123456789ABCDEF"[nibble as usize]);
     }
     encoded.reverse();
-    String::from_utf8(encoded).map_err(|e| e.to_string())
+    String::from_utf8(encoded)
+        .map(|encoded| (encoded, references))
+        .map_err(|e| e.to_string())
 }
 
 fn read_bits(bits: &[u8], pos: &mut usize, count: usize) -> Result<u32, String> {
@@ -75,6 +99,7 @@ fn remap_node(
     pos: &mut usize,
     output: &mut Vec<u8>,
     mapping: &BTreeMap<u32, u32>,
+    references: &mut BTreeSet<u32>,
     depth: usize,
     nodes: &mut usize,
 ) -> Result<(), String> {
@@ -99,6 +124,7 @@ fn remap_node(
             }
         }
         if state > 0 {
+            references.insert(state);
             if let Some(mapped) = mapping.get(&state) {
                 if *mapped > 0 {
                     state = *mapped;
@@ -122,7 +148,7 @@ fn remap_node(
     let special_side = read_bits(bits, pos, 2)?;
     write_bits(output, special_side, 2);
     for _ in 0..(split_sides + 1) {
-        remap_node(bits, pos, output, mapping, depth + 1, nodes)?;
+        remap_node(bits, pos, output, mapping, references, depth + 1, nodes)?;
     }
     Ok(())
 }

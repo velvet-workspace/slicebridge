@@ -2,14 +2,20 @@
 //! and opt-in removal of cached slice artifacts into a new output file.
 //! No printer-profile conversion or physical printing occurs.
 //! Production SliceBridge continues using its Go engine.
+mod archive_convert;
 mod materials;
 mod modelsettings;
 mod paint;
+mod projectsettings;
 mod sanitize;
+mod sliceinfo;
+pub use archive_convert::convert_archive_experimental;
 pub use materials::{map_native_material_settings, source_slot_plan};
 pub use modelsettings::rewrite_model_settings;
 pub use paint::{remap_paint_hex, rewrite_model_paint_xml};
+pub use projectsettings::compose_project_settings;
 pub use sanitize::{strip_slice_cache, strip_slice_cache_preserving};
+pub use sliceinfo::{rewrite_slice_info_xml, Slot as SliceInfoSlot};
 
 use quick_xml::events::Event;
 use quick_xml::Reader;
