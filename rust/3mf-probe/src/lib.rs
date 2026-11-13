@@ -1,6 +1,10 @@
-//! Experimental read-only Rust port of engine/bridge/archive.go::inspectPackage.
-//! This library does not convert printer profiles, rewrite files, or print.
+//! Experimental Rust ports of two isolated Go 3MF operations: inspection
+//! and opt-in removal of cached slice artifacts into a new output file.
+//! No printer-profile conversion or physical printing occurs.
 //! Production SliceBridge continues using its Go engine.
+mod sanitize;
+pub use sanitize::strip_slice_cache;
+
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use std::collections::HashSet;

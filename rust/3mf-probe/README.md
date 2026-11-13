@@ -1,78 +1,90 @@
-# SliceBridge Rust archive-probe pilot
+# SliceBridge: experimental Rust 3MF components
 
-**Status: experimental, read-only, and not wired into the application.** This
-crate ports the bounded `inspectPackage` behavior from
-[`engine/bridge/archive.go`](../../engine/bridge/archive.go) as the first
-independently verifiable Rust migration slice.
+**Development only. Not integrated with the installed SliceBridge application.**
 
-It reads one editable 3MF archive and emits JSON with its geometry element
-counts, source printer-model label, and stale slice-cache entry count. On
-invalid input it emits `{"ok":false,"error":"..."}` and exits nonzero.
+This small Rust crate incrementally ports two isolated operations from the
+existing Go `engine/bridge/archive.go` implementation. The production
+conversion engine and the Go/Wails desktop app remain unchanged.
 
-It does **not** create 3MF outputs, change filament/material mappings, call
-external slicers, update the native Wails app, or send prints. Go remains the
-production engine. The Rust crate is **not** a replacement converter yet.
+## Implemented
 
-## Local commands
+1. **Read-only 3MF inspection** (default command). Reports the number of
+   geometry vertices and triangles, cached slice entries and source printer
+   label. It rejects unsafe ZIP paths, duplicate names, missing editable
+   geometry, malformed XML and archive size/entry-limit violations.
+2. **Optional stale-slice cleanup** (`--strip-cache`). Creates a *new*
+   3MF file, removing `Metadata/plate_*.gcode`, `*.gcode.md5`, and
+   `plate_*.json` entries and their stale OPC XML references while
+   preserving 3D models, thumbnails and other ZIP contents. Source never
+   changes. Output creation is atomic and fails if the destination exists.
 
-From `rust/3mf-probe/`:
+This intentionally supports only Go's
+`stripSliceCache(source, destination, nil)` contract. Preserved setting
+overrides and printer-specific 3MF conversion are **not** implemented in Rust.
+
+No physical printer is contacted and no print command is generated or sent.
+
+## Build and test
 
 ```sh
+cd rust/3mf-probe
 cargo test --locked
+cargo fmt -- --check
 cargo clippy --locked --all-targets -- -D warnings
+```
+
+Example read-only inspection:
+
+```sh
 cargo run --locked -- ../../tests/fixtures/bambu-five-colors.3mf
 ```
 
-Both source and destination data remain untouched; the binary only reads its
-argument. The current JSON contract is:
+Expected response contains:
 
 ```json
-{
-  "ok": true,
-  "facts": {
-    "vertices": 4,
-    "triangles": 4,
-    "slice_caches": 3,
-    "printer_model": "Bambu Lab A1"
-  }
-}
+{"ok":true,"facts":{"vertices":4,"triangles":4,"slice_caches":3,"printer_model":"Bambu Lab A1"}}
 ```
 
-## Run differential tests against Go
+Example cleanup into a *different*, not-yet-existing file:
 
-On a host that has **Go and Rust** installed, from the repository root:
+```sh
+cargo run --locked -- --strip-cache ../../tests/fixtures/bambu-five-colors.3mf /tmp/fixture-cleaned.3mf
+```
+
+A successful cleanup prints e.g. `{"ok":true,"removed":3}`. It does
+not modify the source and cannot overwrite an existing destination.
+
+## Verify Rust output against the real Go implementation
+
+Build the Rust CLI and opt into both Go differential tests:
 
 ```sh
 cargo build --locked --manifest-path rust/3mf-probe/Cargo.toml
 cd engine
 SLICEBRIDGE_RUST_PROBE="$(pwd)/../rust/3mf-probe/target/debug/slicebridge-3mf-probe" \
-  go test -count=1 ./bridge -run '^TestRustArchiveProbeParity$' -v
+  go test -count=1 ./bridge -run '^TestRustArchive(Probe|Strip)Parity$' -v
 ```
 
-This optional Go test invokes the actual existing Go `inspectPackage` and
-the Rust executable on repository 3MF fixtures. It compares acceptance and
-the four extracted fields; it is skipped in ordinary Go test runs without
-`SLICEBRIDGE_RUST_PROBE`. Error-message wording is intentionally not compared.
+The existing Go code is the baseline. The first test compares the four
+archive facts; the second compares the number of removed cache items and
+the entire resulting ZIP structure, checking XML references semantically
+and all other retained parts byte-for-byte. Both run on the 11 checked-in
+3MF fixtures. Go tests skip these cross-language checks unless
+`SLICEBRIDGE_RUST_PROBE` is explicitly supplied.
 
-## Scope and acceptance gates
+**Verified:** on 13 November 2026, the opt-in Go comparisons passed for
+all 11 fixtures in both tests, on MacMiniOffice.local using a separate,
+external-volume toolchain. These are test fixtures, **not proof of
+cross-slicer conversion, print quality, or release readiness**.
 
-- Valid ZIP and editable 3MF structural inspection, with Go-aligned size,
-  entry-count and geometry limits.
-- Explicit rejection of unsafe paths and duplicate ZIP names. This needs
-  special handling because the Rust `zip` crate indexes entries by name and
-  otherwise collapses duplicate records.
-- Rust tests cover valid, invalid, corrupt and adversarial synthetic inputs.
-- The 11 checked-in `tests/fixtures/*.3mf` files are checked-in sample fixtures
-  for manual CLI inspection; passing this check is not conversion parity.
-- Cross-language acceptance requires the optional Go differential suite to
-  pass on the same source revision, then real-slicer import and print-safety QA
-  for any subsequent conversion logic.
+## Next steps
 
-**Next proposed Rust slice:** put the archive cache sanitizer behind a new
-opt-in JSON CLI contract, test its full output ZIP structure against Go,
-and only then consider a separately integrated Rust core/Tauri 2 shell.
-Never remove the existing Go/Wails path as part of this pilot.
+- Test more real-world 3MF sources and adverse ZIP/XML edge cases.
+- Add preservation of setting overrides, with differential output tests.
+- Benchmark Rust versus Go only after behavior is demonstrably equivalent.
+- Consider Tauri 2 as a separate UI decision after compatibility testing.
 
-Dependencies are pinned in `Cargo.lock`. This experiment does not authorize
-shipping new Rust binaries; release licensing, artifact signatures and actual
-printer/slicer QA are separate gates.
+Do not enable this crate in the current application, remove Go/Wails, or
+publish release builds based solely on these tests. Dependency versions
+are recorded in `Cargo.lock`; release licensing and platform verification
+remain separate.
