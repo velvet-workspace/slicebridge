@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -72,6 +73,28 @@ func TestRustInstalledOEMProductionPlanParity(t *testing.T) {
 				result, err := ConvertTarget(source, goOutput, TargetRequest{
 					Target: target, ProfileFile: bundlePath, Nozzle: "0.4",
 				})
+				if target == "u1" && sourceKind == "mixed-five.3mf" {
+					// The observed installed U1 PETG OEM snapshot has a
+					// nozzle_temperature_range_high but lacks the safety-
+					// critical lower bound. The real Go planner MUST refuse
+					// mixing it with a PLA preset that declares that field.
+					// Do not auto-fill a PETG temperature from a PLA default.
+					if _, available := bundle.MaterialSettings["PETG"]["nozzle_temperature_range_low"]; available {
+						t.Fatal("U1 OEM PETG snapshot changed: revalidate full positive material binding before updating this gate")
+					}
+					if err == nil || !strings.Contains(err.Error(), "nozzle_temperature_range_low") {
+						t.Fatalf("incomplete installed PETG safety range must fail closed: result=%v error=%v", result, err)
+					}
+					if _, statErr := os.Stat(goOutput); !os.IsNotExist(statErr) {
+						t.Fatal("refused native PETG source still published a Go output")
+					}
+					current, readErr := os.ReadFile(source)
+					if readErr != nil || !bytes.Equal(sourceBefore, current) {
+						t.Fatal("rejected native PETG conversion modified source")
+					}
+					t.Log("EXPECTED SAFE REJECTION: installed Snapmaker U1 PETG material profile lacks nozzle_temperature_range_low; no 3MF output published")
+					return
+				}
 				if err != nil {
 					t.Fatalf("Go production target conversion: %v", err)
 				}

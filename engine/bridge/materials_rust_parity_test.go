@@ -200,6 +200,12 @@ func TestRustNativeMaterialMappingParity(t *testing.T) {
 			bundle.MaterialSettings["PETG"]["nozzle_diameter"] = []any{"0.6"}
 			bundle.MaterialSettings["PLA"]["machine_max_acceleration_extruding"] = []any{"100"}
 		}},
+		{"missing_critical_native_PETG_lower_temperature_bound", []converter.Filament{
+			{ID: 1, Type: "PLA"}, {ID: 2, Type: "PETG"},
+		}, func(bundle *targetBundle) {
+			bundle.MaterialSettings["PLA"]["nozzle_temperature_range_low"] = []any{"190"}
+			delete(bundle.MaterialSettings["PETG"], "nozzle_temperature_range_low")
+		}},
 		{"missing_critical_nozzle_temperature", []converter.Filament{
 			{ID: 1, Type: "PLA"}, {ID: 2, Type: "PETG"},
 		}, func(bundle *targetBundle) {
