@@ -131,3 +131,71 @@ fn cli_writes_explicit_opt_in_destination_and_json_count() {
     assert_eq!(reply["removed"], 3);
     assert!(f.output.exists());
 }
+
+#[test]
+fn preserved_keys_are_written_to_new_output_without_changing_source() {
+    use slicebridge_3mf_probe::strip_slice_cache_preserving;
+
+    let f = fixture();
+    let original = fs::read(&f.input).unwrap();
+    let keys = vec!["flow_ratio".to_owned(), "cooling".to_owned()];
+    assert_eq!(
+        strip_slice_cache_preserving(&f.input, &f.output, &keys).unwrap(),
+        3
+    );
+
+    let mut archive = ZipArchive::new(File::open(&f.output).unwrap()).unwrap();
+    let settings = read_part(&mut archive, "Metadata/project_settings.config").unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&settings).unwrap();
+    let differences = json["different_settings_to_system"].as_array().unwrap();
+    assert_eq!(
+        differences.len(),
+        6,
+        "four default slots plus two metadata fields"
+    );
+    assert_eq!(differences[0], "cooling;flow_ratio");
+    assert_eq!(json["printer_model"], "Kobra 3");
+    assert_eq!(fs::read(&f.input).unwrap(), original);
+    assert_eq!(inspect_package(&f.output).unwrap().slice_caches, 0);
+}
+
+#[test]
+fn cli_accepts_repeated_preserved_process_keys() {
+    let f = fixture();
+    let output = Command::new(env!("CARGO_BIN_EXE_slicebridge-3mf-probe"))
+        .args([
+            "--strip-cache",
+            "--preserve",
+            "flow_ratio",
+            "--preserve",
+            "cooling",
+        ])
+        .arg(&f.input)
+        .arg(&f.output)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{:?}", output.stdout);
+    let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(reply["removed"], 3);
+    let mut archive = ZipArchive::new(File::open(&f.output).unwrap()).unwrap();
+    let settings = read_part(&mut archive, "Metadata/project_settings.config").unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&settings).unwrap();
+    assert_eq!(
+        json["different_settings_to_system"][0],
+        "cooling;flow_ratio"
+    );
+}
+
+#[test]
+fn incomplete_preserve_command_fails_closed_without_creating_output() {
+    let f = fixture();
+    let output = Command::new(env!("CARGO_BIN_EXE_slicebridge-3mf-probe"))
+        .args(["--strip-cache", "--preserve"])
+        .arg(&f.input)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(reply["ok"], false);
+    assert!(!f.output.exists());
+}

@@ -3,7 +3,8 @@
 use crate::{is_cache, safe_entry_name, verify_central_directory};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, Writer, XmlVersion};
-use std::collections::HashSet;
+use serde_json::Value;
+use std::collections::{BTreeSet, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -25,15 +26,24 @@ impl Drop for TemporaryOutput {
     }
 }
 
-/// Remove only cached slicer artifacts and their OPC references from a 3MF ZIP.
-/// This is a limited port of Go stripSliceCache(source, dest, nil). Preserved
-/// setting overrides are intentionally out of scope for this first Rust slice.
-///
-/// Output is written to a unique sibling temporary file, then linked into
-/// place without overwriting an existing destination.
+/// Remove cached slicer artifacts and OPC references, without changing
+/// printer settings. Equivalent to Go stripSliceCache(source, dest, nil).
 pub fn strip_slice_cache(
     source: impl AsRef<Path>,
     destination: impl AsRef<Path>,
+) -> Result<usize, String> {
+    strip_slice_cache_preserving(source, destination, &[])
+}
+
+/// Remove slice caches and preserve named process overrides in Bambu metadata.
+/// Equivalent to Go stripSliceCache(source, dest, preserved).
+///
+/// Output is written to a unique sibling temporary file, then linked into
+/// place without overwriting an existing destination.
+pub fn strip_slice_cache_preserving(
+    source: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    preserved: &[String],
 ) -> Result<usize, String> {
     let source = source.as_ref();
     let destination = destination.as_ref();
@@ -100,6 +110,24 @@ pub fn strip_slice_cache(
             removed += 1;
             continue;
         }
+        if name == "Metadata/project_settings.config" && !preserved.is_empty() {
+            let mut data = Vec::new();
+            entry
+                .by_ref()
+                .take(MAX_XML_BYTES + 1)
+                .read_to_end(&mut data)
+                .map_err(|e| format!("project settings read: {e}"))?;
+            if data.len() as u64 > MAX_XML_BYTES {
+                return Err("project settings JSON exceeds size limit".to_owned());
+            }
+            let modified = mark_process_overrides(&data, preserved)?;
+            let options = entry.options();
+            dst.start_file(name, options)
+                .map_err(|e| format!("ZIP output: {e}"))?;
+            dst.write_all(&modified)
+                .map_err(|e| format!("ZIP write: {e}"))?;
+            continue;
+        }
         if name == "[Content_Types].xml" || name.ends_with(".rels") {
             let mut data = Vec::new();
             entry
@@ -135,6 +163,57 @@ pub fn strip_slice_cache(
     fs::hard_link(&cleanup.0, destination)
         .map_err(|e| format!("destination not created (no overwrite): {e}"))?;
     Ok(removed)
+}
+
+/// Mirror Go's markProcessOverrides: carry existing process keys forward,
+/// append the explicitly preserved ones, sort/deduplicate keys, and expand
+/// different_settings_to_system to the number of filament slots plus two.
+fn mark_process_overrides(raw: &[u8], preserved: &[String]) -> Result<Vec<u8>, String> {
+    let mut config: Value =
+        serde_json::from_slice(raw).map_err(|e| format!("project settings JSON: {e}"))?;
+    let settings = config
+        .as_object_mut()
+        .ok_or_else(|| "project settings JSON must be an object".to_owned())?;
+
+    let slots = settings
+        .get("filament_colour")
+        .and_then(Value::as_array)
+        .filter(|values| !values.is_empty())
+        .map_or(4usize, Vec::len);
+
+    let mut differences = settings
+        .remove("different_settings_to_system")
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+
+    if differences.len() < slots + 2 {
+        differences.resize(slots + 2, Value::Null);
+    }
+
+    let mut marked = BTreeSet::new();
+    if let Some(prior) = differences.first().and_then(Value::as_str) {
+        for key in prior.split(';') {
+            if !key.trim().is_empty() {
+                // As in Go, retain whitespace in valid keys and only use trim
+                // to reject empty entries.
+                marked.insert(key.to_owned());
+            }
+        }
+    }
+    marked.extend(preserved.iter().cloned());
+    differences[0] = Value::String(marked.into_iter().collect::<Vec<_>>().join(";"));
+
+    for value in differences.iter_mut().skip(1) {
+        if value.is_null() {
+            *value = Value::String(String::new());
+        }
+    }
+    settings.insert(
+        "different_settings_to_system".to_owned(),
+        Value::Array(differences),
+    );
+    serde_json::to_vec_pretty(&config)
+        .map_err(|e| format!("project settings JSON serialization: {e}"))
 }
 
 fn possible_cache_reference(raw: &[u8]) -> bool {
@@ -285,5 +364,48 @@ mod unit_tests {
     fn leaves_thumbnail_only_xml_byte_identical() {
         let source = br#"<Relationships xmlns="urn:test"><Relationship Target="plate_1.png"/></Relationships>"#;
         assert!(rewrite_cache_references(source).unwrap().is_none());
+    }
+
+    #[test]
+    fn preserves_process_keys_and_respects_filament_slot_count() {
+        let source = br##"{
+            "printer_model": "Bambu Lab A1",
+            "filament_colour": ["#123456", "#abcdef", "#808080"],
+            "different_settings_to_system": ["existing;cooling;existing", null, 7]
+        }"##;
+        let result =
+            mark_process_overrides(source, &["flow_ratio".to_owned(), "cooling".to_owned()])
+                .unwrap();
+        let value: Value = serde_json::from_slice(&result).unwrap();
+        let settings = value["different_settings_to_system"].as_array().unwrap();
+        assert_eq!(settings.len(), 5);
+        assert_eq!(settings[0], "cooling;existing;flow_ratio");
+        assert_eq!(settings[1], "");
+        assert_eq!(settings[2], 7);
+        assert_eq!(settings[3], "");
+        assert_eq!(settings[4], "");
+        assert_eq!(value["filament_colour"][2], "#808080");
+        assert_eq!(value["printer_model"], "Bambu Lab A1");
+    }
+
+    #[test]
+    fn missing_slots_and_settings_use_go_defaults() {
+        let result = mark_process_overrides(
+            br#"{"printer_model":"P1","different_settings_to_system":null}"#,
+            &["height".to_owned()],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_slice(&result).unwrap();
+        let settings = value["different_settings_to_system"].as_array().unwrap();
+        assert_eq!(settings.len(), 6);
+        assert_eq!(settings[0], "height");
+        assert!(settings.iter().skip(1).all(|value| value == ""));
+    }
+
+    #[test]
+    fn invalid_settings_fail_without_panic() {
+        for raw in [b"{".as_slice(), b"[]", b"null"] {
+            assert!(mark_process_overrides(raw, &["flow".to_owned()]).is_err());
+        }
     }
 }

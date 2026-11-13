@@ -3,7 +3,7 @@
 //! No printer-profile conversion or physical printing occurs.
 //! Production SliceBridge continues using its Go engine.
 mod sanitize;
-pub use sanitize::strip_slice_cache;
+pub use sanitize::{strip_slice_cache, strip_slice_cache_preserving};
 
 use quick_xml::events::Event;
 use quick_xml::Reader;
