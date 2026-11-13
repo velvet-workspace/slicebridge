@@ -265,6 +265,55 @@ func Load(target, sourceNozzle string) (*Bundle, error) {
 	return LoadConfigured(target, sourceNozzle, "auto", nil)
 }
 
+// installedU1PETG04Leaf selects only a fully verified installed OEM 0.4 mm
+// Snapmaker U1 PETG *leaf*, not the abstract @U1 base. The upstream
+// manufacturer data declares a compatible "Generic PETG" leaf with its
+// own nozzle-temperature lower bound; the inherited base has only an upper
+// bound and cannot safely be combined with another material.
+func installedU1PETG04Leaf(index catalog, machineName string) string {
+	const leafName = "Generic PETG"
+	for _, entry := range index["filament:"+leafName] {
+		if filepath.Base(entry.file) != leafName+".json" ||
+			entry.settings["inherits"] != "Generic PETG @U1 base" {
+			continue
+		}
+		compatible, ok := entry.settings["compatible_printers"].([]any)
+		if !ok {
+			continue
+		}
+		matched := false
+		for _, name := range compatible {
+			if value, ok := name.(string); ok && value == machineName {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		flattened, err := flatten(index, "filament", leafName, map[string]bool{})
+		if err != nil {
+			continue
+		}
+		material, ok := flattened["filament_type"].([]any)
+		if !ok || len(material) != 1 || fmt.Sprint(material[0]) != "PETG" {
+			continue
+		}
+		lower, lowOK := flattened["nozzle_temperature_range_low"].([]any)
+		upper, highOK := flattened["nozzle_temperature_range_high"].([]any)
+		if !lowOK || !highOK || len(lower) != 1 || len(upper) != 1 {
+			continue
+		}
+		low, lowErr := strconv.ParseFloat(fmt.Sprint(lower[0]), 64)
+		high, highErr := strconv.ParseFloat(fmt.Sprint(upper[0]), 64)
+		if lowErr != nil || highErr != nil || !(low > 0 && high > low && high <= 450) {
+			continue
+		}
+		return leafName
+	}
+	return ""
+}
+
 // LoadConfigured uses only installed vendor presets, with verified saved
 // physical nozzle, slicer and material overrides.
 func LoadConfigured(target, sourceNozzle, slicerID string, overrides map[string]string) (*Bundle, error) {
@@ -330,6 +379,13 @@ func LoadConfigured(target, sourceNozzle, slicerID string, overrides map[string]
 		override := overrides[m]
 		if override != "" {
 			name = override
+		} else if target == "u1" && nozzle == "0.4" && m == "PETG" {
+			// Use the installed OEM's exact 0.4-mm-compatible leaf only
+			// when its provenance, inherited type and full temperature
+			// range were independently checked. Never rewrite user presets.
+			if validated := installedU1PETG04Leaf(index, machineName); validated != "" {
+				name = validated
+			}
 		}
 		preset, loadErr := get("filament", name)
 		if loadErr != nil && override == "" {
