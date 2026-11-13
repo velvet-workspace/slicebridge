@@ -3,7 +3,7 @@ name = "slicebridge-3mf-probe"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Experimental, read-only Rust 3MF archive inspection for SliceBridge"
+description = "Experimental Rust 3MF inspection, cache cleanup and material planning for SliceBridge"
 
 [dependencies]
 quick-xml = "=0.42.0"

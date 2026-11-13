@@ -2,9 +2,9 @@
 
 **Development only. Not integrated with the installed SliceBridge application.**
 
-This small Rust crate incrementally ports two isolated operations from the
-existing Go `engine/bridge/archive.go` implementation. The production
-conversion engine and the Go/Wails desktop app remain unchanged.
+This small Rust crate incrementally ports bounded 3MF archive, source-slot
+and material-settings operations from the existing Go bridge engine. The
+production conversion engine and the Go/Wails desktop app remain unchanged.
 
 ## Implemented
 
@@ -17,13 +17,24 @@ conversion engine and the Go/Wails desktop app remain unchanged.
    `plate_*.json` entries and their stale OPC XML references while
    preserving 3D models, thumbnails and other ZIP contents. Source never
    changes. Output creation is atomic and fails if the destination exists.
+3. **Source filament slot planning** (`--plan-slots request.json`) preserves
+   all source IDs and keeps matching colors in distinct virtual channels.
+   Invalid IDs, duplicate IDs, missing material/color and palettes beyond
+   64 slots are rejected. Support filaments are flagged, not merged.
+4. **Installed native material-parameter mapping** (`--map-materials request.json`)
+   accepts an in-memory snapshot of a Go target bundle plus source filaments
+   and returns mapped project settings as JSON. It refuses missing or unknown
+   installed material presets and partial safety-critical temperature/flow
+   settings. Hardware-owned nozzle and acceleration settings are never changed.
 
 Cache cleanup now supports Go's `stripSliceCache(source, destination, preserved)`
 contract, including named process-setting overrides supplied through repeated
 `--preserve` options. It preserves existing process keys, expands the settings
 array to the number of filament slots plus two and keeps unrelated settings.
-Printer-specific 3MF conversion and slicer profile translation are **not**
-implemented in Rust.
+The new slot-planning and material-mapping entrypoints are **read-only
+planning helpers**. They do not discover or authorize installed target
+presets and do not convert a 3MF file. Full printer-specific 3MF conversion,
+profile loading/verification and slicer compatibility remain in Go.
 
 No physical printer is contacted and no print command is generated or sent.
 
@@ -66,37 +77,60 @@ A successful cleanup prints e.g. `{"ok":true,"removed":3}`. It does
 not modify the source and cannot overwrite an existing destination. The
 source settings remain unchanged; only the new output receives override tags.
 
+To test the new *read-only* material operations, create a local JSON request:
+
+```json
+{"filaments":[{"id":1,"color":"#FFFFFF","type":"PLA"},{"id":2,"color":"#FFFFFF","type":"PVA"}]}
+```
+
+Then run `cargo run --locked -- --plan-slots path/to/request.json`.
+This produces a distinct virtual slot for each ID and marks PVA as support.
+
+For `--map-materials`, provide a JSON object containing both a `bundle`
+(snapshot of the existing installed Go targetBundle, including `profile`,
+`filament_profiles`, `project_settings` and `material_settings`) and a
+`filaments` array. The response contains `project_settings` only. This
+command **does not resolve installed presets, convert projects or write
+any output file**. Both JSON commands limit input to 8 MB.
+
 ## Verify Rust output against the real Go implementation
 
-Build the Rust CLI and opt into all three Go differential tests:
+Build the Rust CLI and opt into all five Go differential tests:
 
 ```sh
 cargo build --locked --manifest-path rust/3mf-probe/Cargo.toml
 cd engine
 SLICEBRIDGE_RUST_PROBE="$(pwd)/../rust/3mf-probe/target/debug/slicebridge-3mf-probe" \
-  go test -count=1 ./bridge -run '^TestRustArchive(Probe|Strip|Preserve)Parity$' -v
+  go test -count=1 ./bridge -run '^TestRust(Archive(Probe|Strip|Preserve)|SourceSlotPlan|NativeMaterialMapping)Parity$' -v
 ```
 
-The existing Go code is the baseline. The first test compares archive facts;
-the second compares cleanup output; and the third repeats the cleanup with
-preserved process settings and compares resulting settings as parsed JSON.
-All three compare the number of removed cache entries and/or the resulting
-ZIP structure, checking XML references semantically and unchanged payloads
-byte-for-byte. They run on the 11 checked-in 3MF fixtures. Ordinary Go tests
-skip these cross-language checks unless `SLICEBRIDGE_RUST_PROBE` is set.
+The existing Go code is the baseline. Three archive tests compare 3MF facts,
+cache removal and preserved process settings. Two new mapping tests compare
+Go sourceSlotPlan and bindNativeFilamentSettings directly against their Rust
+implementations, including failure acceptance. Each of the five suites runs
+on 11 checked-in sample 3MF fixtures; the mapping suites also cover 20
+synthetic success/failure cases, including mixed materials and hardware-owned
+settings. Unchanged archive payloads are compared byte-for-byte, XML
+semantically and JSON structurally. Ordinary Go tests skip the differential
+checks unless `SLICEBRIDGE_RUST_PROBE` is set.
 
-**Verified:** on 13 November 2026, 21 Rust tests and all three opt-in Go
-comparisons passed across all 11 fixtures (33 cross-language fixture checks),
-on MacMiniOffice.local with Go/Rust toolchains isolated on an external volume.
-The complete Go engine test suite passed. These fixtures are **not proof of
+**Verified:** on 13 November 2026, 29 Rust tests and all five opt-in Go
+comparison suites passed, including 55 fixture checks (11 inputs per suite)
+and 20 synthetic mapping checks. That is 75 Go/Rust comparisons in total,
+on MacMiniOffice.local with isolated toolchains on an external volume.
+The complete Go engine test suite passed. These are **not proof of full
 cross-slicer conversion, print quality, or release readiness**.
 
 ## Next steps
 
 - Test more real-world 3MF sources and adverse ZIP/XML edge cases.
-- Expand differential tests with real-world multi-material project settings and
-  adverse input cases, beyond the checked-in sample fixtures.
-- Benchmark Rust versus Go only after behavior is demonstrably equivalent.
+- Expand testing against real installed vendor printer/material bundles and
+  user-permitted multi-material 3MF examples rather than synthetic presets.
+- Add actual end-to-end 3MF conversion and printer-profile resolution in
+  independently gated slices; refuse unmapped filament materials.
+- Benchmark Rust versus Go only after file-level output parity is proven.
+- Run the Windows binary on a Windows host and test generated 3MF files in
+  real slicers before considering a user-visible integration.
 - Consider Tauri 2 as a separate UI decision after compatibility testing.
 
 Do not enable this crate in the current application, remove Go/Wails, or

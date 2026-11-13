@@ -1,13 +1,33 @@
 use serde_json::{json, Value};
-use slicebridge_3mf_probe::{inspect_package, strip_slice_cache_preserving};
+use slicebridge_3mf_probe::{
+    inspect_package, map_native_material_settings, source_slot_plan, strip_slice_cache_preserving,
+};
 use std::env;
 use std::ffi::{OsStr, OsString};
+use std::fs::File;
+use std::io::Read;
 use std::path::PathBuf;
 use std::process;
 
+const MAX_JSON_INPUT_BYTES: u64 = 8 << 20;
+
 fn usage() -> String {
-    "usage: slicebridge-3mf-probe <file.3mf> | --strip-cache [--preserve KEY]... <source.3mf> <output.3mf>"
+    "usage: slicebridge-3mf-probe <file.3mf> | --strip-cache [--preserve KEY]... <source.3mf> <output.3mf> | --plan-slots <request.json> | --map-materials <request.json>"
         .to_owned()
+}
+
+fn read_request(filename: &OsStr) -> Result<Value, String> {
+    let path = PathBuf::from(filename);
+    let mut file = File::open(&path).map_err(|e| format!("request JSON cannot be opened: {e}"))?;
+    let mut contents = Vec::new();
+    file.by_ref()
+        .take(MAX_JSON_INPUT_BYTES + 1)
+        .read_to_end(&mut contents)
+        .map_err(|e| format!("request JSON read: {e}"))?;
+    if contents.len() as u64 > MAX_JSON_INPUT_BYTES {
+        return Err("request JSON exceeds 8 MB limit".to_owned());
+    }
+    serde_json::from_slice(&contents).map_err(|e| format!("request JSON invalid: {e}"))
 }
 
 fn run(args: &[OsString]) -> Result<Value, String> {
@@ -23,6 +43,16 @@ fn run(args: &[OsString]) -> Result<Value, String> {
                 }
             })
         }),
+        [flag, source] if flag == OsStr::new("--plan-slots") => {
+            let value = read_request(source)?;
+            let result = source_slot_plan(&value)?;
+            Ok(json!({"ok": true, "plan": result}))
+        }
+        [flag, source] if flag == OsStr::new("--map-materials") => {
+            let value = read_request(source)?;
+            let result = map_native_material_settings(&value)?;
+            Ok(json!({"ok": true, "project_settings": result["project_settings"]}))
+        }
         [flag, rest @ ..] if flag == OsStr::new("--strip-cache") => {
             let mut at = 0usize;
             let mut preserved = Vec::new();
