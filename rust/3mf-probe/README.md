@@ -509,6 +509,43 @@ QIDIStudio would reject them. An isolated `qidi-studio.exe --info`
 attempt returned no mesh metrics, so QIDIStudio's native import
 remains **UNVERIFIED**.
 
+### Bounded local Rust JSONL worker — persistent-process experiment
+
+The optional `--convert-archive-stdio` mode processes a **finite**
+sequence of JSON lines on stdin, each with `plan_file`, `source`
+and a new `destination`. It responds with one flushed JSON result
+per request, accepts at most 4096 requests and at most 8 MB per
+request line, does not listen on a network port, and exits on EOF.
+Every job still runs the experimental fail-closed archive converter,
+including the immutable source snapshot, source-mapping audits and
+exclusive destination creation. This mode is **not wired into the
+installed application**, daemonized or deployed to the user.
+
+The Rust `tests/stdio.rs` checks that malformed/incomplete requests
+produce independent failures and the worker exits when stdin closes.
+The Go `TestRustStdioWorkerFullArchiveParity` passes two complete
+3MF conversions through one Rust process and compares both resulting
+ZIP packages to the actual Go converter. It confirms a bad request
+does not kill the worker, a duplicate output path is refused without
+changing the file, and the source remains unmodified.
+
+On two **tiny synthetic** Bambu 3MF fixtures, end-to-end
+`-benchtime=300–350ms` optimized Release benchmarks show:
+
+| Host | Go library + sanitize | Rust new CLI process | Rust reused stdio worker |
+| --- | --- | --- | --- |
+| Windows Chris / i9-14900K | 3.55–4.16 ms | 12.28–12.37 ms | **7.07–7.22 ms** |
+| MacMiniOffice / Apple M4 | 11.01–11.57 ms | 34.97–36.08 ms | **23.68–25.04 ms** |
+
+The persistent worker avoids per-conversion process startup,
+improving Rust's own CLI time by approximately 30–42% in this
+microbenchmark, but **is still slower than the Go in-process
+baseline**. This is a controlled, opt-in boundary prototype,
+not a justification for production migration or a language
+throughput ranking. Benchmark real multi-plate and large sources,
+memory, worker restart/timeout/failure recovery, and in-process
+Rust integration before choosing a runtime architecture.
+
 ## Next steps
 
 - Expand the new full-Rust 3MF ZIP comparison against real, multi-material
