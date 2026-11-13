@@ -3,7 +3,6 @@ package presets
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -382,7 +381,7 @@ func resolveOrcaMachine(index catalog, byMachine map[string]map[string][]string,
 		return orcaCandidate{}, err
 	}
 	var leaf map[string]any
-	if err := json.Unmarshal(data, &leaf); err != nil {
+	if err := unmarshalVendorPresetJSON(data, &leaf); err != nil {
 		return orcaCandidate{}, fmt.Errorf("machine JSON is invalid")
 	}
 	if fmt.Sprint(leaf["instantiation"]) == "false" {
@@ -544,7 +543,7 @@ func readOrcaCatalog(root, vendor string) (catalog, error) {
 				return err
 			}
 			var settings map[string]any
-			if err := json.Unmarshal(data, &settings); err != nil {
+			if err := unmarshalVendorPresetJSON(data, &settings); err != nil {
 				// The path is left out so the install location never reaches the UI.
 				return fmt.Errorf("vendor JSON is invalid")
 			}
