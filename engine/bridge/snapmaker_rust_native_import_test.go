@@ -12,31 +12,45 @@ import (
 	"time"
 )
 
-// TestRustSnapmakerOrcaInstalledOEMMeshImportParity is an opt-in,
-// read-only smoke test with the actual installed Snapmaker Orca CLI.
-// It tests *mesh information only*: native CLI `--info` is not equivalent
-// to a full project preview, material assignment or machine-ready slicing.
-//
-// Expected scratch inputs are the Go/Rust OEM conversion artifacts generated
-// by TestRustFullArchiveInstalledVendorProfileParity on the authorized host.
-// Never pass a user project, touch an installed preset or emit G-code.
+// TestRustSnapmakerOrcaInstalledOEMMeshImportParity is the original opt-in
+// geometry-only native CLI gate for machine-only OEM Go/Rust 3MF packages.
+// It is not a material/tool preview or proof of a print-ready project.
 func TestRustSnapmakerOrcaInstalledOEMMeshImportParity(t *testing.T) {
+	testNativeSnapmakerOrcaOEMGeometry(t, "SLICEBRIDGE_SLICER_OUTPUT_DIR", "oem")
+}
+
+// TestRustSnapmakerOrcaMaterialBoundOEMMeshImportParity adds a second native
+// gate over Go's *production material-bound* OEM output and the semantically
+// equivalent Rust ZIP. Unlike the machine-only files above, these projects
+// include the installed target's material profile IDs and temperature/flow
+// fields. The native CLI still validates mesh import only; material/tool
+// assignment requires a separate GUI preview gate.
+func TestRustSnapmakerOrcaMaterialBoundOEMMeshImportParity(t *testing.T) {
+	testNativeSnapmakerOrcaOEMGeometry(t, "SLICEBRIDGE_BOUND_OEM_OUTPUT_DIR", "bound")
+}
+
+func testNativeSnapmakerOrcaOEMGeometry(t *testing.T, directoryEnv, prefix string) {
+	t.Helper()
 	slicer := os.Getenv("SLICEBRIDGE_NATIVE_SNAPMAKER_EXE")
-	scratch := os.Getenv("SLICEBRIDGE_SLICER_OUTPUT_DIR")
+	scratch := os.Getenv(directoryEnv)
 	if slicer == "" || scratch == "" {
-		t.Skip("set exact installed Snapmaker Orca executable and explicit OEM scratch 3MF directory")
+		t.Skipf("set installed Snapmaker Orca executable and %s to generated scratch 3MF outputs", directoryEnv)
 	}
 	info, err := os.Stat(slicer)
 	if err != nil || !info.Mode().IsRegular() {
 		t.Fatalf("Snapmaker Orca CLI not a regular installed file: %q: %v", slicer, err)
 	}
-	dir := t.TempDir()
+	info, err = os.Stat(scratch)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("%s must point at an existing scratch output folder: %v", directoryEnv, err)
+	}
+	isolated := t.TempDir()
 	env := append(os.Environ(),
-		"APPDATA="+filepath.Join(dir, "appdata"),
-		"LOCALAPPDATA="+filepath.Join(dir, "localappdata"),
+		"APPDATA="+filepath.Join(isolated, "appdata"),
+		"LOCALAPPDATA="+filepath.Join(isolated, "localappdata"),
 	)
 	for _, folder := range []string{"appdata", "localappdata"} {
-		if err := os.MkdirAll(filepath.Join(dir, folder), 0700); err != nil {
+		if err := os.MkdirAll(filepath.Join(isolated, folder), 0700); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -44,7 +58,7 @@ func TestRustSnapmakerOrcaInstalledOEMMeshImportParity(t *testing.T) {
 		t.Run(model, func(t *testing.T) {
 			var imported []map[string]string
 			for _, engine := range []string{"go", "rust"} {
-				name := fmt.Sprintf("oem-%s-u1-%s", engine, model)
+				name := fmt.Sprintf("%s-%s-u1-%s", prefix, engine, model)
 				source := filepath.Join(scratch, name)
 				raw, err := os.ReadFile(source)
 				if err != nil {
@@ -54,7 +68,7 @@ func TestRustSnapmakerOrcaInstalledOEMMeshImportParity(t *testing.T) {
 					t.Fatalf("unsafe scratch 3MF size for %s", name)
 				}
 				before := sha256.Sum256(raw)
-				private := filepath.Join(dir, fmt.Sprintf("native-%s-%s", engine, model))
+				private := filepath.Join(isolated, fmt.Sprintf("native-%s-%s", engine, model))
 				if err := os.MkdirAll(private, 0700); err != nil {
 					t.Fatal(err)
 				}
@@ -76,12 +90,11 @@ func TestRustSnapmakerOrcaInstalledOEMMeshImportParity(t *testing.T) {
 					metrics["size_y"] == "" || metrics["volume"] == "" {
 					t.Fatalf("%s no native mesh metrics (command=%v): %s", name, runErr, output)
 				}
-				// Native --info may log historical plate parsing warnings.
-				// A nonzero exit still means the app has not accepted the
-				// package as a usable project, even if it reports geometry.
+				// The CLI may emit project plate/XML parser warnings while
+				// still returning successful mesh information. Even exit 0
+				// is not proof of material/tool-preview readiness.
 				if runErr != nil {
-					t.Fatalf("%s native --info exited with %v despite mesh metrics: %s",
-						name, runErr, output)
+					t.Fatalf("%s native --info failed despite mesh metrics: %v %s", name, runErr, output)
 				}
 				after, err := os.ReadFile(source)
 				if err != nil || sha256.Sum256(after) != before {
@@ -92,7 +105,7 @@ func TestRustSnapmakerOrcaInstalledOEMMeshImportParity(t *testing.T) {
 			if !reflect.DeepEqual(imported[0], imported[1]) {
 				t.Fatalf("native Snapmaker mesh metrics Go/Rust mismatch: Go=%v Rust=%v", imported[0], imported[1])
 			}
-			t.Logf("Snapmaker Orca --info accepted Go/Rust OEM %s mesh with equivalent size/facet/volume; native material/tool preview NOT validated", model)
+			t.Logf("Snapmaker Orca %s --info matched Go/Rust %s geometry; native tool/material preview NOT validated", prefix, model)
 		})
 	}
 }
