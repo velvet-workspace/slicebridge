@@ -128,6 +128,7 @@ pub fn map_native_material_settings(input: &Value) -> Result<Value, String> {
     }
     let mut chosen_presets: Vec<&Map<String, Value>> = Vec::with_capacity(input_filaments.len());
     let mut names: Vec<&str> = Vec::with_capacity(input_filaments.len());
+    let mut native_profile_ids: Vec<&str> = Vec::with_capacity(input_filaments.len());
     for filament in input_filaments {
         let material = material_type(filament)?;
         let profile_name = profiles.get(material).and_then(Value::as_str).unwrap_or("");
@@ -142,6 +143,7 @@ pub fn map_native_material_settings(input: &Value) -> Result<Value, String> {
             ));
         }
         names.push(material.trim());
+        native_profile_ids.push(profile_name);
         chosen_presets.push(preset);
     }
 
@@ -161,6 +163,13 @@ pub fn map_native_material_settings(input: &Value) -> Result<Value, String> {
     }
 
     for key in keys {
+        // Native target resolution supplies one verified material preset name
+        // per material type. Some installed vendor filament JSON snapshots
+        // omit filament_settings_id or store an empty placeholder. The
+        // profile mapping, not a guessed PLA default, owns this value.
+        if key == "filament_settings_id" {
+            continue;
+        }
         if HARDWARE_OWNED_KEYS.contains(&key) {
             continue;
         }
@@ -185,6 +194,15 @@ pub fn map_native_material_settings(input: &Value) -> Result<Value, String> {
             settings.insert(key.to_owned(), Value::Array(values));
         }
     }
+    settings.insert(
+        "filament_settings_id".to_owned(),
+        Value::Array(
+            native_profile_ids
+                .into_iter()
+                .map(|name| Value::String(name.to_owned()))
+                .collect(),
+        ),
+    );
     // Match Go: filament_type always comes from the source's ordered slots.
     settings.insert(
         "filament_type".to_owned(),
@@ -286,6 +304,50 @@ mod tests {
         );
         assert_eq!(settings["machine_start_gcode"], "G28");
         assert!(settings.get("cooling_fan").is_none());
+    }
+
+    #[test]
+    fn native_filament_profile_id_comes_from_verified_map_when_preset_omits_id() {
+        let mut req = json!({
+            "bundle": {
+                "target": "u1",
+                "profile": {
+                    "filament_slots": 4,
+                    "filament_profiles": {"PLA": "Verified U1 PLA", "PETG": "Verified U1 PETG"},
+                    "project_settings": {"nozzle_diameter": ["0.4", "0.4", "0.4", "0.4"]}
+                },
+                "material_settings": {
+                    "PLA": {
+                        "filament_settings_id": [""],
+                        "nozzle_temperature": ["210"]
+                    },
+                    "PETG": {"nozzle_temperature": ["245"]}
+                }
+            },
+            "filaments": [
+                {"id": 1, "type": "PLA"},
+                {"id": 2, "type": "PETG"}
+            ]
+        });
+        let result = map_native_material_settings(&req).unwrap();
+        assert_eq!(
+            result["project_settings"]["filament_settings_id"],
+            json!(["Verified U1 PLA", "Verified U1 PETG"])
+        );
+        assert_eq!(
+            result["project_settings"]["nozzle_temperature"],
+            json!(["210", "245"])
+        );
+        assert!(req["bundle"]["material_settings"]["PETG"]
+            .get("filament_settings_id")
+            .is_none());
+        req["bundle"]["profile"]["filament_profiles"]
+            .as_object_mut()
+            .unwrap()
+            .remove("PETG");
+        assert!(map_native_material_settings(&req)
+            .unwrap_err()
+            .contains("no installed"));
     }
 
     #[test]

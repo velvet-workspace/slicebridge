@@ -187,6 +187,12 @@ func TestRustNativeMaterialMappingParity(t *testing.T) {
 		{"identical_materials_stay_separate", []converter.Filament{
 			{ID: 1, Type: "PLA"}, {ID: 2, Type: "PLA"}, {ID: 3, Type: "PETG"},
 		}, nil},
+		{"installed_name_map_recovers_blank_or_missing_filament_settings_id", []converter.Filament{
+			{ID: 1, Type: "PLA"}, {ID: 2, Type: "PETG"},
+		}, func(bundle *targetBundle) {
+			bundle.MaterialSettings["PLA"]["filament_settings_id"] = []any{""}
+			delete(bundle.MaterialSettings["PETG"], "filament_settings_id")
+		}},
 		{"hardware_keys_owned_by_machine", []converter.Filament{
 			{ID: 1, Type: "PLA"}, {ID: 2, Type: "PETG"},
 		}, func(bundle *targetBundle) {
