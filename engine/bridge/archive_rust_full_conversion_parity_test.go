@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -163,7 +164,42 @@ func TestRustFullArchiveExperimentalParity(t *testing.T) {
 			if err != nil || !bytes.Equal(beforeDest, afterDest) {
 				t.Fatal("existing converted output mutated")
 			}
+			// Explicitly opt in to durable *scratch-only* artifacts for
+			// inspection by a native slicer. Never overwrite a prior result.
+			if outputDir := os.Getenv("SLICEBRIDGE_SLICER_OUTPUT_DIR"); outputDir != "" {
+				if stat, err := os.Stat(outputDir); err != nil || !stat.IsDir() {
+					t.Fatalf("slicer output directory does not exist: %q: %v", outputDir, err)
+				}
+				suffix := fmt.Sprintf("%d-to-%d-support-%t", tc.source, tc.target, tc.supports)
+				for _, pair := range [][2]string{
+					{source, "source-" + suffix + ".3mf"},
+					{goFinal, "go-" + suffix + ".3mf"},
+					{rustFinal, "rust-" + suffix + ".3mf"},
+				} {
+					exportSlicerFixtureNoOverwrite(t, pair[0], filepath.Join(outputDir, pair[1]))
+				}
+			}
 		})
+	}
+}
+
+func exportSlicerFixtureNoOverwrite(t *testing.T, source, destination string) {
+	t.Helper()
+	input, err := os.Open(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer input.Close()
+	output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		t.Fatalf("cannot safely write scratch slicer fixture %s: %v", destination, err)
+	}
+	defer output.Close()
+	if _, err := io.Copy(output, input); err != nil {
+		t.Fatal(err)
+	}
+	if err := output.Sync(); err != nil {
+		t.Fatal(err)
 	}
 }
 
