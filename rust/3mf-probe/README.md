@@ -263,6 +263,38 @@ all 855 remaps. The rewritten triangle XML was separately parsed and compared
 against the Go paint codec's output. The standalone XML commands **do not
 rewrite the ZIP archive or create printable files**.
 
+## Native slicer import smoke check (PrusaSlicer, opt in)
+
+The `TestRustFullArchiveExperimentalParity` differential test optionally
+exports its six source/Go/Rust triplets (18 3MF files) to a **new, existing
+scratch directory** when `SLICEBRIDGE_SLICER_OUTPUT_DIR` is set. It uses
+exclusive creation and refuses to overwrite prior artifacts. By default
+the files remain inside the disposable Go test directories.
+
+On Windows Chris, **PrusaSlicer 2.9.6** was invoked with `--info --datadir`
+against an isolated test-only data directory. It imported **all 18**
+packages successfully. The six sets of input/Go/Rust models had identical
+geometry statistics as reported by PrusaSlicer: dimensions, bounding box,
+mesh facets, part count, manifold status and reported volume. All input
+SHA-256 digests were unchanged. There was no G-code slicing, network
+printer access, installed application change or user-preset modification.
+
+The reproducible opt-in `TestRustNativeSlicerImportParity` runs the same
+read-only import against saved scratch output pairs and automatically
+compares full geometry stats. Set `SLICEBRIDGE_NATIVE_SLICER_EXE` to the
+installed `prusa-slicer.exe` executable and point
+`SLICEBRIDGE_SLICER_OUTPUT_DIR` to the 18 scratch files, then run the
+Go bridge test. The test gives the native CLI a fresh isolated
+`--datadir` directory.
+
+**Important limitation:** these small synthetic QA meshes are not manifold
+and have zero reported signed volume in the differential set. PrusaSlicer's
+ability to read them does **not** prove printability or compatibility of
+Bambu/Orca metadata, vendor-specific material profiles, multi-extruder
+tool assignment, supports, tool changes or slicer preview. OrcaSlicer,
+Bambu Studio, QIDI Studio and Snapmaker Orca were found installed but
+have not yet passed an independent native import equivalence test.
+
 ## Next steps
 
 - Expand the new full-Rust 3MF ZIP comparison against real, multi-material
