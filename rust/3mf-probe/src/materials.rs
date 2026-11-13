@@ -54,6 +54,11 @@ pub fn source_slot_plan(input: &Value) -> Result<Value, String> {
         if id <= 0 {
             return Err(format!("invalid source filament ID {id}"));
         }
+        // Go allocates the ID mapping before checking this filament's color
+        // and material. Match its duplicate-ID error precedence exactly.
+        if mapping.insert(id.to_string(), slots.len() + 1).is_some() {
+            return Err(format!("duplicate source filament ID {id}"));
+        }
         let color = filament
             .get("color")
             .and_then(Value::as_str)
@@ -61,9 +66,6 @@ pub fn source_slot_plan(input: &Value) -> Result<Value, String> {
         let material = material_type(filament)?;
         if color.is_empty() || material.is_empty() {
             return Err(format!("missing source color/material in filament {id}"));
-        }
-        if mapping.insert(id.to_string(), slots.len() + 1).is_some() {
-            return Err(format!("duplicate source filament ID {id}"));
         }
         // Go's converter.Slot serializes Support=false with omitempty.
         let slot = if is_support_type(material) {
@@ -228,6 +230,13 @@ mod tests {
         assert!(source_slot_plan(&missing)
             .unwrap_err()
             .contains("missing source"));
+        let duplicate_with_missing_color = json!({"filaments": [
+            {"id": 1, "color": "#FFFFFF", "type": "PLA"},
+            {"id": 1, "color": "", "type": "PETG"}
+        ]});
+        assert!(source_slot_plan(&duplicate_with_missing_color)
+            .unwrap_err()
+            .contains("duplicate source filament ID"));
         assert!(source_slot_plan(&json!({"filaments": []})).is_err());
     }
 

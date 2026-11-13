@@ -109,6 +109,12 @@ func TestRustSourceSlotPlanParity(t *testing.T) {
 			{ID: 9, Color: "#CC0000", Type: "PETG"},
 			{ID: 11, Color: "#000000", Type: "PLA breakaway"},
 		}},
+		{"support_edge_cases", []converter.Filament{
+			{ID: 1, Color: "#000000", Type: " pVa "},
+			{ID: 2, Color: "#111111", Type: "Support for PLA"},
+			{ID: 3, Color: "#222222", Type: "HIPS"},
+			{ID: 4, Color: "#333333", Type: "PLA"},
+		}},
 		{"out_of_order_ids", []converter.Filament{
 			{ID: 40, Color: "#FFFFFF", Type: "ABS"},
 			{ID: 1, Color: "#111111", Type: "PETG"},
@@ -118,6 +124,10 @@ func TestRustSourceSlotPlanParity(t *testing.T) {
 		{"duplicate", []converter.Filament{
 			{ID: 1, Color: "#111111", Type: "PLA"},
 			{ID: 1, Color: "#222222", Type: "PETG"},
+		}},
+		{"duplicate_before_missing_color", []converter.Filament{
+			{ID: 1, Color: "#111111", Type: "PLA"},
+			{ID: 1, Color: "", Type: "PETG"},
 		}},
 		{"invalid_id", []converter.Filament{{ID: 0, Color: "#111111", Type: "PLA"}}},
 		{"missing_color", []converter.Filament{{ID: 1, Color: "", Type: "PLA"}}},
@@ -193,6 +203,12 @@ func TestRustNativeMaterialMappingParity(t *testing.T) {
 			{ID: 1, Type: "PLA"}, {ID: 2, Type: "PETG"},
 		}, func(bundle *targetBundle) {
 			delete(bundle.MaterialSettings["PETG"], "filament_flow_ratio")
+		}},
+		{"whitespace_material_key_preserved_then_trimmed_in_output", []converter.Filament{
+			{ID: 1, Type: " PLA "},
+		}, func(bundle *targetBundle) {
+			bundle.Profile.FilamentProfiles[" PLA "] = "Native PLA With Whitespace"
+			bundle.MaterialSettings[" PLA "] = bundle.MaterialSettings["PLA"]
 		}},
 		{"unknown_material", []converter.Filament{{ID: 1, Type: "PLA-CF"}}, nil},
 		{"missing_installed_material_profile", []converter.Filament{{ID: 1, Type: "ABS"}}, func(bundle *targetBundle) {

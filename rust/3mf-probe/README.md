@@ -114,18 +114,54 @@ settings. Unchanged archive payloads are compared byte-for-byte, XML
 semantically and JSON structurally. Ordinary Go tests skip the differential
 checks unless `SLICEBRIDGE_RUST_PROBE` is set.
 
-**Verified:** on 13 November 2026, 29 Rust tests and all five opt-in Go
-comparison suites passed, including 55 fixture checks (11 inputs per suite)
-and 20 synthetic mapping checks. That is 75 Go/Rust comparisons in total,
-on MacMiniOffice.local with isolated toolchains on an external volume.
-The complete Go engine test suite passed. These are **not proof of full
+**Verified:** on 13 November 2026, 29 Rust tests, Rust formatting/lint
+checks, and the complete Go engine suite passed. Go/Rust tests covered 55
+archive/filament fixture comparisons (11 inputs across five suites),
+23 synthetic slot/material mapping cases and five additional integration
+checks below: 83 differential cases in total, on MacMiniOffice.local with
+isolated toolchains on an external volume. These are **not proof of full
 cross-slicer conversion, print quality, or release readiness**.
+
+## Testing against Go-converted 3MF outputs and real installed material values
+
+The opt-in `TestRustSanitizeConverted3MFParity` tests a separate, user-safe
+path: the real Go upstream converter creates Bambu-to-U1 3MF output with
+1, 4 and 6 virtual material slots, after which the experimental Rust tool
+performs *only* cache sanitation and preserved process-setting updates.
+Each resulting full ZIP is compared against the actual production Go output,
+retained parts and metadata are checked, and all cached G-code must be absent.
+All **3** cases passed. The production Go converter still owns every other
+conversion stage; Rust is not an independent full converter yet.
+
+`TestRustInstalledPresetSnapshotParity` accepts an optional directory of
+JSON snapshots with `bundle`, `filaments`, `expect_accept` and
+`provenance` fields. Supply `SLICEBRIDGE_NATIVE_MATERIAL_SNAPSHOT_DIR`
+alongside `SLICEBRIDGE_RUST_PROBE` when running Go tests. On Chris's Windows
+PC, selected parameters and SHA-256 hashes were read from **four real OrcaSlicer
+Qidi X-Plus 5 filament preset files**; the user and installed files were not
+modified. A scratch-only local snapshot was assembled on MacMiniOffice.local,
+with a deliberately synthetic machine baseline. One scenario with complete
+selected material fields passed Go/Rust mapping, and one scenario where raw
+Generic PLA omitted a flow ratio was rejected by both. These **2** comparisons
+passed. The raw vendor preset inheritance has *not* been flattened or fully
+validated; this is real material-value evidence, **not** verified printer
+compatibility. The scratch snapshots are **not checked into Git**.
+
+A bounded **read-only independent Claude review** raised edge cases around
+support-filament recognition, whitespace in material names and duplicate-ID
+error ordering. These were checked against Go source: support classification
+and material-name trimming already matched; added Go/Rust regression inputs
+for both, and reordered the Rust duplicate-ID error to match Go. The Rust
+material mapper retains a deliberate 64-slot input limit, unlike an isolated
+Go binder called directly with an oversized, synthetic installed profile;
+the real Go conversion plan separately enforces the same 64-slot bound.
 
 ## Next steps
 
 - Test more real-world 3MF sources and adverse ZIP/XML edge cases.
-- Expand testing against real installed vendor printer/material bundles and
-  user-permitted multi-material 3MF examples rather than synthetic presets.
+- Validate complete, inheritance-flattened installed vendor machine/material
+  bundles and user-permitted multi-material 3MF examples. Selected raw material
+  values alone are not a verified installed-target profile.
 - Add actual end-to-end 3MF conversion and printer-profile resolution in
   independently gated slices; refuse unmapped filament materials.
 - Benchmark Rust versus Go only after file-level output parity is proven.
