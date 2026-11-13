@@ -185,29 +185,64 @@ func TestRustNativeSlicerPinnedCorpusParity(t *testing.T) {
 			paths = append(paths, filename)
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
-	args := append([]string{"--info", "--datadir", t.TempDir()}, paths...)
-	stdout, runErr := exec.CommandContext(ctx, slicer, args...).CombinedOutput()
-	if ctx.Err() != nil {
-		t.Fatalf("native slicer pinned corpus timed out: %v", ctx.Err())
+	// Some pinned Bambu test fixtures intentionally have no valid mesh for
+	// PrusaSlicer. Import each source, Go output and Rust output independently:
+	// every member of a triplet must share the same acceptance/rejection
+	// outcome; accepted files must additionally have identical geometry.
+	metrics := make(map[string]map[string]string)
+	invalidMesh := make(map[string]bool)
+	for _, filename := range paths {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		stdout, runErr := exec.CommandContext(ctx, slicer,
+			"--info", "--datadir", t.TempDir(), filename).CombinedOutput()
+		timedOut := ctx.Err()
+		cancel()
+		if timedOut != nil {
+			t.Fatalf("native slicer timed out for %s: %v", filename, timedOut)
+		}
+		name := filepath.Base(filename)
+		if runErr != nil {
+			// The exact native class is essential: don't accidentally treat
+			// missing files or runtime crashes as an expected invalid mesh.
+			if !strings.Contains(string(stdout), "does not contain a valid mesh") {
+				t.Fatalf("unexpected native slicer error for %s: %v\n%s", name, runErr, stdout)
+			}
+			invalidMesh[name] = true
+			continue
+		}
+		parsed, parseErr := parsePrusaSlicerInfo(stdout)
+		if parseErr != nil || len(parsed) != 1 {
+			t.Fatalf("native slicer returned unreadable metrics for %s: %v %s", name, parseErr, stdout)
+		}
+		measured, ok := parsed[name]
+		if !ok || measured["size_x"] == "" || measured["number_of_facets"] == "" ||
+			measured["volume"] == "" {
+			t.Fatalf("native slicer failed to parse valid mesh metrics for %s: %v", name, parsed)
+		}
+		metrics[name] = measured
 	}
-	if runErr != nil {
-		t.Fatalf("native slicer rejected pinned corpus: %v\n%s", runErr, stdout)
-	}
-	metrics, err := parsePrusaSlicerInfo(stdout)
-	if err != nil || len(metrics) != len(paths) {
-		t.Fatalf("native slicer parsed %d/%d pinned outputs: %v\n%s", len(metrics), len(paths), err, stdout)
-	}
+	accepted, rejected := 0, 0
 	for _, sourcePath := range baseNames {
 		base := strings.TrimPrefix(filepath.Base(sourcePath), "pinned-source-")
-		src, goModel, rustModel := metrics["pinned-source-"+base], metrics["pinned-go-"+base], metrics["pinned-rust-"+base]
+		sourceName, goName, rustName := "pinned-source-"+base, "pinned-go-"+base, "pinned-rust-"+base
+		if invalidMesh[sourceName] != invalidMesh[goName] ||
+			invalidMesh[goName] != invalidMesh[rustName] {
+			t.Fatalf("native slicer acceptance differs for %s: source=%t Go=%t Rust=%t",
+				base, !invalidMesh[sourceName], !invalidMesh[goName], !invalidMesh[rustName])
+		}
+		if invalidMesh[sourceName] {
+			rejected++
+			t.Logf("%s: source, Go and Rust consistently rejected as invalid mesh", base)
+			continue
+		}
+		src, goModel, rustModel := metrics[sourceName], metrics[goName], metrics[rustName]
 		if !reflect.DeepEqual(src, goModel) || !reflect.DeepEqual(goModel, rustModel) {
 			t.Fatalf("pinned %s differs after native slicer import: source=%v Go=%v Rust=%v", base, src, goModel, rustModel)
 		}
-		if src["size_x"] == "" || src["number_of_facets"] == "" || src["volume"] == "" {
-			t.Fatalf("missing native slicer geometry metrics for %s: %v", base, src)
-		}
+		accepted++
+	}
+	if accepted == 0 {
+		t.Fatal("native slicer did not import any pinned source, Go or Rust project")
 	}
 	for name, sum := range digests {
 		content, err := os.ReadFile(filepath.Join(scratch, name))
@@ -215,5 +250,5 @@ func TestRustNativeSlicerPinnedCorpusParity(t *testing.T) {
 			t.Fatalf("native slicer unexpectedly modified %s: %v", name, err)
 		}
 	}
-	t.Logf("native PrusaSlicer import: %d independent pinned Bambu 3MF triplets matched exactly in geometry", len(baseNames))
+	t.Logf("native PrusaSlicer outcomes: %d valid-mesh triplets match in geometry; %d invalid-mesh triplets consistently rejected by all three", accepted, rejected)
 }

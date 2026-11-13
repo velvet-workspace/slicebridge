@@ -287,6 +287,33 @@ installed `prusa-slicer.exe` executable and point
 Go bridge test. The test gives the native CLI a fresh isolated
 `--datadir` directory.
 
+### Pinned-source corpus and native-mesh outcome parity
+
+A second opt-in suite, `TestRustPinnedBambuArchiveConversionParity`, converts
+**all eleven** checked-in Bambu-style fixture 3MF archives using the new
+standalone Rust ZIP pipeline and actual Go conversion, then checks every
+archive member for semantic parity and source immutability. It optionally
+exports an additional 33 files into the same *exclusive, scratch-only*
+`SLICEBRIDGE_SLICER_OUTPUT_DIR` directory under `pinned-` names.
+
+An isolated Windows PrusaSlicer CLI check opened **33 source/Go/Rust 3MF
+files individually** and found consistent native outcomes for every trio:
+**seven pinned sources imported successfully** with identical mesh metrics
+after both conversions, while **four pinned sources** returned
+"The 3MF file does not contain a valid mesh" *before conversion* and
+both corresponding Go and Rust converted files returned the same error.
+The reproducible `TestRustNativeSlicerPinnedCorpusParity` distinguishes
+an expected source-invalid rejection from a new conversion regression:
+a mismatch of accepted/rejected status fails the test, and successful
+imports must match all reported geometry metrics. A bad original mesh is
+never counted as a successful native import.
+
+PrusaSlicer's separate `--export-stl` action exported the full-Go and
+full-Rust output of each of the six synthetic conversion cases into
+isolated scratch files. Every Go/Rust STL pair matched in SHA-256.
+These six conversion cases share a tiny, nonmanifold synthetic mesh, so
+the equal STL hashes cannot demonstrate varied real-model geometry QA.
+
 **Important limitation:** these small synthetic QA meshes are not manifold
 and have zero reported signed volume in the differential set. PrusaSlicer's
 ability to read them does **not** prove printability or compatibility of
