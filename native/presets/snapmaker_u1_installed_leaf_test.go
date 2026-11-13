@@ -28,9 +28,27 @@ func TestInstalledU1PETG04LeafProfile(t *testing.T) {
 	}
 	if bundle.Target != "u1" || bundle.Nozzle != "0.4" ||
 		bundle.Profile.ModelID != "Snapmaker U1" ||
-		bundle.Profile.FilamentProfiles["PETG"] != "Generic PETG" {
-		t.Fatalf("did not select exact OEM U1 PETG 0.4 leaf: target=%s nozzle=%s model=%s preset=%s",
-			bundle.Target, bundle.Nozzle, bundle.Profile.ModelID, bundle.Profile.FilamentProfiles["PETG"])
+		bundle.Profile.FilamentProfiles["PETG"] != "Generic PETG" ||
+		bundle.Profile.FilamentProfiles["PLA"] != "Generic PLA High Speed" {
+		t.Fatalf("did not resolve exact installed U1 PLA/PETG 0.4mm OEM leaves: target=%s nozzle=%s model=%s PLA=%s PETG=%s",
+			bundle.Target, bundle.Nozzle, bundle.Profile.ModelID,
+			bundle.Profile.FilamentProfiles["PLA"], bundle.Profile.FilamentProfiles["PETG"])
+	}
+	for material, expected := range map[string][4]float64{
+		"PLA":  {190, 240, 0.98, 18},
+		"PETG": {230, 270, 0.95, 12},
+	} {
+		params := bundle.MaterialSettings[material]
+		for i, key := range []string{"nozzle_temperature_range_low", "nozzle_temperature_range_high", "filament_flow_ratio", "filament_max_volumetric_speed"} {
+			raw, ok := params[key].([]any)
+			if !ok || len(raw) != 1 {
+				t.Fatalf("%s OEM key %s missing/ambiguous: %v", material, key, params[key])
+			}
+			value, err := strconv.ParseFloat(fmt.Sprint(raw[0]), 64)
+			if err != nil || value != expected[i] {
+				t.Fatalf("unexpected %s OEM %s=%v (expected %v)", material, key, raw, expected[i])
+			}
+		}
 	}
 	petg := bundle.MaterialSettings["PETG"]
 	if len(petg) == 0 {

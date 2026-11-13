@@ -265,16 +265,25 @@ func Load(target, sourceNozzle string) (*Bundle, error) {
 	return LoadConfigured(target, sourceNozzle, "auto", nil)
 }
 
-// installedU1PETG04Leaf selects only a fully verified installed OEM 0.4 mm
-// Snapmaker U1 PETG *leaf*, not the abstract @U1 base. The upstream
-// manufacturer data declares a compatible "Generic PETG" leaf with its
-// own nozzle-temperature lower bound; the inherited base has only an upper
-// bound and cannot safely be combined with another material.
-func installedU1PETG04Leaf(index catalog, machineName string) string {
-	const leafName = "Generic PETG"
+// installedU104MaterialLeaf selects only manufacturer-authored
+// Snapmaker U1 0.4mm-compatible *leaf* profiles with verified inheritance,
+// exact printer identity, complete nozzle temperature bounds and material
+// limits. The previously selected @U1 base presets omit distinct critical
+// settings, so cross-material 3MF conversion must never copy PLA defaults
+// to PETG or assume another physical nozzle's constraints.
+func installedU104MaterialLeaf(index catalog, machineName, materialType string) string {
+	var leafName, inheritedBase string
+	switch materialType {
+	case "PLA":
+		leafName, inheritedBase = "Generic PLA High Speed", "Generic PLA High Speed @U1 base"
+	case "PETG":
+		leafName, inheritedBase = "Generic PETG", "Generic PETG @U1 base"
+	default:
+		return ""
+	}
 	for _, entry := range index["filament:"+leafName] {
 		if filepath.Base(entry.file) != leafName+".json" ||
-			entry.settings["inherits"] != "Generic PETG @U1 base" {
+			entry.settings["inherits"] != inheritedBase {
 			continue
 		}
 		compatible, ok := entry.settings["compatible_printers"].([]any)
@@ -295,18 +304,28 @@ func installedU1PETG04Leaf(index catalog, machineName string) string {
 		if err != nil {
 			continue
 		}
-		material, ok := flattened["filament_type"].([]any)
-		if !ok || len(material) != 1 || fmt.Sprint(material[0]) != "PETG" {
+		materials, ok := flattened["filament_type"].([]any)
+		if !ok || len(materials) != 1 || fmt.Sprint(materials[0]) != materialType {
 			continue
 		}
-		lower, lowOK := flattened["nozzle_temperature_range_low"].([]any)
-		upper, highOK := flattened["nozzle_temperature_range_high"].([]any)
-		if !lowOK || !highOK || len(lower) != 1 || len(upper) != 1 {
-			continue
+		numeric := func(key string) (float64, bool) {
+			items, ok := flattened[key].([]any)
+			if !ok || len(items) != 1 {
+				return 0, false
+			}
+			number, err := strconv.ParseFloat(fmt.Sprint(items[0]), 64)
+			// Positive finite values only, never manufacturer-unverified
+			// placeholders, zeroes, infinities or negative limits.
+			return number, err == nil && number > 0 && number < 1000
 		}
-		low, lowErr := strconv.ParseFloat(fmt.Sprint(lower[0]), 64)
-		high, highErr := strconv.ParseFloat(fmt.Sprint(upper[0]), 64)
-		if lowErr != nil || highErr != nil || !(low > 0 && high > low && high <= 450) {
+		low, okLow := numeric("nozzle_temperature_range_low")
+		high, okHigh := numeric("nozzle_temperature_range_high")
+		temp, okTemp := numeric("nozzle_temperature")
+		flow, okFlow := numeric("filament_flow_ratio")
+		volume, okVolume := numeric("filament_max_volumetric_speed")
+		if !okLow || !okHigh || !okTemp || !okFlow || !okVolume ||
+			low >= high || high > 450 || temp < low || temp > high ||
+			flow > 2.0 || volume > 100 {
 			continue
 		}
 		return leafName
@@ -379,11 +398,11 @@ func LoadConfigured(target, sourceNozzle, slicerID string, overrides map[string]
 		override := overrides[m]
 		if override != "" {
 			name = override
-		} else if target == "u1" && nozzle == "0.4" && m == "PETG" {
-			// Use the installed OEM's exact 0.4-mm-compatible leaf only
-			// when its provenance, inherited type and full temperature
-			// range were independently checked. Never rewrite user presets.
-			if validated := installedU1PETG04Leaf(index, machineName); validated != "" {
+		} else if target == "u1" && nozzle == "0.4" && (m == "PLA" || m == "PETG") {
+			// Both installed OEM 0.4mm leaf profiles carry the material's
+			// distinct native temperature, flow and speed limits. Do not
+			// bind an abstract base which omitted those safety keys.
+			if validated := installedU104MaterialLeaf(index, machineName, m); validated != "" {
 				name = validated
 			}
 		}
