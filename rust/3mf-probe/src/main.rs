@@ -8,14 +8,14 @@ use std::collections::BTreeMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
-use std::io::Read;
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 use std::process;
 
 const MAX_JSON_INPUT_BYTES: u64 = 8 << 20;
 
 fn usage() -> String {
-    "usage: slicebridge-3mf-probe <file.3mf> | --strip-cache [--preserve KEY]... <source.3mf> <output.3mf> | --plan-slots <request.json> | --map-materials <request.json> | --remap-paint <request.json> | --remap-model <request.json> | --rewrite-model-settings <request.json> | --compose-project-settings <request.json> | --rewrite-slice-info <request.json> | --convert-archive <plan.json> <source.3mf> <output.3mf>"
+    "usage: slicebridge-3mf-probe <file.3mf> | --strip-cache [--preserve KEY]... <source.3mf> <output.3mf> | --plan-slots <request.json> | --map-materials <request.json> | --remap-paint <request.json> | --remap-model <request.json> | --rewrite-model-settings <request.json> | --compose-project-settings <request.json> | --rewrite-slice-info <request.json> | --convert-archive <plan.json> <source.3mf> <output.3mf> | --convert-archive-stdio"
         .to_owned()
 }
 
@@ -23,7 +23,7 @@ fn read_request(filename: &OsStr) -> Result<Value, String> {
     let path = PathBuf::from(filename);
     let mut file = File::open(&path).map_err(|e| format!("request JSON cannot be opened: {e}"))?;
     let mut contents = Vec::new();
-    file.by_ref()
+    Read::by_ref(&mut file)
         .take(MAX_JSON_INPUT_BYTES + 1)
         .read_to_end(&mut contents)
         .map_err(|e| format!("request JSON read: {e}"))?;
@@ -225,8 +225,72 @@ fn run(args: &[OsString]) -> Result<Value, String> {
     }
 }
 
+// Opt-in, finite JSONL transport for local *experimental* conversion QA.
+// One process can process multiple independent requests without repeated
+// operating-system startup cost. No network listener, daemon, printer command
+// or installed-profile lookup is created. It exits cleanly on stdin EOF.
+fn convert_archive_stdio(request: &Value) -> Result<Value, String> {
+    let field = |name: &str| -> Result<&str, String> {
+        request
+            .get(name)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty() && s.len() <= 4096)
+            .ok_or_else(|| format!("{name} must be a bounded nonempty path"))
+    };
+    let plan = read_request(OsStr::new(field("plan_file")?))?;
+    let source = PathBuf::from(field("source")?);
+    let destination = PathBuf::from(field("destination")?);
+    let removed = convert_archive_experimental(source, destination, &plan)?;
+    Ok(json!({"ok":true,"removed":removed,"experimental":true}))
+}
+
+fn run_stdio() -> Result<(), String> {
+    const MAX_REQUESTS: usize = 4096;
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let mut reader = BufReader::new(stdin.lock());
+    let mut writer = BufWriter::new(stdout.lock());
+    for _ in 0..MAX_REQUESTS {
+        let mut line = Vec::new();
+        let count = (&mut reader)
+            .take(MAX_JSON_INPUT_BYTES + 2)
+            .read_until(b'\n', &mut line)
+            .map_err(|e| format!("stdio request read: {e}"))?;
+        if count == 0 {
+            return Ok(());
+        }
+        if line.len() as u64 > MAX_JSON_INPUT_BYTES {
+            writer
+                .write_all(b"{\"ok\":false,\"error\":\"stdio request exceeds 8 MB limit\"}\n")
+                .map_err(|e| e.to_string())?;
+            writer.flush().map_err(|e| e.to_string())?;
+            return Err("oversized stdio request; refusing further unframed input".into());
+        }
+        let result = serde_json::from_slice::<Value>(&line)
+            .map_err(|e| format!("stdio request invalid JSON: {e}"))
+            .and_then(|request| convert_archive_stdio(&request));
+        let reply = match result {
+            Ok(response) => response,
+            Err(error) => json!({"ok":false,"error":error}),
+        };
+        writer
+            .write_all(reply.to_string().as_bytes())
+            .and_then(|_| writer.write_all(b"\n"))
+            .and_then(|_| writer.flush())
+            .map_err(|e| format!("stdio response write: {e}"))?;
+    }
+    Err("stdio worker reached maximum 4096 requests; restart required".into())
+}
+
 fn main() {
     let args: Vec<_> = env::args_os().skip(1).collect();
+    if args.as_slice() == [OsStr::new("--convert-archive-stdio")] {
+        if let Err(error) = run_stdio() {
+            eprintln!("experimental stdio worker terminated: {error}");
+            process::exit(1);
+        }
+        return;
+    }
     match run(&args) {
         Ok(value) => println!("{value}"),
         Err(error) => {

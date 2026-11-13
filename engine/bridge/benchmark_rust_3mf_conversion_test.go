@@ -2,6 +2,8 @@ package bridge
 
 import (
 	"archive/zip"
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -147,6 +149,72 @@ func BenchmarkRustGo3MFArchive(b *testing.B) {
 					if err := os.Remove(rustFinal); err != nil {
 						b.Fatal(err)
 					}
+				}
+			})
+			// Experimental local-only JSONL worker: process startup happens
+			// outside the timed loop. Each request creates one new scratch 3MF,
+			// and the original source/package profile is never modified.
+			b.Run("RustPersistentStdioAndSanitize", func(b *testing.B) {
+				b.SetBytes(st.Size())
+				request, err := json.Marshal(map[string]any{
+					"plan_file":   planPath,
+					"source":      src,
+					"destination": rustFinal,
+				})
+				if err != nil {
+					b.Fatal(err)
+				}
+				request = append(request, '\n')
+				worker := exec.Command(rust, "--convert-archive-stdio")
+				stdin, err := worker.StdinPipe()
+				if err != nil {
+					b.Fatal(err)
+				}
+				stdout, err := worker.StdoutPipe()
+				if err != nil {
+					b.Fatal(err)
+				}
+				var stderr bytes.Buffer
+				worker.Stderr = &stderr
+				if err := worker.Start(); err != nil {
+					b.Fatal(err)
+				}
+				defer func() {
+					_ = stdin.Close()
+					_ = worker.Process.Kill()
+					_ = worker.Wait()
+				}()
+				send := bufio.NewWriter(stdin)
+				receive := bufio.NewReader(stdout)
+				b.ResetTimer()
+				for n := 0; n < b.N; n++ {
+					if _, err := send.Write(request); err != nil {
+						b.Fatal(err)
+					}
+					if err := send.Flush(); err != nil {
+						b.Fatal(err)
+					}
+					output, err := receive.ReadBytes('\n')
+					if err != nil {
+						b.Fatalf("persistent Rust reply missing: %v stderr=%s", err, stderr.String())
+					}
+					var reply struct {
+						OK    bool   `json:"ok"`
+						Error string `json:"error"`
+					}
+					if err := json.Unmarshal(output, &reply); err != nil || !reply.OK {
+						b.Fatalf("persistent Rust request failed: %+v error=%v stdout=%s stderr=%s", reply, err, output, stderr.String())
+					}
+					if err := os.Remove(rustFinal); err != nil {
+						b.Fatal(err)
+					}
+				}
+				b.StopTimer()
+				if err := stdin.Close(); err != nil {
+					b.Fatal(err)
+				}
+				if err := worker.Wait(); err != nil {
+					b.Fatalf("Rust worker did not exit cleanly on EOF: %v stderr=%s", err, stderr.String())
 				}
 			})
 			b.Logf("benchmark is CPU/I-O/process overhead for a tiny %s (%d bytes); NOT a printer speed test", fmt.Sprintf("%s", fixtureName), st.Size())
