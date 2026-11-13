@@ -451,6 +451,21 @@ scratch cleanup. The **Mac pilot passed** on this synthetic fixture.
 It is not a validated 200 MB stress test, nor a real print-ready
 manufacturing project.
 
+### Post-snapshot and streaming Release benchmark (tiny QA models)
+
+After adding source snapshotting and streaming XML, the optimized
+`--release` CLI was rebuilt and measured again:
+
+| Host | In-process Go + sanitize | Optimized Rust CLI + sanitize | Note |
+| --- | --- | --- | --- |
+| Windows Chris / i9-14900K | 4.96–5.60 ms/op | 14.69–16.73 ms/op | Two tiny pinned sources |
+| MacMiniOffice / Apple M4 | 11.53–12.45 ms/op | 34.72–38.25 ms/op | Two tiny pinned sources |
+
+These short tests include startup and file-system variance and
+do **not** compare equivalent library boundaries. The numbers
+are exploratory, not representative of large real-world projects;
+the Go library remains the production performance baseline.
+
 ## Next steps
 
 - Expand the new full-Rust 3MF ZIP comparison against real, multi-material
