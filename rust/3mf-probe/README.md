@@ -555,6 +555,57 @@ slicer GUI material/tool readiness, an approved mixed U1 PETG
 profile, valid slicing or a print-ready project. The QIDIStudio
 native GUI import/tool preview also remains UNVERIFIED.
 
+### Verified installed Snapmaker U1 0.4mm PLA/PETG leaves — subsequent fix
+
+The **five pass / one safe refusal** results above were the
+*historical, incomplete OEM base-profile snapshot*. A later
+read-only inspection of installed Snapmaker Orca manufacturer JSON
+established that the real `Snapmaker U1 (0.4 nozzle)`-compatible
+`Generic PLA High Speed.json` and `Generic PETG.json` are
+specific manufacturer *leaf* profiles, inheriting from their
+respective `@U1 base` names, which lack critical material values.
+The 0.4mm PETG leaf explicitly declares an OEM
+**230–270 °C** nozzle temperature range, `filament_flow_ratio=0.95`
+and max volumetric speed `12`. The PLA High Speed leaf supplies
+**190–240 °C**, ratio `0.98`, and max volumetric speed `18`.
+These values were **read from actual installed OEM files** and
+never invented, injected into user settings or sent to a printer.
+
+The draft native resolver now chooses these exact OEM leaf names
+only when installed file provenance, inherited base, explicit
+machine compatibility, material type and each material's
+temperature/flow/speed values independently pass validation.
+Explicit user-selected material overrides are untouched.
+Negative tests reject wrong nozzle, type, parent/filename,
+incomplete bounds, missing flow or speed and invalid temperatures.
+`TestInstalledU1PETG04LeafProfile` passed against the actual
+Windows manufacturer installation in read-only mode.
+
+The new scratch-only verified bundle
+`slicer-qa/native-profiles-u1-pla-petg-leaf-20261114`
+contains a fresh flattened U1 source and an identical copied,
+previously verified QIDI OEM profile. With this bundle,
+**all six** `TestRustInstalledOEMProductionPlanParity`
+scenarios passed as **full actual Go-versus-Rust ZIP matches**,
+including U1 five-slot mixed PLA/PETG, with no invalid
+per-material settings or changes to the source. The older
+incomplete U1 PETG bundle still correctly triggers the
+required safe-refusal regression. No installed profiles changed.
+
+The first synthetic mixed mesh was not accepted by native
+Snapmaker Orca `--info` for *either* Go or Rust output, although
+PrusaSlicer reported mesh statistics for both. To separate
+geometry from native material parsing, the native-import test
+now clones the separately proven native-readable pinned Bambu
+five-color 3MF, changes only the fifth declared filament from
+PLA to PETG, and preserves every mesh/paint token unchanged.
+The actual Go and Rust full ZIP outputs still match. The installed
+Snapmaker Orca CLI **successfully loaded both** mixed PLA/PETG
+outputs and reported matching mesh metrics in
+`TestRustSnapmakerOrcaVerifiedPETGMixedLeafMeshImportParity`.
+It remains **geometry-only**, not a slicer GUI material/tool
+assignment check or manufacturing approval.
+
 ### Bounded local Rust JSONL worker — persistent-process experiment
 
 The optional `--convert-archive-stdio` mode processes a **finite**
