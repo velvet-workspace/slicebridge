@@ -16,7 +16,7 @@ import (
 // geometry-only native CLI gate for machine-only OEM Go/Rust 3MF packages.
 // It is not a material/tool preview or proof of a print-ready project.
 func TestRustSnapmakerOrcaInstalledOEMMeshImportParity(t *testing.T) {
-	testNativeSnapmakerOrcaOEMGeometry(t, "SLICEBRIDGE_SLICER_OUTPUT_DIR", "oem")
+	testNativeSnapmakerOrcaOEMGeometry(t, "SLICEBRIDGE_SLICER_OUTPUT_DIR", "oem", []string{"bambu-one-color.3mf", "bambu-five-colors.3mf"})
 }
 
 // TestRustSnapmakerOrcaMaterialBoundOEMMeshImportParity adds a second native
@@ -26,10 +26,18 @@ func TestRustSnapmakerOrcaInstalledOEMMeshImportParity(t *testing.T) {
 // fields. The native CLI still validates mesh import only; material/tool
 // assignment requires a separate GUI preview gate.
 func TestRustSnapmakerOrcaMaterialBoundOEMMeshImportParity(t *testing.T) {
-	testNativeSnapmakerOrcaOEMGeometry(t, "SLICEBRIDGE_BOUND_OEM_OUTPUT_DIR", "bound")
+	testNativeSnapmakerOrcaOEMGeometry(t, "SLICEBRIDGE_BOUND_OEM_OUTPUT_DIR", "bound", []string{"bambu-one-color.3mf", "bambu-five-colors.3mf"})
 }
 
-func testNativeSnapmakerOrcaOEMGeometry(t *testing.T, directoryEnv, prefix string) {
+// TestRustSnapmakerOrcaVerifiedPETGMixedLeafMeshImportParity is an opt-in
+// native CLI geometry smoke over the new material-bound U1 0.4mm PETG
+// manufacturer-leaf output. It still does not prove slicer tool assignments,
+// firmware commands or printability: mesh-only native --info validation.
+func TestRustSnapmakerOrcaVerifiedPETGMixedLeafMeshImportParity(t *testing.T) {
+	testNativeSnapmakerOrcaOEMGeometry(t, "SLICEBRIDGE_VERIFIED_U1_PETG_OUTPUT_DIR", "bound", []string{"mixed-five.3mf"})
+}
+
+func testNativeSnapmakerOrcaOEMGeometry(t *testing.T, directoryEnv, prefix string, models []string) {
 	t.Helper()
 	slicer := os.Getenv("SLICEBRIDGE_NATIVE_SNAPMAKER_EXE")
 	scratch := os.Getenv(directoryEnv)
@@ -54,7 +62,7 @@ func testNativeSnapmakerOrcaOEMGeometry(t *testing.T, directoryEnv, prefix strin
 			t.Fatal(err)
 		}
 	}
-	for _, model := range []string{"bambu-one-color.3mf", "bambu-five-colors.3mf"} {
+	for _, model := range models {
 		t.Run(model, func(t *testing.T) {
 			var imported []map[string]string
 			for _, engine := range []string{"go", "rust"} {
