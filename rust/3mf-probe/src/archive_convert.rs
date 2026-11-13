@@ -4,7 +4,7 @@
 //! outputs are created as new files and never submitted to a printer.
 use crate::{
     compose_project_settings, inspect_package, rewrite_model_paint_xml, rewrite_model_settings,
-    rewrite_slice_info_xml, strip_slice_cache_preserving, SliceInfoSlot,
+    rewrite_slice_info_xml, strip_slice_cache_preserving, SliceInfoSlot, MAX_COMPRESSED_BYTES,
 };
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
@@ -30,6 +30,50 @@ impl Drop for Stage {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
     }
+}
+
+// The original path can be rewritten while a conversion is in progress.
+// Validation, source-material auditing, XML transformation and the final
+// geometry comparison MUST read one immutable scratch snapshot, never
+// independently reopen the original source path across stages.
+//
+// The snapshot uses a new file in the already approved scratch output
+// directory; it never modifies the source or installed slicer profiles.
+fn fresh_stage_path(parent: &Path, label: &str) -> Result<PathBuf, String> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let parent = parent.canonicalize().map_err(|e| e.to_string())?;
+    Ok(parent.join(format!(
+        ".slicebridge-{label}-{}-{now}-{}.partial",
+        process::id(),
+        NEXT_OUTPUT.fetch_add(1, Ordering::Relaxed)
+    )))
+}
+
+fn snapshot_source(source: &Path, parent: &Path) -> Result<Stage, String> {
+    let input = File::open(source).map_err(|e| format!("source open: {e}"))?;
+    let meta = input
+        .metadata()
+        .map_err(|e| format!("source metadata: {e}"))?;
+    if !meta.is_file() || meta.len() == 0 || meta.len() > MAX_COMPRESSED_BYTES {
+        return Err("3MF must be a nonempty regular file up to 250 MB".into());
+    }
+    let snapshot = Stage(fresh_stage_path(parent, "source")?);
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&snapshot.0)
+        .map_err(|e| format!("cannot create private source snapshot: {e}"))?;
+    let bytes = std::io::copy(&mut input.take(MAX_COMPRESSED_BYTES + 1), &mut file)
+        .map_err(|e| format!("source snapshot: {e}"))?;
+    if bytes != meta.len() || bytes > MAX_COMPRESSED_BYTES {
+        return Err("source changed size while being captured; refusing conversion".into());
+    }
+    file.sync_all()
+        .map_err(|e| format!("source snapshot sync: {e}"))?;
+    Ok(snapshot)
 }
 
 fn read_part(mut entry: impl Read, label: &str) -> Result<Vec<u8>, String> {
@@ -228,9 +272,13 @@ pub fn convert_archive_experimental(
     if !parent.is_dir() {
         return Err("destination directory does not exist".into());
     }
+    // Freeze the input once; the source path may be replaced during an
+    // ordinary long conversion. All subsequent operations use this same
+    // private scratch snapshot, including central-directory verification.
+    let captured = snapshot_source(source, parent)?;
     // Apply the same source-archive checks as the standalone, read-only
     // 3MF inspector (unsafe names, duplicates, limits, required geometry).
-    let source_facts = inspect_package(source)?;
+    let source_facts = inspect_package(&captured.0)?;
 
     let slot_count = plan
         .get("slot_count")
@@ -331,8 +379,8 @@ pub fn convert_archive_experimental(
 
     // The plan must describe the actual source project, not stale or
     // unrelated metadata from another printer/project.
-    let mut src = ZipArchive::new(File::open(source).map_err(|e| e.to_string())?)
-        .map_err(|e| format!("input archive: {e}"))?;
+    let mut src = ZipArchive::new(File::open(&captured.0).map_err(|e| e.to_string())?)
+        .map_err(|e| format!("input snapshot archive: {e}"))?;
     let mut actual_source = serde_json::Map::new();
     if let Ok(entry) = src.by_name("Metadata/project_settings.config") {
         let bytes = read_part(entry, "source project settings")?;
@@ -347,17 +395,7 @@ pub fn convert_archive_experimental(
     }
     audit_source_material_references(&mut src, &paint_map)?;
 
-    let canonical_parent = parent.canonicalize().map_err(|e| e.to_string())?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_nanos();
-    let intermediate = canonical_parent.join(format!(
-        ".slicebridge-convert-{}-{now}-{}.partial",
-        process::id(),
-        NEXT_OUTPUT.fetch_add(1, Ordering::Relaxed)
-    ));
-    let stage = Stage(intermediate);
+    let stage = Stage(fresh_stage_path(parent, "convert")?);
     let file = OpenOptions::new()
         .write(true)
         .read(true)
@@ -436,4 +474,57 @@ pub fn convert_archive_experimental(
     // real Go engine does. This also atomically installs the final file and
     // refuses to overwrite an existing destination.
     strip_slice_cache_preserving(&stage.0, destination, &preserved)
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+
+    fn scratch_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "slicebridge-rust-snapshot-{}-{}",
+            process::id(),
+            NEXT_OUTPUT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&dir).expect("create private scratch dir");
+        dir
+    }
+
+    #[test]
+    fn converter_snapshot_is_independent_of_source_path_replacement() {
+        let dir = scratch_dir();
+        let source = dir.join("original.3mf");
+        fs::write(&source, b"original immutable source bytes").unwrap();
+        let snapshot = snapshot_source(&source, &dir).expect("capture bounded source");
+        let snapshot_path = snapshot.0.clone();
+        assert!(snapshot_path.exists());
+        assert_ne!(snapshot_path, source);
+
+        // The user may independently replace a project after conversion starts.
+        // Auditing and transforming the frozen snapshot must be deterministic.
+        fs::write(&source, b"replaced by another editor").unwrap();
+        assert_eq!(
+            fs::read(&snapshot_path).unwrap(),
+            b"original immutable source bytes"
+        );
+        assert_eq!(fs::read(&source).unwrap(), b"replaced by another editor");
+
+        drop(snapshot);
+        assert!(!snapshot_path.exists(), "source snapshot was not cleaned");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn converter_rejects_empty_sources_without_leaking_scratch_files() {
+        let dir = scratch_dir();
+        let source = dir.join("empty.3mf");
+        fs::write(&source, b"").unwrap();
+        assert!(snapshot_source(&source, &dir).is_err());
+        let names: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names.len(), 1, "snapshot left stray partial files");
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }

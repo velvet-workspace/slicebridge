@@ -25,7 +25,7 @@ use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 use zip::ZipArchive;
 
-const MAX_COMPRESSED_BYTES: u64 = 250 << 20;
+pub(crate) const MAX_COMPRESSED_BYTES: u64 = 250 << 20;
 const MAX_UNCOMPRESSED_BYTES: u64 = 1024 << 20;
 const MAX_ENTRIES: usize = 10_000;
 const MAX_MODEL_XML_BYTES: u64 = 200 << 20;

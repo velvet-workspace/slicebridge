@@ -393,6 +393,44 @@ library interface or another authorized integration after hardware
 profile and slicer import gates close. Larger production-sized
 3MF sources remain unbenchmarked.
 
+### Follow-up: optimized Rust Release build, same subprocess boundary
+
+Independently compiled the opt-in Rust executable with
+`cargo build --release --locked` on both Windows and macOS, then
+ran the native Rust test suite. `cargo clippy --release --locked
+--all-targets -- -D warnings` passed on Mac. The **optimized**
+Rust CLI still launches a process per conversion:
+
+| Host | Go in-process | Optimized Rust CLI process | Input |
+| --- | --- | --- | --- |
+| Windows Chris / i9-14900K | 5.04–5.30 ms/op | 13.45–14.39 ms/op | one/five colors |
+| MacMiniOffice / Apple M4 | 11.38–11.56 ms/op | 30.40–30.48 ms/op | one/five colors |
+
+These are isolated, short-duration timings on tiny 3MF fixtures,
+with run-to-run variability. Go and Rust use different invocation
+boundaries, so the result **does not** measure intrinsic Rust vs Go
+throughput; importantly, it **rules out** promising a speedup merely
+by swapping the current Go library call for a per-conversion Rust
+CLI. No installed application was changed or released.
+
+### Stable source snapshot throughout conversion
+
+The experimental Rust archive converter now captures a bounded
+(250 MB maximum), immutable private source snapshot in the caller's
+approved output directory, using exclusive file creation and cleanup.
+It inspects the ZIP central directory, validates material references,
+transforms model XML and settings, and compares output geometry
+against **the same captured bytes**. The source path is not reopened
+later in the pipeline. This prevents a source replacement during a
+long conversion from causing different validation/conversion stages
+to operate on different 3MF files. An independent Rust unit test
+replaces the source path after snapshot creation and verifies snapshot
+stability and automatic deletion; an empty source is rejected without
+scratch leaks. On abrupt process termination, an orphaned partial
+snapshot may need manual cleanup. Copying the snapshot adds I/O,
+particularly on large projects; benchmark it separately before
+adopting this pipeline.
+
 ## Next steps
 
 - Expand the new full-Rust 3MF ZIP comparison against real, multi-material
@@ -401,17 +439,21 @@ profile and slicer import gates close. Larger production-sized
   printer safety policies and source settings snapshots before any application
   integration. Reject an unknown printer or filament rather than assuming
   hardware compatibility.
-- Add more source XML/ZIP edge cases, including large assets, float semantics,
-  multiple plates, compressed-source limits and concurrency races.
+- Add more source XML/ZIP edge cases, including large model XML assets,
+  exact JSON numeric equivalence and multiple plates. Source-path replacement
+  during conversion is now isolated by an immutable snapshot; direct concurrent
+  in-place writes during initial capture still require fault-injection testing.
 - Validate complete, inheritance-flattened installed vendor machine/material
   bundles and user-permitted multi-material 3MF examples. Selected raw material
   values alone are not a verified installed-target profile.
 - Integrate target profile and nozzle validation as independently gated
   slices; retain the established Go authority until Rust safety parity is
   demonstrated for real installed slicer environments.
-- Benchmark Rust versus Go only after file-level output parity is proven.
-- Run the new full-archive Rust implementation on Windows and test generated
-  files in real slicers before considering user-visible integration.
+- Benchmark realistic multi-plate production-sized sources, including
+  source-snapshot I/O and both persistent-process and in-process Rust designs.
+- Validate native target-slicer imports and tool/material preview for
+  Snapmaker Orca, OrcaSlicer, Bambu Studio and QIDIStudio in isolated sessions.
+  PrusaSlicer geometry-only import has passed but cannot validate tool changes.
 - Consider Tauri 2 as a separate UI decision after compatibility testing.
 
 Do not enable this crate in the current application, remove Go/Wails, or
