@@ -162,6 +162,21 @@ func TestRustFullArchiveInstalledVendorProfileParity(t *testing.T) {
 			if err != nil || !bytes.Equal(before, after) {
 				t.Fatal("source 3MF was modified by installed vendor parity check")
 			}
+			// Persist only explicitly requested, isolated QA artifacts.
+			// The exclusive-create helper refuses to overwrite any existing
+			// file and never writes into installed slicer/profile folders.
+			if outputDir := os.Getenv("SLICEBRIDGE_SLICER_OUTPUT_DIR"); outputDir != "" {
+				if st, err := os.Stat(outputDir); err != nil || !st.IsDir() {
+					t.Fatalf("explicit native OEM QA output dir missing: %s: %v", outputDir, err)
+				}
+				for _, item := range [][2]string{
+					{src, "oem-source-" + tc.target + "-" + tc.source},
+					{goFinal, "oem-go-" + tc.target + "-" + tc.source},
+					{rustFinal, "oem-rust-" + tc.target + "-" + tc.source},
+				} {
+					exportSlicerFixtureNoOverwrite(t, item[0], filepath.Join(outputDir, item[1]))
+				}
+			}
 			t.Logf("OEM machine=%s, virtual slots=%d, source materials=%d: Go and Rust full 3MF ZIP parity passed",
 				bundle.Profile.ModelID, bundle.Profile.FilamentSlots, len(slots))
 		})
