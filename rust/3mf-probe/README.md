@@ -26,6 +26,15 @@ production conversion engine and the Go/Wails desktop app remain unchanged.
    and returns mapped project settings as JSON. It refuses missing or unknown
    installed material presets and partial safety-critical temperature/flow
    settings. Hardware-owned nozzle and acceleration settings are never changed.
+5. **Painted-triangle remapping** (`--remap-paint` and `--remap-model`):
+   port of the Go/Prusa/Bambu recursive triangle paint bitstream, supporting
+   split triangles, extended filament IDs and both `paint_color` and
+   `mmu_segmentation` on model triangle XML. Unpainted regions and non-paint
+   metadata are left unchanged. Bounded XML/bitstream input, not full 3MF I/O.
+6. **Object and plate model settings** (`--rewrite-model-settings`):
+   port of Go's metadata-extruder ID remapping and virtual `filament_maps`
+   rebuilding for 1..64 slots. XML entities, namespaces and non-target
+   attributes are preserved; invalid XML and directives are refused.
 
 Cache cleanup now supports Go's `stripSliceCache(source, destination, preserved)`
 contract, including named process-setting overrides supplied through repeated
@@ -93,15 +102,41 @@ For `--map-materials`, provide a JSON object containing both a `bundle`
 command **does not resolve installed presets, convert projects or write
 any output file**. Both JSON commands limit input to 8 MB.
 
+To test the independent XML conversion stages, provide one of the following
+JSON requests in a local file and run the corresponding command:
+
+```json
+{"samples":["4","8","4882"],"mapping":{"1":2,"2":1}}
+```
+
+```sh
+cargo run --locked -- --remap-paint path/to/request.json
+```
+
+For `--remap-model`, use `model_xml` (UTF-8 XML) instead of `samples`,
+alongside the same mapping. The output contains rewritten `model_xml`.
+For the separately bounded `--rewrite-model-settings` command:
+
+```json
+{"model_settings_xml":"<config><metadata key=\"extruder\" value=\"2\"/></config>","slots":4,"mapping":{"2":1}}
+```
+
+All three commands only return JSON; they do not write or replace source
+3MF files. Raw model XML is bounded to 8 MB; model-settings XML is bounded to
+8 MiB and disallows directives/DTD. The standalone paint codec rejects malformed
+hex and excessive tree recursion. These transformations are **not wired into a
+full Rust converter**; source 3MF validation, installed printer profile identity,
+the other XML/ZIP transforms, and actual conversion publication remain in Go.
+
 ## Verify Rust output against the real Go implementation
 
-Build the Rust CLI and opt into all five Go differential tests:
+Build the Rust CLI and opt into all Go differential tests:
 
 ```sh
 cargo build --locked --manifest-path rust/3mf-probe/Cargo.toml
 cd engine
 SLICEBRIDGE_RUST_PROBE="$(pwd)/../rust/3mf-probe/target/debug/slicebridge-3mf-probe" \
-  go test -count=1 ./bridge -run '^TestRust(Archive(Probe|Strip|Preserve)|SourceSlotPlan|NativeMaterialMapping)Parity$' -v
+  go test -count=1 ./bridge -run '^TestRust.*Parity$' -v
 ```
 
 The existing Go code is the baseline. Three archive tests compare 3MF facts,
@@ -114,13 +149,14 @@ settings. Unchanged archive payloads are compared byte-for-byte, XML
 semantically and JSON structurally. Ordinary Go tests skip the differential
 checks unless `SLICEBRIDGE_RUST_PROBE` is set.
 
-**Verified:** on 13 November 2026, 29 Rust tests, Rust formatting/lint
-checks, and the complete Go engine suite passed. Go/Rust tests covered 55
-archive/filament fixture comparisons (11 inputs across five suites),
-23 synthetic slot/material mapping cases and five additional integration
-checks below: 83 differential cases in total, on MacMiniOffice.local with
-isolated toolchains on an external volume. These are **not proof of full
-cross-slicer conversion, print quality, or release readiness**.
+**Verified:** on 13 November 2026, 50 Rust tests, Rust formatting/lint
+checks, and the complete Go engine suite passed on MacMiniOffice.local.
+The previously verified 83 differential cases now have **860 extra
+comparison cases**: 855 real paint-hex corpus comparisons (285 encoded
+triangle samples, three mappings), 1 XML triangle-paint comparison and
+4 3MF model-settings tests against Go-converted packages. That is **943**
+Mac Go/Rust comparison cases across the pilot so far. This evidence is
+**not proof of full cross-slicer conversion, print quality, or release readiness**.
 
 ## Testing against Go-converted 3MF outputs and real installed material values
 
@@ -156,8 +192,29 @@ material mapper retains a deliberate 64-slot input limit, unlike an isolated
 Go binder called directly with an oversized, synthetic installed profile;
 the real Go conversion plan separately enforces the same 64-slot bound.
 
+## Independent parallel verification of model XML transforms
+
+A separate scoped Claude Code worker implemented model-settings XML handling
+and 16 tests in an isolated Git worktree. Its code was reviewed and copied
+into the experimental branch only after passing the tests, strict lint and
+semantic comparisons against **actual Go-converted 3MF model-settings XML**.
+Three real Go-conversion scenarios (1, 4 and 6 virtual channels) and a fourth
+non-identity two-filament slot swap matched Rust output. The Go converter
+correctly rejects undeclared source extruders, so the integration fixtures
+use valid declared slots; an excess-ID fallback is exercised separately by
+Rust unit tests. Claude's code uses a restricted XML scanner that rejects
+DTD/directives and unknown entity references, stricter than the Go parser.
+
+The independent Rust paint codec was checked against every line in the Go
+dependency's real-model paint corpus, with exact encoded result matches across
+all 855 remaps. The rewritten triangle XML was separately parsed and compared
+against the Go paint codec's output. The standalone XML commands **do not
+rewrite the ZIP archive or create printable files**.
+
 ## Next steps
 
+- Port remaining slice-info XML and project-settings composition with full
+  differential validation before assembling a new Rust 3MF conversion pipeline.
 - Test more real-world 3MF sources and adverse ZIP/XML edge cases.
 - Validate complete, inheritance-flattened installed vendor machine/material
   bundles and user-permitted multi-material 3MF examples. Selected raw material

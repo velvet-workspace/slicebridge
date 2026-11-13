@@ -1,7 +1,9 @@
 use serde_json::{json, Value};
 use slicebridge_3mf_probe::{
-    inspect_package, map_native_material_settings, source_slot_plan, strip_slice_cache_preserving,
+    inspect_package, map_native_material_settings, remap_paint_hex, rewrite_model_paint_xml,
+    rewrite_model_settings, source_slot_plan, strip_slice_cache_preserving,
 };
+use std::collections::BTreeMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -12,7 +14,7 @@ use std::process;
 const MAX_JSON_INPUT_BYTES: u64 = 8 << 20;
 
 fn usage() -> String {
-    "usage: slicebridge-3mf-probe <file.3mf> | --strip-cache [--preserve KEY]... <source.3mf> <output.3mf> | --plan-slots <request.json> | --map-materials <request.json>"
+    "usage: slicebridge-3mf-probe <file.3mf> | --strip-cache [--preserve KEY]... <source.3mf> <output.3mf> | --plan-slots <request.json> | --map-materials <request.json> | --remap-paint <request.json> | --remap-model <request.json> | --rewrite-model-settings <request.json>"
         .to_owned()
 }
 
@@ -28,6 +30,30 @@ fn read_request(filename: &OsStr) -> Result<Value, String> {
         return Err("request JSON exceeds 8 MB limit".to_owned());
     }
     serde_json::from_slice(&contents).map_err(|e| format!("request JSON invalid: {e}"))
+}
+
+fn request_mapping(request: &Value) -> Result<BTreeMap<u32, u32>, String> {
+    let mut mapping = BTreeMap::new();
+    let entries = request
+        .get("mapping")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "mapping must be an object of source IDs to target slot IDs".to_owned())?;
+    if entries.len() > 64 {
+        return Err("mapping contains more than 64 source entries".into());
+    }
+    for (source, target) in entries {
+        let source_id: u32 = source
+            .parse()
+            .map_err(|_| format!("invalid source filament ID {source:?}"))?;
+        let target_id = target
+            .as_u64()
+            .ok_or_else(|| format!("invalid target filament ID for source {source}"))?;
+        if source_id == 0 || !(1..=64).contains(&target_id) {
+            return Err("source or target filament ID is outside supported range".into());
+        }
+        mapping.insert(source_id, target_id as u32);
+    }
+    Ok(mapping)
 }
 
 fn run(args: &[OsString]) -> Result<Value, String> {
@@ -52,6 +78,67 @@ fn run(args: &[OsString]) -> Result<Value, String> {
             let value = read_request(source)?;
             let result = map_native_material_settings(&value)?;
             Ok(json!({"ok": true, "project_settings": result["project_settings"]}))
+        }
+        [flag, source] if flag == OsStr::new("--remap-paint") => {
+            let value = read_request(source)?;
+            let mapping = request_mapping(&value)?;
+            if let Some(samples) = value.get("samples").and_then(Value::as_array) {
+                if samples.len() > 10_000 {
+                    return Err("too many paint samples".to_owned());
+                }
+                let results = samples
+                    .iter()
+                    .map(|sample| {
+                        let hex = sample
+                            .as_str()
+                            .ok_or_else(|| "paint sample must be a string".to_owned())?;
+                        remap_paint_hex(hex, &mapping)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(json!({"ok": true, "samples": results}))
+            } else {
+                let hex = value
+                    .get("paint")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "paint must be a hex string".to_owned())?;
+                Ok(json!({"ok": true, "paint": remap_paint_hex(hex, &mapping)?}))
+            }
+        }
+        [flag, source] if flag == OsStr::new("--remap-model") => {
+            let value = read_request(source)?;
+            let mapping = request_mapping(&value)?;
+            let xml = value
+                .get("model_xml")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "model_xml must be a UTF-8 XML string".to_owned())?;
+            let output = rewrite_model_paint_xml(xml.as_bytes(), &mapping)?;
+            Ok(json!({"ok": true, "model_xml": String::from_utf8(output)
+                .map_err(|e| format!("model output not UTF-8: {e}"))?}))
+        }
+        [flag, source] if flag == OsStr::new("--rewrite-model-settings") => {
+            let value = read_request(source)?;
+            let map = request_mapping(&value)?;
+            let mut mapping = BTreeMap::new();
+            for (source_id, target) in map {
+                let source_id = i32::try_from(source_id).map_err(|_| {
+                    "model settings source filament ID exceeds signed integer limit".to_owned()
+                })?;
+                mapping.insert(source_id, target as i32);
+            }
+            let xml = value
+                .get("model_settings_xml")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "model_settings_xml must be a UTF-8 XML string".to_owned())?;
+            let slots = value
+                .get("slots")
+                .and_then(Value::as_u64)
+                .and_then(|count| usize::try_from(count).ok())
+                .ok_or_else(|| "slots must be a positive integer".to_owned())?;
+            let output = rewrite_model_settings(xml.as_bytes(), &mapping, slots)?;
+            Ok(
+                json!({"ok": true, "model_settings_xml": String::from_utf8(output)
+                .map_err(|e| format!("model settings output not UTF-8: {e}"))?}),
+            )
         }
         [flag, rest @ ..] if flag == OsStr::new("--strip-cache") => {
             let mut at = 0usize;

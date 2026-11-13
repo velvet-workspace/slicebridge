@@ -3,8 +3,12 @@
 //! No printer-profile conversion or physical printing occurs.
 //! Production SliceBridge continues using its Go engine.
 mod materials;
+mod modelsettings;
+mod paint;
 mod sanitize;
 pub use materials::{map_native_material_settings, source_slot_plan};
+pub use modelsettings::rewrite_model_settings;
+pub use paint::{remap_paint_hex, rewrite_model_paint_xml};
 pub use sanitize::{strip_slice_cache, strip_slice_cache_preserving};
 
 use quick_xml::events::Event;
