@@ -187,6 +187,14 @@ func TestRustInstalledOEMProductionPlanParity(t *testing.T) {
 					t.Fatalf("Go/Rust stale slice removal count differs: Go=%d Rust=%d", expected, reply.Removed)
 				}
 				compareConverted3MFParts(t, goOutput, rustOutput)
+				if sourceKind == "mixed-five.3mf" {
+					for _, converted := range []string{goOutput, rustOutput} {
+						model := inspectZipEntries(t, converted)["3D/3dmodel.model"]
+						if !bytes.Contains(model, []byte("120 120 0")) {
+							t.Fatalf("%s lost the source's verified in-bed 3MF build-item translation", filepath.Base(converted))
+						}
+					}
+				}
 
 				// Confirm selected material constraints really arrived from the
 				// installed target's native material presets, rather than

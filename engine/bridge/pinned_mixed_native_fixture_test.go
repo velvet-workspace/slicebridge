@@ -14,11 +14,13 @@ import (
 )
 
 // createPinnedNativeReadableMixedFiveSource clones the already-native-readable
-// pinned Bambu 3MF tetrahedron into a new exclusive scratch file and changes
-// ONLY the fifth declared material from PLA to PETG. The four-vertex,
-// four-facet mesh and its original paint/default references stay byte-identical.
-// This deliberately avoids the geometry of a separate generated fixture that
-// the native Snapmaker Orca CLI rejected before any 3MF material comparison.
+// pinned Bambu 3MF tetrahedron into a new exclusive scratch file,
+// changes the fifth declared material from PLA to PETG, and translates the
+// *build item* 120mm in X/Y into the installed target's valid print region.
+// The four-vertex, four-facet mesh and its original paint/default references
+// stay byte-identical. Centering prevents the native GUI from treating a
+// synthetic object at 0,0 (plus 5mm brim) as out-of-bounds; it is not a
+// converter geometry correction or print-ready model verification.
 func createPinnedNativeReadableMixedFiveSource(t *testing.T, destination string) {
 	t.Helper()
 	pinned := filepath.Join("..", "..", "tests", "fixtures", "bambu-five-colors.3mf")
@@ -34,6 +36,7 @@ func createPinnedNativeReadableMixedFiveSource(t *testing.T, destination string)
 	writer := zip.NewWriter(output)
 	foundSettings := false
 	foundPalette := false
+	foundPosition := false
 	for _, part := range reader.File {
 		src, err := part.Open()
 		if err != nil {
@@ -45,6 +48,19 @@ func createPinnedNativeReadableMixedFiveSource(t *testing.T, destination string)
 			t.Fatal(err)
 		}
 		switch part.Name {
+		case "3D/3dmodel.model":
+			if foundPosition {
+				t.Fatal("duplicate 3MF model in pinned mixed source")
+			}
+			original := []byte("<build><item objectid='1'/></build>")
+			if bytes.Count(body, original) != 1 {
+				t.Fatal("pinned 3MF original build item changed")
+			}
+			// 3MF transform is row-major 3x3 followed by XYZ translation.
+			// Preserve all vertex/triangle mesh bytes and paint tokens.
+			placed := []byte("<build><item objectid='1' transform='1 0 0 0 1 0 0 0 1 120 120 0'/></build>")
+			body = bytes.Replace(body, original, placed, 1)
+			foundPosition = true
 		case "Metadata/project_settings.config":
 			if foundSettings {
 				t.Fatal("duplicate source project settings")
@@ -89,8 +105,8 @@ func createPinnedNativeReadableMixedFiveSource(t *testing.T, destination string)
 	if err := output.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if !foundSettings || !foundPalette {
-		t.Fatalf("pinned native-readable 3MF missing required material metadata: settings=%t palette=%t", foundSettings, foundPalette)
+	if !foundSettings || !foundPalette || !foundPosition {
+		t.Fatalf("pinned native-readable 3MF missing required metadata: settings=%t palette=%t position=%t", foundSettings, foundPalette, foundPosition)
 	}
 	inspection, err := converter.Inspect(destination)
 	if err != nil {
@@ -99,5 +115,5 @@ func createPinnedNativeReadableMixedFiveSource(t *testing.T, destination string)
 	if len(inspection.Filaments) != 5 || inspection.Filaments[4].Type != "PETG" {
 		t.Fatalf("source fifth material not independently inspected as PETG: %v", inspection.Filaments)
 	}
-	t.Log(fmt.Sprintf("reused native-readable pinned 3MF tetrahedron; fifth material changed to %s; original mesh unchanged", inspection.Filaments[4].Type))
+	t.Log(fmt.Sprintf("reused native-readable pinned 3MF tetrahedron; fifth material %s; build item moved to 120x120mm within OEM bed; original mesh unchanged", inspection.Filaments[4].Type))
 }
