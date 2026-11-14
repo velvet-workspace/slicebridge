@@ -11,7 +11,7 @@ mod qidi_origin;
 mod sanitize;
 mod sliceinfo;
 pub use archive_convert::convert_archive_experimental;
-pub use materials::{map_native_material_settings, source_slot_plan};
+pub use materials::{map_native_material_settings, source_slot_plan, validate_native_bundle};
 pub use modelsettings::rewrite_model_settings;
 pub use paint::{remap_paint_hex, rewrite_model_paint_xml};
 pub use projectsettings::compose_project_settings;

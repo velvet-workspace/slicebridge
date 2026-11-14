@@ -113,3 +113,44 @@ fn oversized_input_rejected_before_json_parse() {
     assert_eq!(result["ok"], false);
     assert!(result["error"].as_str().unwrap().contains("8 MB limit"));
 }
+
+#[test]
+fn validate_native_bundle_cli_reports_identity_and_never_emits_settings() {
+    let request = RequestFile::new(
+        br#"{
+          "bundle": {
+            "target": "u1",
+            "nozzle": "0.4",
+            "profile": {
+              "name": "u1",
+              "display_name": "Snapmaker U1",
+              "printer_model_id": "Snapmaker U1",
+              "filament_slots": 4,
+              "filament_profiles": {"PLA": "Synthetic PLA", "PETG": "Synthetic PETG"},
+              "project_settings": {
+                "printer_model": "Snapmaker U1",
+                "nozzle_diameter": ["0.4"],
+                "machine_start_gcode": "START",
+                "machine_end_gcode": "END"
+              }
+            },
+            "material_settings": {
+              "PLA": {"nozzle_temperature": ["210"], "flow_ratio": ["0.98"], "filament_max_volumetric_speed": ["18"]},
+              "PETG": {"nozzle_temperature": ["245"], "flow_ratio": ["0.97"], "filament_max_volumetric_speed": ["12"]}
+            }
+          },
+          "filaments": [{"id": 1, "type": "PLA"}, {"id": 2, "type": "PETG"}]
+        }"#,
+    );
+    let (ok, result) = cli("--validate-native-bundle", &request);
+    assert!(ok);
+    assert_eq!(result["ok"], true);
+    assert_eq!(result["experimental"], true);
+    assert_eq!(result["validation"]["machine"]["target"], "u1");
+    assert_eq!(
+        result["validation"]["filament_types"],
+        json!(["PLA", "PETG"])
+    );
+    assert!(result.get("project_settings").is_none());
+    assert!(result["validation"].get("project_settings").is_none());
+}
