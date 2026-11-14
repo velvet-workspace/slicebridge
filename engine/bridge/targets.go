@@ -136,7 +136,7 @@ func bindNativeFilamentSettings(bundle *targetBundle, filaments []converter.Fila
 		// Raw filament JSON may omit filament_settings_id or contain an empty
 		// placeholder, while Profile.FilamentProfiles provides the explicitly
 		// resolved native preset for each material. Never infer a PLA fallback.
-		if bundle.Target == "qidi" && key == "filament_settings_id" {
+		if bundle.Target == "qidi" && bundle.Profile.ModelID == "X-Plus 5" && key == "filament_settings_id" {
 			continue
 		}
 		// Hardware-only settings such as nozzle diameter remain owned by
@@ -174,7 +174,7 @@ func bindNativeFilamentSettings(bundle *targetBundle, filaments []converter.Fila
 	// The printer/print system IDs come from its installed slicer, whereas
 	// these arrays are source slot-specific and must match exactly.
 	bundle.Profile.ProjectSettings["filament_type"] = materialTypes(filaments)
-	if bundle.Target == "qidi" {
+	if bundle.Target == "qidi" && bundle.Profile.ModelID == "X-Plus 5" {
 		bundle.Profile.ProjectSettings["filament_settings_id"] = nativeProfileIDs
 	}
 	return nil

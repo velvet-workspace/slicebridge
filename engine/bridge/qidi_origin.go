@@ -24,6 +24,7 @@ func setQIDIApplicationMetadata(raw []byte) ([]byte, error) {
 	dec := xml.NewDecoder(bytes.NewReader(raw))
 	depth := 0
 	rootEnd := -1
+	rootPrefix := ""
 	applicationStart, applicationEnd, openApplication := -1, -1, -1
 	for {
 		from := int(dec.InputOffset())
@@ -43,6 +44,18 @@ func setQIDIApplicationMetadata(raw []byte) ([]byte, error) {
 				}
 				if bytes.HasSuffix(bytes.TrimSpace(raw[from:to]), []byte("/>")) {
 					return nil, fmt.Errorf("self-closing 3MF model root cannot contain Application metadata")
+				}
+				opening := bytes.TrimSpace(raw[from:to])
+				if len(opening) < 2 || opening[0] != '<' {
+					return nil, fmt.Errorf("malformed model XML start tag")
+				}
+				qname := opening[1:]
+				endName := bytes.IndexAny(qname, " \t\r\n/>")
+				if endName < 0 {
+					return nil, fmt.Errorf("malformed model XML qualified name")
+				}
+				if colon := bytes.IndexByte(qname[:endName], ':'); colon >= 0 {
+					rootPrefix = string(qname[:colon+1])
 				}
 				rootEnd = to
 			} else if depth == 1 && t.Name.Local == "metadata" {
@@ -69,17 +82,23 @@ func setQIDIApplicationMetadata(raw []byte) ([]byte, error) {
 	if rootEnd <= 0 || depth != 0 || openApplication >= 0 {
 		return nil, fmt.Errorf("incomplete QIDI 3MF model XML")
 	}
+	element := qidiApplicationElement
+	insertion := qidiApplicationInsertion
+	if rootPrefix != "" {
+		element = []byte("<" + rootPrefix + "metadata name=\"Application\">" + qidiStudioApplication + "</" + rootPrefix + "metadata>")
+		insertion = append([]byte("\n  "), element...)
+	}
 	if applicationStart >= 0 {
-		// The field must be on the model root, not in a nested object.
-		out := make([]byte, 0, len(raw)+len(qidiApplicationElement))
+		// Keep a namespace-qualified metadata element in the root's namespace.
+		out := make([]byte, 0, len(raw)+len(element))
 		out = append(out, raw[:applicationStart]...)
-		out = append(out, qidiApplicationElement...)
+		out = append(out, element...)
 		out = append(out, raw[applicationEnd:]...)
 		return out, nil
 	}
-	out := make([]byte, 0, len(raw)+len(qidiApplicationElement))
+	out := make([]byte, 0, len(raw)+len(insertion))
 	out = append(out, raw[:rootEnd]...)
-	out = append(out, qidiApplicationInsertion...)
+	out = append(out, insertion...)
 	out = append(out, raw[rootEnd:]...)
 	return out, nil
 }

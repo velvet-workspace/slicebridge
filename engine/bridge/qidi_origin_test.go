@@ -3,6 +3,7 @@ package bridge
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/xml"
 	"io"
 	"os"
 	"path/filepath"
@@ -166,6 +167,86 @@ func TestQIDISanitizerRejectsAbsentOrRepeatedPrimaryModel(t *testing.T) {
 			}
 			if _, err = stripSliceCacheForQIDI(input, filepath.Join(dir, "result.3mf"), nil, true); err == nil {
 				t.Fatalf("QIDI conversion accepted 3MF with %d primary model parts", tc.models)
+			}
+		})
+	}
+}
+
+func project3MFApplication(t *testing.T, filename string) string {
+	t.Helper()
+	zr, err := zip.OpenReader(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	var model *zip.File
+	for _, part := range zr.File {
+		if part.Name == "3D/3dmodel.model" {
+			if model != nil {
+				t.Fatal("duplicate primary model part in 3MF")
+			}
+			model = part
+		}
+	}
+	if model == nil {
+		t.Fatal("missing 3MF model XML")
+	}
+	if model.UncompressedSize64 > 8<<20 {
+		t.Fatal("oversized test model XML")
+	}
+	stream, err := model.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := io.ReadAll(io.LimitReader(stream, 8<<20+1))
+	closeErr := stream.Close()
+	if err != nil || closeErr != nil {
+		t.Fatalf("read primary model %v, %v", err, closeErr)
+	}
+	var m struct {
+		XMLName  xml.Name `xml:"model"`
+		Metadata []struct {
+			Name  string `xml:"name,attr"`
+			Value string `xml:",chardata"`
+		} `xml:"metadata"`
+	}
+	if err := xml.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.XMLName.Local != "model" {
+		t.Fatal("expected model root")
+	}
+	for _, meta := range m.Metadata {
+		if meta.Name == "Application" {
+			return strings.TrimSpace(meta.Value)
+		}
+	}
+	return ""
+}
+
+func TestQIDIApplicationMetadataRetainsQualifiedModelNamespace(t *testing.T) {
+	for name, original := range map[string]string{
+		"missing":  `<?xml version="1.0"?><p:model xmlns:p="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><p:resources/><p:build/></p:model>`,
+		"existing": `<p:model xmlns:p="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><p:metadata name="Application">OldTool-0.2</p:metadata><p:build/></p:model>`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			updated, err := setQIDIApplicationMetadata([]byte(original))
+			if err != nil {
+				t.Fatal(err)
+			}
+			expected := []byte(`<p:metadata name="Application">QIDIStudio-01.09.03.51</p:metadata>`)
+			if bytes.Count(updated, expected) != 1 {
+				t.Fatalf("metadata lost its 3MF namespace: %s", updated)
+			}
+			var parsed struct {
+				XMLName xml.Name `xml:"model"`
+			}
+			if err := xml.Unmarshal(updated, &parsed); err != nil || parsed.XMLName.Local != "model" {
+				t.Fatalf("qualified QIDI model XML became invalid: %v (root %q)", err, parsed.XMLName.Local)
+			}
+			repeated, err := setQIDIApplicationMetadata(updated)
+			if err != nil || !bytes.Equal(updated, repeated) {
+				t.Fatalf("qualified Application update was not idempotent: %v", err)
 			}
 		})
 	}

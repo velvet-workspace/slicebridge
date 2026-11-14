@@ -54,9 +54,11 @@ func TestQIDIAppFiveFilamentImportOnInstalledHost(t *testing.T) {
 	}
 	result := reply.Results[0]
 	if result.Report["target_filament_slots_used"] != 5 ||
-		result.Report["source_filament_slots"] != 5 ||
-		result.Report["native_slicer_material_review_required"] != false {
+		result.Report["source_filament_slots"] != 5 {
 		t.Fatalf("incorrect five-material app contract: %+v", result.Report)
+	}
+	if _, special := result.Report["native_slicer_material_review_required"]; special {
+		t.Fatalf("QIDI importer metadata compatibility must not add a special UI review field")
 	}
 	converted := appRead3MFParts(t, result.OutputPath)
 	if !bytes.Contains(converted["3D/3dmodel.model"], []byte(`<metadata name="Application">QIDIStudio-01.09.03.51</metadata>`)) {

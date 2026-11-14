@@ -82,6 +82,7 @@ func TestNativeFilamentSettingsMapEverySlot(t *testing.T) {
 func TestNativeFilamentProfileIDsFollowVerifiedInstalledMapEvenWhenMaterialPresetOmitsID(t *testing.T) {
 	bundle := syntheticMaterialBundle()
 	bundle.Target = "qidi"
+	bundle.Profile.ModelID = "X-Plus 5"
 	// An installed target's one material provides a blank
 	// filament_settings_id placeholder and PETG omits the key completely.
 	// The independently resolved installed FilamentProfiles mapping retains
@@ -108,6 +109,7 @@ func TestNativeFilamentProfileIDsFollowVerifiedInstalledMapEvenWhenMaterialPrese
 	}
 	missing := syntheticMaterialBundle()
 	missing.Target = "qidi"
+	missing.Profile.ModelID = "X-Plus 5"
 	delete(missing.Profile.FilamentProfiles, "PETG")
 	delete(missing.MaterialSettings["PETG"], "filament_settings_id")
 	if err := bindNativeFilamentSettings(missing, []converter.Filament{

@@ -172,7 +172,7 @@ func publishConversion(plan conversionPlan) (map[string]any, error) {
 	if err != nil {
 		return nil, fail("UPSTREAM_CONVERSION_FAILED", "bl2std: %v", err)
 	}
-	removed, err := stripSliceCacheForQIDI(rawPath, cleanPath, preserved, plan.target == "qidi")
+	removed, err := stripSliceCacheForQIDI(rawPath, cleanPath, preserved, plan.target == "qidi" && plan.expectedModel == "X-Plus 5")
 	if err != nil {
 		return nil, fail("CACHE_SANITIZE_FAILED", "%v", err)
 	}
@@ -229,26 +229,25 @@ func publishConversion(plan conversionPlan) (map[string]any, error) {
 			"The converted 3MF plate count could not be determined from its native project metadata. Per-plate prime tower coordinates therefore cannot be audited; inspect each plate and tower clearance in the native slicer before printing.")
 	}
 	return map[string]any{
-		"ok":                                     true,
-		"target":                                 plan.target,
-		"output":                                 dst,
-		"engine":                                 "bl2std",
-		"source_nozzle":                          plan.sourceNozzle.Nozzle,
-		"source_nozzle_source":                   plan.sourceNozzle.Source,
-		"source_nozzle_assumed":                  plan.sourceNozzle.Assumed,
-		"target_nozzle":                          plan.targetNozzle,
-		"nozzle_remapped":                        plan.sourceNozzle.Nozzle != plan.targetNozzle,
-		"nozzle_selected_by_user":                plan.requestedNozzle != "",
-		"target_nozzle_origin":                   string(plan.nozzleOrigin),
-		"profile_kind":                           string(plan.profileKind),
-		"source_filament_slots":                  len(plan.filaments),
-		"target_filament_slots_used":             len(slots),
-		"virtual_filament_slots":                 len(slots),
-		"physical_toolheads":                     plan.physicalTools,
-		"user_slot_mapping_required":             len(slots) > plan.physicalTools,
-		"tool_usage_verification_required":       len(slots) > 1,
-		"native_slicer_material_review_required": false,
-		"prime_tower_clearance_review_required":  primeTowerReview,
+		"ok":                                    true,
+		"target":                                plan.target,
+		"output":                                dst,
+		"engine":                                "bl2std",
+		"source_nozzle":                         plan.sourceNozzle.Nozzle,
+		"source_nozzle_source":                  plan.sourceNozzle.Source,
+		"source_nozzle_assumed":                 plan.sourceNozzle.Assumed,
+		"target_nozzle":                         plan.targetNozzle,
+		"nozzle_remapped":                       plan.sourceNozzle.Nozzle != plan.targetNozzle,
+		"nozzle_selected_by_user":               plan.requestedNozzle != "",
+		"target_nozzle_origin":                  string(plan.nozzleOrigin),
+		"profile_kind":                          string(plan.profileKind),
+		"source_filament_slots":                 len(plan.filaments),
+		"target_filament_slots_used":            len(slots),
+		"virtual_filament_slots":                len(slots),
+		"physical_toolheads":                    plan.physicalTools,
+		"user_slot_mapping_required":            len(slots) > plan.physicalTools,
+		"tool_usage_verification_required":      len(slots) > 1,
+		"prime_tower_clearance_review_required": primeTowerReview,
 		"prime_tower_plate_coordinate_review_required": primeTowerReview && towerPositions.incomplete(),
 		"prime_tower_plate_position_audit_status":      towerPositions.status(primeTowerReview),
 		"prime_tower_plates":                           towerPositions.plates,
