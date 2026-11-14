@@ -763,6 +763,59 @@ rather than green success, even for a single filament. All **202**
 native Node UI tests passed on Windows after using its verified
 `C:\Python311\python.exe` for the pinned visual-diff helper.
 
+### Repeat QA: centered 4×PLA + 1×PETG for QIDI and Flashforge (2026-11-14)
+
+The owner clarified that **Generic PETG was the local QIDIStudio preset
+in active use during a live PETG print** when the previous one-filament
+GUI screenshots were taken. This is a plausible explanation for the
+local PETG display overriding PLA from the imported 3MF; **no controlled
+native GUI experiment has established that this always occurs**. No
+slicer session or running printer was interrupted for this repeat QA.
+
+An opt-in `TestQIDIFlashforgeMixedFiveCenteredRustParity` now verifies
+two additional machine-specific, exclusive-create scratch source 3MFs
+based on the previously pinned, native-readable small tetrahedron.
+Both sources retain five distinct virtual filament slots: PLA red
+`#FF0000`, green `#00FF00`, blue `#0000FF`, yellow `#FFFF00`,
+and PETG white `#FFFFFF`. The original editable mesh remains a
+**four-triangle tetrahedron**, so the five palette entries do **not**
+prove five separately visible painted faces or a printable five-tool
+object.
+
+- **QIDI X-Plus 5 0.4 mm:** verified installed 320×320 mm bed;
+  translated 10 mm model to X/Y `155..165`, centered at `160`.
+  One physical tool and five **virtual** slots; mapping, native
+  material import and local preset review remain mandatory.
+- **Flashforge Creator 5 Pro 0.4 mm:** freshly resolved installed
+  Flash Studio Desktop OEM machine/profile; 256×256 mm bed;
+  model at X/Y `123..133`, centered at `128`. Four physical
+  tools and five virtual source materials; a fifth material cannot
+  be assumed to have automatic tool assignment. Manufacturer
+  PLA/PETG presets were resolved independently, retaining separate
+  temperature, flow and maximum volumetric speed settings.
+
+For **both** targets, production Go conversion and experimental Rust
+conversion completed, the full 3MF ZIP contents were compared
+semantically (PASS), all five material types, colors and profile IDs
+were checked independently, target-bed transform was preserved,
+stale cached G-code was absent in converted outputs, and the two
+source files remained byte-identical. No native Flash Studio GUI import,
+new QIDIStudio GUI import, Slice, G-code generation or physical
+printer operation was attempted.
+
+The installed Creator 5 Pro **0.25 mm** PLA preset exposed a
+manufacturer-profile conflict: nominal nozzle temperature `220 °C`
+but `nozzle_temperature_range_high=210 °C`. A separate read-only
+snapshot was recorded; **no 0.25 mm output was approved or included
+in the deliverable** pending correction/independent validation.
+
+Local machine-only scratch bundle (not committed, not a release):
+`D:\\VelvetOps\\SliceBridge-RustPilot-20261113\\slicer-qa\\qidi-flashforge-mixed-five-20261114-run2\\SliceBridge-QIDI-Flashforge-Go-Rust-4PLA-1PETG-QA.zip`.
+It contains six source/Go/Rust 3MF files, `READ-ME-FIRST.txt`
+and `qa-manifest-20261114.json`, and was independently reopened and
+checked for exactly eight entries. ZIP SHA-256:
+`b369a7741e07d232f153ea839226606b4f4a7df4bf38ab7da29edfbe641e667e`.
+
 ### Bounded local Rust JSONL worker — persistent-process experiment
 
 The optional `--convert-archive-stdio` mode processes a **finite**
