@@ -108,6 +108,18 @@ func TestRustInstalledOEMProductionPlanParity(t *testing.T) {
 					result["profile_kind"] != string(ProfileInstalledVendor) {
 					t.Fatalf("actual Go conversion used unexpected printer: %+v", result)
 				}
+				warnings, ok := result["warnings"].([]string)
+				if !ok {
+					t.Fatalf("production conversion omitted native-slicer warnings: %+v", result)
+				}
+				importWarningFound := false
+				for _, message := range warnings {
+					importWarningFound = importWarningFound || strings.Contains(message, "QIDIStudio may replace printer and material settings")
+				}
+				if expected := target == "qidi" && sourceKind != "bambu-one-color.3mf"; importWarningFound != expected {
+					t.Fatalf("QIDI native GUI import warning mismatch for %s/%s: got=%t want=%t; warnings=%v",
+						target, sourceKind, importWarningFound, expected, warnings)
+				}
 
 				plan, err := buildPlan(source, filepath.Join(dir, "unused-plan.3mf"),
 					func(src NozzleInfo) (*ResolvedTargetProfile, error) {

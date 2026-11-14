@@ -619,6 +619,51 @@ outputs and reported matching mesh metrics in
 It remains **geometry-only**, not a slicer GUI material/tool
 assignment check or manufacturing approval.
 
+### Native GUI readback: Snapmaker PASS; QIDIStudio material import NOT accepted (2026-11-14)
+
+The owner manually opened both centered, material-bound Go and Rust test
+archives (`material-bound-gui-centered-20261114`) in the installed
+native applications and supplied screenshots:
+
+- **Snapmaker Orca U1 0.4 mm**: Go and Rust projects both displayed the
+  same **five material profiles and ordered colors**, including a
+  fifth Generic PETG, and a 10 mm test object *inside* the bed after
+  fixing the synthetic source's initial out-of-bounds placement.
+  The UI still warned about PLA/PETG on the same plate. No slice,
+  physical tool changes, G-code, or printing was validated.
+- **QIDIStudio 02.07.02.73, X-Plus 5 0.4 mm**: Go and Rust displayed
+  identical small 10×10×10 mm / four-triangle geometry on the bed,
+  but the **GUI showed only one filament**: the user's local
+  `Velvet - kexcelled Marble PLA` profile. Neither displayed the
+  expected four QIDI OEM Generic PLA slots plus fifth Generic PETG.
+  The projects' actual ZIP `project_settings.config` each still
+  contains all five installed OEM filament preset names, types,
+  colors, temperatures and flow values. Thus *archive parity passed*
+  but *native QIDIStudio multi-material GUI acceptance did not*.
+  Do **not** treat this as an approved QIDI five-material project.
+
+QIDIStudio's upstream release notes explicitly state that importing
+3MF files it does not recognize as native QIDIStudio projects may
+automatically replace the printer and filament presets (see
+https://github.com/QIDITECH/QIDIStudio/releases/tag/v2.07.02.01 and
+https://github.com/QIDITECH/QIDIStudio/releases/tag/v2.06.00.51).
+Issue https://github.com/QIDITECH/QIDIStudio/issues/213 also reports
+that some project settings overrides may be ignored without their
+`different_settings_to_system` entry. Both are **candidate causes**,
+not proof of the exact QIDIStudio 02.07.02.73 decision path; actual
+QIDI material-box configuration and native-project provenance were
+not verified. No user profile or installed slicer files were modified.
+
+The Go production conversion now warns explicitly on QIDI multi-slot
+outputs that a native GUI may substitute a single local filament,
+and that **all** imported color/material slots must be visually
+confirmed before slicing or printing. A unit regression and the
+installed-OEM Go/Rust parity gate assert that this warning is
+present only for QIDI multi-slot conversion. This makes the known
+native limitation visible without falsely changing material
+identities, inventing a QIDIStudio provenance marker, or claiming
+that the Rust converter fixed a vendor import rule.
+
 ### Bounded local Rust JSONL worker — persistent-process experiment
 
 The optional `--convert-archive-stdio` mode processes a **finite**

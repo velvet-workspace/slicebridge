@@ -127,6 +127,20 @@ func physicalToolPhrase(count int) string {
 	return fmt.Sprintf("%d physical tools", count)
 }
 
+// vendorNativeImportWarnings distinguishes an archive's material metadata
+// from what a particular native slicer will actually display on import.
+// QIDIStudio can replace the printer/materials of an imported non-QIDI 3MF
+// with local presets, so ZIP parity alone must not imply GUI material parity.
+func vendorNativeImportWarnings(target string, slotCount int) []string {
+	if target != "qidi" || slotCount <= 1 {
+		return nil
+	}
+	return []string{fmt.Sprintf(
+		"QIDIStudio may replace printer and material settings when importing a 3MF that it does not recognize as a native QIDIStudio project. This file contains %d separate virtual material slots, but the installed GUI may instead show one local filament preset. Verify that all %d material profiles, types and colours actually appear in QIDIStudio before slicing or printing; if not, treat the import as geometry-only. The bridge does not claim native QIDI multi-material GUI acceptance.",
+		slotCount, slotCount,
+	)}
+}
+
 // publishConversion merges the resolved profile into the source project,
 // verifies the sanitized output and publishes it without overwriting.
 func publishConversion(plan conversionPlan) (map[string]any, error) {
@@ -215,6 +229,7 @@ func publishConversion(plan conversionPlan) (map[string]any, error) {
 		warnings = append(warnings,
 			"Multi-color tool use is not verified by this 3MF conversion. Check the native slicer layer preview, physical material assignments and intended tool changes in sliced G-code before printing.")
 	}
+	warnings = append(warnings, vendorNativeImportWarnings(plan.target, len(slots))...)
 	if primeTowerReview {
 		warnings = append(warnings,
 			"Target prime/wipe tower position and clearance are not verified. Check for collision with the model, brim and excluded bed areas in the actual target slicer before printing; no tower coordinates are automatically moved.")
