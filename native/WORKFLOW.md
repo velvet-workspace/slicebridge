@@ -80,7 +80,8 @@ they do **not** certify native Wails, a real file dialog or printer operation.
 
 When a Bambu project has five or more original color/material slots, keep
 all source channels independent in the converted 3MF project, along with
-their color names/types and painted/object filament assignments. The target's physical print nozzle count varies by printer model and is
+their color names/types and painted/object filament assignments. The
+physical print nozzle count varies by printer model and is
 independent of the number of project material slots. SliceBridge never
 merges or discards source channels based on physical nozzle count. A
 successful conversion is shown as converted without a noisy material-to-

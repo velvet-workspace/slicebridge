@@ -4,13 +4,13 @@ Published development builds are listed under [GitHub Releases](https://github.c
 
 ## Unreleased
 
+- **Release upgrade path ([PR #93](https://github.com/nocturney/slicebridge/pull/93); QA-only policy change, not a new binary):** document that `v0.4.0-beta.4` sorts below the already-published `beta.4.dev.N` snapshots and cannot be offered as an upgrade by their existing updater. Add cross-platform SemVer ordering regressions and a legacy Windows ZIP asset-compatibility check for published dev.8–dev.13 users; future release candidates must use a higher tag, bump the embedded app version, and rebuild from the approved exact source commit. Independent review and all release/hardware checks remain required.
+
 ## [0.4.0-beta.6.dev.2] - 2026-11-14 (quiet successful conversion results; internal development candidate, NOT RELEASED)
 
 - **Simpler conversion results:** successfully generated 3MF outputs are marked as converted rather than "Review mapping", without a prominent message comparing the number of source colors/materials with physical toolheads or demanding material/tool/G-code reassignment. This applies consistently to Hebrew and English and does not declare the output physically print-ready.
 - **Data contract unchanged:** the original per-material palette, painted geometry, slicer profile bindings, source immutability and the internal mapping/tool-verification diagnostics remain intact; no automatic merges, substitutions, slicing or printing. Independent warnings about actual prime/wipe-tower clearance and unreadable input remain visible. The end user decides how to prepare each converted project inside the target slicer.
 - **Verification:** focused real-DOM/RTL/English regressions check a five-material success card, unchanged five source material details, absent color/toolhead banners, and retained independent tower warnings; full frontend/backend and cross-platform PR checks required before merge, packaging or installation. No public Release published.
-
-- **Release upgrade path ([PR #93](https://github.com/nocturney/slicebridge/pull/93); QA-only policy change, not a new binary):** document that `v0.4.0-beta.4` sorts below the already-published `beta.4.dev.N` snapshots and cannot be offered as an upgrade by their existing updater. Add cross-platform SemVer ordering regressions and a legacy Windows ZIP asset-compatibility check for published dev.8–dev.13 users; future release candidates must use a higher tag, bump the embedded app version, and rebuild from the approved exact source commit. Independent review and all release/hardware checks remain required.
 
 ## [0.4.0-beta.6.dev.1] - 2026-11-14 (QIDI import compatibility development candidate; NOT RELEASED)
 

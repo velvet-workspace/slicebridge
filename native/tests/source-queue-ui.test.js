@@ -70,6 +70,8 @@ test('conversion results do not render advisory warnings about virtual materials
   assert.match(app,/result\.ok\?t\('summarySuccess'\):t\('summaryFailure'\)/);
   // Preserve backend reporting and independent geometry/prime tower diagnostics.
   assert.match(app,/report\.prime_tower_clearance_review_required/);
+  assert.match(app,/towerPerPlateReview:'ב־3MF המומר יש/);
+  assert.match(app,/towerPerPlateReview:'The converted 3MF has/);
   assert.match(app,/tower-per-plate-warning/);
   assert.match(app,/tower-plate-unknown-warning/);
   assert.doesNotMatch(app,/identical_source_slots_coalesced/);

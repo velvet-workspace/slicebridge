@@ -342,6 +342,7 @@ test('successful five-material conversion remains quiet while genuine tower diag
   assert.equal(pill.classList.contains('good'),true,'a successful conversion must show ordinary success');
   assert.equal(pill.classList.contains('review'),false,'tool count must not masquerade as a conversion failure');
   assert.equal(pill.textContent,'Converted');
+  assert.ok(row.querySelector('.open-slicer'),'conversion produces a project to open in its target slicer');
   assert.equal(row.querySelector('.material-mapping-warning'),null,'no virtual slot vs physical head notice');
   assert.equal(row.querySelector('.tool-usage-warning'),null,'no G-code or tool-assignment lecture');
   const details=row.querySelector('.report-details');
@@ -359,7 +360,6 @@ test('successful five-material conversion remains quiet while genuine tower diag
   assert.equal(matchingRow.querySelector('.status-pill').classList.contains('good'),true);
   assert.equal(matchingRow.querySelector('.tool-usage-warning'),null);
   assert.equal(matchingRow.querySelector('.material-mapping-warning'),null);
-
 
   const placement=await perform(false,true,4,4,true);
   const placementRow=placement.dom('resultList').querySelector('.result-row');
