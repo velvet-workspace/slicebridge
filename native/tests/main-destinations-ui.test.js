@@ -304,7 +304,7 @@ test('four-slot single-tool conversion warns outside collapsed details instead o
       {type:'PLA',color:'#0000FF'},
       {type:'PLA',color:'#FFFFFF'},
     ]};
-  async function perform(mappingRequired, toolUsageRequired=false, physicalTools=1, filamentCount=4, towerRequired=false, perPlateMissing=false, unknownPlateCount=false){
+  async function perform(mappingRequired, toolUsageRequired=false, physicalTools=1, filamentCount=4, towerRequired=false, perPlateMissing=false, unknownPlateCount=false, nativeMaterialReview=false){
     const chosenSource={...source,filaments:source.filaments.slice(0,filamentCount)};
     const app=startApp({
       InstalledOrcaTargets:()=>({targets:[orca],rejected:[]}),
@@ -317,6 +317,7 @@ test('four-slot single-tool conversion warns outside collapsed details instead o
           report:{source_filament_slots:filamentCount,target_filament_slots:filamentCount,virtual_filament_slots:filamentCount,
             physical_toolheads:physicalTools,target_nozzle:'0.4',user_slot_mapping_required:mappingRequired,
             tool_usage_verification_required:toolUsageRequired,
+            native_slicer_material_review_required:nativeMaterialReview,
             prime_tower_clearance_review_required:towerRequired,
             prime_tower_plate_coordinate_review_required:perPlateMissing,
             prime_tower_plate_position_audit_status:unknownPlateCount?'plate_count_unknown':
@@ -339,7 +340,7 @@ test('four-slot single-tool conversion warns outside collapsed details instead o
   assert.ok(row,'conversion result must be visible');
   const pill=row.querySelector('.status-pill');
   assert.equal(pill.classList.contains('review'),true);
-  assert.equal(pill.textContent,'Review mapping');
+  assert.equal(pill.textContent,'Review required');
   assert.equal(pill.classList.contains('good'),false,
     'cannot claim ordinary green success when physical tool mapping needs review');
   const warning=row.querySelector('.material-mapping-warning');
@@ -392,6 +393,25 @@ test('four-slot single-tool conversion warns outside collapsed details instead o
   assert.match(unknownWarning.textContent,/native slicer/);
   assert.equal(unknownRow.querySelector('.tower-per-plate-warning'),null,
     'unknown and incomplete are distinct states');
+
+  const singleQidi=await perform(false,false,1,1,false,false,false,true);
+  const qidiRow=singleQidi.dom('resultList').querySelector('.result-row');
+  const qidiPill=qidiRow.querySelector('.status-pill');
+  assert.ok(qidiPill.classList.contains('review'),
+    'one-filament QIDI native importer review must not be shown as a normal green success');
+  assert.equal(qidiPill.textContent,'Review required');
+  assert.equal(qidiPill.classList.contains('good'),false);
+  const qidiWarning=qidiRow.querySelector('.native-material-warning');
+  assert.ok(qidiWarning,'single-spool QIDI material import warning must be visible');
+  assert.equal(qidiWarning.closest('details'),null,
+    'critical QIDI material warning cannot be hidden in collapsed details');
+  assert.match(qidiWarning.textContent,/QIDIStudio/);
+  assert.match(qidiWarning.textContent,/single filament/);
+  assert.match(qidiWarning.textContent,/material/);
+  assert.equal(qidiRow.querySelector('.material-mapping-warning'),null,
+    'one source slot requires material review, not a false extra-slot mapping warning');
+  assert.equal(qidiRow.querySelector('.tool-usage-warning'),null,
+    'one source slot must not get a false multicolour tool-use warning');
 
   const ordinary=await perform(false,false,1,1);
   const ordinaryRow=ordinary.dom('resultList').querySelector('.result-row');

@@ -706,11 +706,62 @@ QIDIStudio single-spool GUI preview test.
 The installed OEM Go/Rust archive parity gate additionally verifies
 `physical_toolheads=1` for QIDI and includes a **centered
 one-material** pinned 3MF test source, whose mesh is preserved but
-whose build item is translated into the printable bed. This produces
-scratch-only Go and Rust QIDI outputs suitable for **future owner
-native GUI verification of the actual single-spool workflow**.
-A centered single-material GUI PASS, G-code or print operation has
-**not** been claimed.
+whose build item is translated into the printable bed. The scratch
+Go/Rust outputs were subsequently examined in the native QIDIStudio GUI.
+
+### QIDIStudio single-filament GUI readback: geometry PASS, material FAIL (2026-11-14)
+
+The owner supplied two native QIDIStudio screenshots, showing the
+experimental **Rust** (`bound-rust-qidi-centered-one.3mf`) and actual
+**Go** (`bound-go-qidi-centered-one.3mf`) converted projects.
+Both native windows show **X-Plus 5, nozzle 0.4 mm**, one displayed
+filament **Generic PETG**, and model info **10 × 10 × 10 mm,
+166.667 mm³, four triangles**. The model is visibly located inside
+the displayed build plate. These are native GUI project/geometry
+smoke checks, not slicing or printable-placement certification.
+
+Independent read-only ZIP inspection of the exact corresponding
+scratch artifacts in
+`slicer-qa/material-bound-qidi-single-exact-palette-20261114`
+confirmed:
+- The original source declares **PLA, red `#FF0000`**.
+- **Both** Go and Rust converted 3MF archives declare **PLA,
+  `#FF0000`**, manufacturer material ID
+  `Generic PLA @Qidi X-Plus 5 0.4 nozzle`, printer identity
+  `X-Plus 5 0.4 nozzle`, 0.4 mm nozzle, 220 °C nominal,
+  190–240 °C allowed range, flow ratio 0.98, and
+  maximum volumetric speed 14.
+- The owner-visible native QIDIStudio UI instead displayed
+  **Generic PETG** for *both* converted projects.
+  Thus the observed native material/preset display **does not
+  match the PLA declared in either output 3MF**.
+
+Package SHA-256 receipts:
+- Source `2DB3A69B04F5F317EB0BB55BCA951E0FECE3EF72698918EA603E121F707F9EEC`
+- Go `83A71FF0C3946BA9F198BF0AA23171C4965536D2D72B1E17A8E8CE1C616056B9`
+- Rust `DD351B279320425DA4D63B0142D41675947A10C9009F032104B22DE8A3583896`
+
+Owner-supplied screenshot SHA-256 (screenshot images are **not** committed):
+- Rust `image(20261114-071709).png`:
+  `7D43691CE458CB199A772B8F9F1C5AD85EB902F23683AAC0446AAEBC5D3842AF`
+- Go `image(20261114-071721).png`:
+  `0979FDC03F214C66D63CF222DB515BA9290A6C5C6C8A417B259DDC1C6BC7EE38`
+
+**Acceptance decision:** native project/geometry smoke **PASS** for
+both engines; **native QIDI material preset parity FAIL** for both.
+The screenshots alone do not establish whether QIDIStudio import rules,
+a persisted user-local preset or another GUI state caused the PETG
+selection. Do not silently override the source material, invent a
+vendor-native marker, claim slicer compatibility, generate G-code,
+slice, print or merge/deploy the Rust draft.
+
+This evidence also exposed a native SliceBridge UI gap: the backend's
+`native_slicer_material_review_required` flag was not part of the
+result-card status. The experimental branch now displays a visible
+bilingual QIDI material-review warning and uses **Review required**
+rather than green success, even for a single filament. All **202**
+native Node UI tests passed on Windows after using its verified
+`C:\Python311\python.exe` for the pinned visual-diff helper.
 
 ### Bounded local Rust JSONL worker — persistent-process experiment
 

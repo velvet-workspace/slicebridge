@@ -70,7 +70,7 @@ test('extra virtual filament slots are disclosed without any silent merge',()=>{
   assert.match(app,/does not establish feeder capacity/);
   assert.match(app,/towerPerPlateReview:'ב־3MF המומר יש/);
   assert.match(app,/towerPerPlateReview:'The converted 3MF has/);
-  assert.match(app,/const mappingReview=Boolean\(result\.ok&&requiresToolUseReview\(result\.report\)\)/);
+  assert.match(app,/const needsReview=Boolean\(result\.ok&&requiresConversionReview\(result\.report\)\)/);
   assert.match(app,/row\.append\(node\('p','warning-line material-mapping-warning'/);
   assert.match(app,/t\('virtualSlotsReview',\{n:report\.virtual_filament_slots,physical:report\.physical_toolheads\}\)/);
   assert.doesNotMatch(app,/identical_source_slots_coalesced/);
@@ -78,17 +78,33 @@ test('extra virtual filament slots are disclosed without any silent merge',()=>{
 
 test('multicolor tool usage remains unverified even if four slots fit four tools',()=>{
   const app=read('frontend/dist/app.js');
-  const match=app.match(/function requiresToolUseReview\(report\)\{[\s\S]*?\n\}/);
+  const match=app.match(/function requiresConversionReview\(report\)\{[\s\S]*?\n\}/);
   assert.ok(match,'actual UI tool-use safety decision helper is missing');
-  const check=Function(match[0]+';return requiresToolUseReview;')();
+  const check=Function(match[0]+';return requiresConversionReview;')();
   assert.equal(check({user_slot_mapping_required:false,tool_usage_verification_required:true}),true);
   assert.equal(check({user_slot_mapping_required:true,tool_usage_verification_required:false}),true);
   assert.equal(check({user_slot_mapping_required:false,tool_usage_verification_required:false}),false);
+  assert.equal(check({user_slot_mapping_required:false,tool_usage_verification_required:false,
+    native_slicer_material_review_required:true}),true);
+  assert.equal(check({user_slot_mapping_required:false,tool_usage_verification_required:false,
+    native_slicer_material_review_required:false}),false);
   assert.equal(check(null),false);
   assert.match(app,/toolUseReview:'[^']*G-code/);
   assert.match(app,/warning-line tool-usage-warning/);
 });
 
+
+test('QIDI single-filament import requires a visible bilingual native-material warning',()=>{
+  const app=read('frontend/dist/app.js');
+  assert.match(app,/nativeSlicerMaterialReview:'ייבוא 3MF ל־QIDIStudio/);
+  assert.match(app,/nativeSlicerMaterialReview:'QIDIStudio may replace imported 3MF/);
+  assert.match(app,/if\(report\.native_slicer_material_review_required\)\{/);
+  assert.match(app,/warning-line native-material-warning/);
+  assert.match(app,/t\('nativeSlicerMaterialReview'\)/);
+  assert.match(app,/summaryReview:'נדרשת בדיקה'/);
+  assert.match(app,/summaryReview:'Review required'/);
+  assert.match(app,/needsReview\?'review':'good'/);
+});
 
 test('unknown target plate metadata has bilingual manual tower review wording',()=>{
   const app=read('frontend/dist/app.js');
