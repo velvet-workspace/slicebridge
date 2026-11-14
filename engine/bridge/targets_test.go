@@ -172,6 +172,22 @@ func TestNativeFlowRatioAliasFromInstalledPreset(t *testing.T) {
 	}
 }
 
+func TestPartialNativePlateTemperatureFailsClosed(t *testing.T) {
+	bundle := syntheticMaterialBundle()
+	bundle.MaterialSettings["PLA"]["textured_plate_temp"] = []any{"60"}
+	filaments := []converter.Filament{{ID: 1, Type: "PLA"}, {ID: 2, Type: "PETG"}}
+	if err := bindNativeFilamentSettings(bundle, filaments); err == nil || !strings.Contains(err.Error(), "textured_plate_temp") {
+		t.Fatalf("a PLA-only bed temperature must not leak to PETG: %v", err)
+	}
+	bundle.MaterialSettings["PETG"]["textured_plate_temp"] = []any{"75"}
+	if err := bindNativeFilamentSettings(bundle, filaments); err != nil {
+		t.Fatalf("complete installed plate temperatures must map: %v", err)
+	}
+	if !reflect.DeepEqual(bundle.Profile.ProjectSettings["textured_plate_temp"], []any{"60", "75"}) {
+		t.Fatalf("per-material plate values not preserved: %v", bundle.Profile.ProjectSettings["textured_plate_temp"])
+	}
+}
+
 func TestProfileGuardRejectsUnknownMaterial(t *testing.T) {
 	bundle := syntheticMaterialBundle()
 	err := bindNativeFilamentSettings(bundle, []converter.Filament{

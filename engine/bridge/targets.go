@@ -209,6 +209,7 @@ func bindNativeFilamentSettings(bundle *targetBundle, filaments []converter.Fila
 			// presets; never apply a PLA-only override to PETG/ABS slots.
 			if strings.HasPrefix(key, "nozzle_temperature") ||
 				strings.HasPrefix(key, "bed_temperature") ||
+				strings.HasSuffix(key, "_plate_temp") || strings.Contains(key, "_plate_temp_") ||
 				key == "filament_max_volumetric_speed" ||
 				strings.Contains(key, "flow_ratio") ||
 				key == "filament_type" || key == "filament_settings_id" {

@@ -231,6 +231,12 @@ func TestRustNativeMaterialMappingParity(t *testing.T) {
 			{ID: 1, Type: "PLA"}, {ID: 2, Type: "PLA"}, {ID: 3, Type: "PLA"},
 			{ID: 4, Type: "PLA"}, {ID: 5, Type: "PLA"},
 		}, nil},
+		{"partial_installed_hot_plate_temperature", []converter.Filament{
+			{ID: 1, Type: "PLA"}, {ID: 2, Type: "PETG"},
+		}, func(bundle *targetBundle) {
+			bundle.Profile.ProjectSettings["hot_plate_temp"] = []any{"999"}
+			bundle.MaterialSettings["PLA"]["hot_plate_temp"] = []any{"60"}
+		}},
 		{"all_presets_missing_nozzle_with_stale_project_value", []converter.Filament{
 			{ID: 1, Type: "PLA"}, {ID: 2, Type: "PETG"},
 		}, func(bundle *targetBundle) {

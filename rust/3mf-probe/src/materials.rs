@@ -82,6 +82,8 @@ pub fn source_slot_plan(input: &Value) -> Result<Value, String> {
 fn is_critical_key(key: &str) -> bool {
     key.starts_with("nozzle_temperature")
         || key.starts_with("bed_temperature")
+        || key.ends_with("_plate_temp")
+        || key.contains("_plate_temp_")
         || key == "filament_max_volumetric_speed"
         || key.contains("flow_ratio")
         || key == "filament_type"
@@ -499,6 +501,36 @@ mod tests {
                 "blank or null temperature accepted: {error}"
             );
         }
+    }
+
+    #[test]
+    fn partial_installed_plate_temperature_never_falls_back_to_wrong_material() {
+        let mut req = json!({
+            "bundle": {
+                "target": "u1",
+                "profile": {
+                    "filament_slots": 2,
+                    "filament_profiles": {"PLA": "PLA-native", "PETG": "PETG-native"},
+                    "project_settings": {"textured_plate_temp": ["999"]}
+                },
+                "material_settings": {
+                    "PLA": {"nozzle_temperature": ["210"], "filament_flow_ratio": ["0.98"], "filament_max_volumetric_speed": ["18"], "textured_plate_temp": ["60"]},
+                    "PETG": {"nozzle_temperature": ["245"], "filament_flow_ratio": ["0.97"], "filament_max_volumetric_speed": ["12"]}
+                }
+            },
+            "filaments": [{"id": 1, "type": "PLA"}, {"id": 2, "type": "PETG"}]
+        });
+        let error = map_native_material_settings(&req).unwrap_err();
+        assert!(
+            error.contains("textured_plate_temp"),
+            "unsafe fallback accepted: {error}"
+        );
+        req["bundle"]["material_settings"]["PETG"]["textured_plate_temp"] = json!(["75"]);
+        let output = map_native_material_settings(&req).unwrap();
+        assert_eq!(
+            output["project_settings"]["textured_plate_temp"],
+            json!(["60", "75"])
+        );
     }
 
     #[test]
