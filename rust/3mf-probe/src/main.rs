@@ -5,7 +5,7 @@ use slicebridge_3mf_probe::{
     rewrite_model_paint_xml, rewrite_model_settings, rewrite_slice_info_xml, source_slot_plan,
     strip_slice_cache_preserving, validate_native_bundle, SliceInfoSlot,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -16,7 +16,7 @@ use std::process;
 const MAX_JSON_INPUT_BYTES: u64 = 8 << 20;
 
 fn usage() -> String {
-    "usage: slicebridge-3mf-probe <file.3mf> | --strip-cache [--preserve KEY]... <source.3mf> <output.3mf> | --plan-slots <request.json> | --map-materials <request.json> | --validate-native-bundle <request.json> | --plan-native-conversion <request.json> | --remap-paint <request.json> | --remap-model <request.json> | --rewrite-model-settings <request.json> | --compose-project-settings <request.json> | --rewrite-slice-info <request.json> | --convert-archive <plan.json> <source.3mf> <output.3mf> | --convert-native-archive <verified-request.json> <source.3mf> <new-output.3mf> | --convert-archive-stdio"
+    "usage: slicebridge-3mf-probe <file.3mf> | --strip-cache [--preserve KEY]... <source.3mf> <output.3mf> | --plan-slots <request.json> | --map-materials <request.json> | --validate-native-bundle <request.json> | --plan-native-conversion <request.json> | --remap-paint <request.json> | --remap-model <request.json> | --rewrite-model-settings <request.json> | --compose-project-settings <request.json> | --rewrite-slice-info <request.json> | --convert-archive <plan.json> <source.3mf> <output.3mf> | --convert-native-archive <verified-request.json> <source.3mf> <new-output.3mf> | --convert-archive-stdio | --convert-native-archive-stdio"
         .to_owned()
 }
 
@@ -259,21 +259,52 @@ fn run(args: &[OsString]) -> Result<Value, String> {
 // operating-system startup cost. No network listener, daemon, printer command
 // or installed-profile lookup is created. It exits cleanly on stdin EOF.
 fn convert_archive_stdio(request: &Value) -> Result<Value, String> {
-    let field = |name: &str| -> Result<&str, String> {
-        request
-            .get(name)
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty() && s.len() <= 4096)
-            .ok_or_else(|| format!("{name} must be a bounded nonempty path"))
-    };
-    let plan = read_request(OsStr::new(field("plan_file")?))?;
-    let source = PathBuf::from(field("source")?);
-    let destination = PathBuf::from(field("destination")?);
+    let plan = read_request(OsStr::new(job_path(request, "plan_file")?))?;
+    let source = PathBuf::from(job_path(request, "source")?);
+    let destination = PathBuf::from(job_path(request, "destination")?);
     let removed = convert_archive_experimental(source, destination, &plan)?;
     Ok(json!({"ok":true,"removed":removed,"experimental":true}))
 }
 
+// Native jobs reuse the JSONL transport above. Every destination named by a
+// job that passes field validation is claimed for the life of this worker, so
+// a repeated output is refused before any filesystem work, even if the first
+// attempt failed and left nothing behind. Outputs are never overwritten.
+fn convert_native_archive_stdio(
+    claimed: &mut BTreeSet<String>,
+    job: &Value,
+) -> Result<Value, String> {
+    let request_file = job_path(job, "request_file")?;
+    let source = PathBuf::from(job_path(job, "source")?);
+    let destination = job_path(job, "destination")?;
+    if !claimed.insert(destination.to_owned()) {
+        return Err("duplicate destination in this worker; refusing overwrite".into());
+    }
+    let verified = read_request(OsStr::new(request_file))?;
+    convert_native_archive(&verified, &source, &PathBuf::from(destination))
+}
+
+fn job_path<'a>(request: &'a Value, name: &str) -> Result<&'a str, String> {
+    request
+        .get(name)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty() && s.len() <= 4096)
+        .ok_or_else(|| format!("{name} must be a bounded nonempty path"))
+}
+
 fn run_stdio() -> Result<(), String> {
+    run_jsonl_worker(convert_archive_stdio)
+}
+
+fn run_native_stdio() -> Result<(), String> {
+    let mut claimed = BTreeSet::new();
+    run_jsonl_worker(|job| convert_native_archive_stdio(&mut claimed, job))
+}
+
+// Shared bounded transport: one JSON object per line, at most 8 MB per line and
+// 4096 jobs per process. Each job produces exactly one reply line; a job error
+// is reported and the worker continues. Framing errors end the worker.
+fn run_jsonl_worker(mut handle: impl FnMut(&Value) -> Result<Value, String>) -> Result<(), String> {
     const MAX_REQUESTS: usize = 4096;
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
@@ -297,7 +328,7 @@ fn run_stdio() -> Result<(), String> {
         }
         let result = serde_json::from_slice::<Value>(&line)
             .map_err(|e| format!("stdio request invalid JSON: {e}"))
-            .and_then(|request| convert_archive_stdio(&request));
+            .and_then(|request| handle(&request));
         let reply = match result {
             Ok(response) => response,
             Err(error) => json!({"ok":false,"error":error}),
@@ -316,6 +347,13 @@ fn main() {
     if args.as_slice() == [OsStr::new("--convert-archive-stdio")] {
         if let Err(error) = run_stdio() {
             eprintln!("experimental stdio worker terminated: {error}");
+            process::exit(1);
+        }
+        return;
+    }
+    if args.as_slice() == [OsStr::new("--convert-native-archive-stdio")] {
+        if let Err(error) = run_native_stdio() {
+            eprintln!("experimental native stdio worker terminated: {error}");
             process::exit(1);
         }
         return;
