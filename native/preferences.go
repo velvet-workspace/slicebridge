@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/nocturney/slicebridge/native/presets"
@@ -53,13 +55,41 @@ func settingsPath() (string, error) {
 	}
 	return filepath.Join(dir, "Velvet Factory", "SliceBridge", "settings.json"), nil
 }
+
+// Windows antivirus and concurrent readers can briefly hold a non-shareable
+// file handle while another goroutine atomically replaces settings.json.
+// Retry only Windows sharing/lock violations; never treat arbitrary I/O,
+// corrupt JSON or access-denied errors as valid settings.
+func transientWindowsSettingsLock(err error) bool {
+	return runtime.GOOS == "windows" &&
+		(errors.Is(err, syscall.Errno(32)) || errors.Is(err, syscall.Errno(33)))
+}
+
+func readSettingsFile(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	for attempt := 0; attempt < 20 && transientWindowsSettingsLock(err); attempt++ {
+		time.Sleep(5 * time.Millisecond)
+		data, err = os.ReadFile(path)
+	}
+	return data, err
+}
+
+func renameSettingsFile(source, destination string) error {
+	err := os.Rename(source, destination)
+	for attempt := 0; attempt < 20 && transientWindowsSettingsLock(err); attempt++ {
+		time.Sleep(5 * time.Millisecond)
+		err = os.Rename(source, destination)
+	}
+	return err
+}
+
 func loadSettings() (Settings, error) {
 	defaults := defaultSettings()
 	file, err := settingsPath()
 	if err != nil {
 		return defaults, err
 	}
-	b, err := os.ReadFile(file)
+	b, err := readSettingsFile(file)
 	if errors.Is(err, os.ErrNotExist) {
 		// Preserve existing nozzle, filament and window preferences when
 		// upgrading from the original 3MF Bridge name. Never overwrite
@@ -72,7 +102,7 @@ func loadSettings() (Settings, error) {
 			return defaults, dirErr
 		}
 		legacy := filepath.Join(root, "Velvet Factory", "3MF Bridge", "settings.json")
-		b, err = os.ReadFile(legacy)
+		b, err = readSettingsFile(legacy)
 		if errors.Is(err, os.ErrNotExist) {
 			return defaults, nil
 		}
@@ -153,11 +183,12 @@ func writeSettings(settings Settings) error {
 	if err = file.Close(); err != nil {
 		return err
 	}
-	if err = os.Rename(name, path); err != nil {
+	if err = renameSettingsFile(name, path); err != nil {
 		return err
 	}
 	return nil
 }
+
 // RecoverInvalidSettings is an opt-in recovery path for malformed or incompatible
 // settings. It never edits an otherwise valid file and retains the exact bytes
 // of the old file alongside the replacement. The UI must request confirmation.
