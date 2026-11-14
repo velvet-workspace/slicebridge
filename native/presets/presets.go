@@ -154,11 +154,8 @@ func kind(file string) string {
 	return ""
 }
 
-// unmarshalVendorPresetJSON tolerates the optional UTF-8 BOM emitted by
-// some *installed* Orca-family vendor JSON resources (confirmed in the
-// Snapmaker Orca U1 process chain). This is not a text-encoding conversion:
-// only the exact leading EF BB BF signature is removed. Invalid JSON,
-// UTF-16, partial BOMs and unexpected bytes still fail closed.
+// Installed Orca-family vendor JSON may contain an exact leading UTF-8 BOM.
+// Only that signature is removed; malformed, UTF-16 and partial BOMs fail.
 func unmarshalVendorPresetJSON(data []byte, target *map[string]any) error {
 	return json.Unmarshal(bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF}), target)
 }

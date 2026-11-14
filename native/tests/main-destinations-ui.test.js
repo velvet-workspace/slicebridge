@@ -295,7 +295,7 @@ test('real five-printer setup: Creator 5 Pro 0.25 is checked, Select all toggles
   assert.deepEqual([...sent[0]].sort(),['cc2','c5','qidi','u1',proId].sort());
 });
 
-test('four-slot single-tool conversion warns outside collapsed details instead of claiming print-ready success',async()=>{
+test('successful five-material conversion stays quiet when tower QA flags are set',async()=>{
   const source={path:'C:/qa/four-colours.3mf',name:'four-colours.3mf',
     folder:'C:/qa',sizeLabel:'1 KB',nozzle:'0.4',objects:1,instances:1,plates:1,
     filaments:[
@@ -303,6 +303,7 @@ test('four-slot single-tool conversion warns outside collapsed details instead o
       {type:'PLA',color:'#00FF00'},
       {type:'PLA',color:'#0000FF'},
       {type:'PLA',color:'#FFFFFF'},
+      {type:'PETG',color:'#E5E5E5'},
     ]};
   async function perform(mappingRequired, toolUsageRequired=false, physicalTools=1, filamentCount=4, towerRequired=false, perPlateMissing=false, unknownPlateCount=false, nativeMaterialReview=false){
     const chosenSource={...source,filaments:source.filaments.slice(0,filamentCount)};
@@ -335,81 +336,65 @@ test('four-slot single-tool conversion warns outside collapsed details instead o
     app.dom('convertBtn').fire('click');await settle();
     return app;
   }
-  const review=await perform(true);
-  const row=review.dom('resultList').querySelector('.result-row');
-  assert.ok(row,'conversion result must be visible');
+  const multiMaterial=await perform(true,true,1,5);
+  const row=multiMaterial.dom('resultList').querySelector('.result-row');
+  assert.ok(row,'successful conversion result must be visible');
   const pill=row.querySelector('.status-pill');
-  assert.equal(pill.classList.contains('review'),true);
-  assert.equal(pill.textContent,'Review required');
-  assert.equal(pill.classList.contains('good'),false,
-    'cannot claim ordinary green success when physical tool mapping needs review');
-  const warning=row.querySelector('.material-mapping-warning');
-  assert.ok(warning,'manual material mapping caution must be visible on result card');
-  assert.equal(warning.closest('details'),null,'warning cannot live in collapsed details');
-  assert.equal(warning.hidden,false);
-  assert.match(warning.textContent,/All 4 source color\/material/);
-  assert.match(warning.textContent,/feeder capacity/i,
-    'a one-nozzle printer may still have multiple material feed channels');
-  assert.doesNotMatch(warning.textContent,/choose what to merge or remove/i,
-    'source colors must not be discarded just because the machine has one nozzle');
-  const detail=row.querySelector('.report-details');
-  assert.ok(detail,'diagnostic details remain accessible');
-  assert.equal(detail.open,false,'even closed diagnostic panel must not hide warning');
+  assert.equal(pill.classList.contains('good'),true,'a successful conversion must show ordinary success');
+  assert.equal(pill.classList.contains('review'),false,'tool count must not masquerade as a conversion failure');
+  assert.equal(pill.textContent,'Converted');
+  assert.ok(row.querySelector('.open-slicer'),'conversion produces a project to open in its target slicer');
+  assert.equal(row.querySelector('.material-mapping-warning'),null,'no virtual slot vs physical head notice');
+  assert.equal(row.querySelector('.tool-usage-warning'),null,'no G-code or tool-assignment lecture');
+  const details=row.querySelector('.report-details');
+  assert.ok(details,'technical conversion details must remain available');
+  assert.equal(details.open,false,'details remain collapsed by default');
+  assert.equal(details.querySelectorAll('.color-token').length,5,'all five original source materials remain inspectable');
+  multiMaterial.dom('heBtn').fire('click');
+  await settle();
+  assert.equal(multiMaterial.dom('resultList').querySelector('.status-pill').textContent,'הומר בהצלחה');
+  assert.equal(multiMaterial.dom('resultList').querySelector('.material-mapping-warning'),null,
+    'the quiet result should be equally clean in Hebrew');
 
   const matchingFour=await perform(false,true,4,4);
   const matchingRow=matchingFour.dom('resultList').querySelector('.result-row');
-  assert.equal(matchingRow.querySelector('.status-pill').classList.contains('review'),true,
-    'four source materials and four tools still require physical tool-use verification');
-  assert.equal(matchingRow.querySelector('.material-mapping-warning'),null,
-    'equal source and physical capacity must not show the overflow warning');
-  const toolWarning=matchingRow.querySelector('.tool-usage-warning');
-  assert.ok(toolWarning,'multicolor tool verification warning must be visible');
-  assert.equal(toolWarning.closest('details'),null);
-  assert.match(toolWarning.textContent,/G-code/);
+  assert.equal(matchingRow.querySelector('.status-pill').classList.contains('good'),true);
+  assert.equal(matchingRow.querySelector('.tool-usage-warning'),null);
+  assert.equal(matchingRow.querySelector('.material-mapping-warning'),null);
 
-  const placement=await perform(false,true,4,4,true);
-  const placementRow=placement.dom('resultList').querySelector('.result-row');
-  const placementWarning=placementRow.querySelector('.tower-clearance-warning');
-  assert.ok(placementWarning,'a native prime tower must trigger visible clearance review');
-  assert.equal(placementWarning.closest('details'),null,'the tower caution must not be hidden');
-  assert.match(placementWarning.textContent,/collision/);
-  assert.match(placementWarning.textContent,/excluded bed/);
-  const multi=await perform(true,true,1,4,true,true);
-  const multiRow=multi.dom('resultList').querySelector('.result-row');
-  const perPlate=multiRow.querySelector('.tower-per-plate-warning');
-  assert.ok(perPlate,'two plates with incomplete tower X/Y must have their own visible warning');
-  assert.equal(perPlate.closest('details'),null,'per-plate blocker cannot hide in collapsed diagnostics');
-  assert.match(perPlate.textContent,/2.*plates/);
-  assert.match(perPlate.textContent,/1.*X/);
-  assert.match(perPlate.textContent,/1.*Y/);
-  assert.match(perPlate.textContent,/native slicer/);
-
-  const unknown=await perform(false,true,4,4,true,false,true);
-  const unknownRow=unknown.dom('resultList').querySelector('.result-row');
-  const unknownWarning=unknownRow.querySelector('.tower-plate-unknown-warning');
-  assert.ok(unknownWarning,'unknown plate count must be disclosed outside collapsed details');
-  assert.equal(unknownWarning.closest('details'),null);
-  assert.match(unknownWarning.textContent,/plate count/i);
-  assert.match(unknownWarning.textContent,/native slicer/);
-  assert.equal(unknownRow.querySelector('.tower-per-plate-warning'),null,
-    'unknown and incomplete are distinct states');
+  // Native tower settings remain in the machine-readable backend report,
+  // but a completed 3MF conversion should not lecture about prime towers.
+  for(const scene of [
+    await perform(false,true,4,4,true),
+    await perform(true,true,1,4,true,true),
+    await perform(false,true,4,4,true,false,true),
+  ]){
+    const rendered=scene.dom('resultList').querySelector('.result-row');
+    assert.equal(rendered.querySelector('.status-pill').classList.contains('good'),true);
+    assert.equal(rendered.querySelector('.tower-clearance-warning'),null);
+    assert.equal(rendered.querySelector('.tower-per-plate-warning'),null);
+    assert.equal(rendered.querySelector('.tower-plate-unknown-warning'),null);
+    assert.ok(rendered.querySelector('.open-slicer'),'user can inspect any towers in the target slicer');
+    assert.ok(rendered.querySelector('.report-details'),'technical conversion details remain available');
+  }
+  const hebrew=await perform(true,true,1,5,true,false,true);
+  hebrew.dom('heBtn').fire('click');
+  await settle();
+  const hebrewResult=hebrew.dom('resultList').querySelector('.result-row');
+  assert.equal(hebrewResult.querySelector('.status-pill').textContent,'הומר בהצלחה');
+  assert.equal(hebrewResult.querySelector('.tower-clearance-warning'),null);
+  assert.equal(hebrewResult.querySelector('.tower-plate-unknown-warning'),null);
 
   const singleQidi=await perform(false,false,1,1,false,false,false,true);
   const qidiRow=singleQidi.dom('resultList').querySelector('.result-row');
   const qidiPill=qidiRow.querySelector('.status-pill');
-  assert.ok(qidiPill.classList.contains('review'),
-    'one-filament QIDI native importer review must not be shown as a normal green success');
-  assert.equal(qidiPill.textContent,'Review required');
-  assert.equal(qidiPill.classList.contains('good'),false);
-  const qidiWarning=qidiRow.querySelector('.native-material-warning');
-  assert.ok(qidiWarning,'single-spool QIDI material import warning must be visible');
-  assert.equal(qidiWarning.closest('details'),null,
-    'critical QIDI material warning cannot be hidden in collapsed details');
-  assert.match(qidiWarning.textContent,/QIDIStudio/);
-  assert.match(qidiWarning.textContent,/single filament/);
-  assert.match(qidiWarning.textContent,/material/);
+  // Successful 3MF conversion is success, without a hardware-specific
+  // filament or importer warning; user chooses inside the native slicer.
+  assert.ok(qidiPill.classList.contains('good'));
+  assert.equal(qidiPill.textContent,'Converted');
+  assert.equal(qidiRow.querySelector('.native-material-warning'),null);
   assert.equal(qidiRow.querySelector('.material-mapping-warning'),null,
-    'one source slot requires material review, not a false extra-slot mapping warning');
+    'a single source slot should not claim extra-slot mapping');
   assert.equal(qidiRow.querySelector('.tool-usage-warning'),null,
     'one source slot must not get a false multicolour tool-use warning');
 
@@ -455,6 +440,9 @@ test('a real mixed per-file batch outcome cannot be announced as fully completed
   assert.match(en.dom('activityDetail').textContent,/1 successful, 1 failed/);
   assert.match(en.dom('activityIcon').className,/warning/);
   assert.equal(en.dom('resultList').querySelectorAll('.file-report').length,2);
+  const failedCard=en.dom('resultList').querySelector('.status-pill.bad');
+  assert.ok(failedCard,'an invalid source must still produce a visible red failure card');
+  assert.equal(failedCard.textContent,'Failed');
   assert.equal(en.dom('convertBtn').disabled,false);
   const he=await perform('he');
   assert.equal(he.dom('activityText').textContent,'ההמרה הושלמה חלקית');

@@ -147,12 +147,16 @@ func stripSliceCacheForQIDI(source, dest string, preserved []string, qidi bool) 
 	defer out.Close()
 	zw := zip.NewWriter(out)
 	removed := 0
+	qidiModelAdded := false
 	for _, f := range zr.File {
 		if isCache(f.Name) {
 			removed++
 			continue
 		}
 		if qidi && f.Name == "3D/3dmodel.model" {
+			if qidiModelAdded {
+				return removed, fmt.Errorf("duplicate primary QIDI 3MF model part")
+			}
 			if f.UncompressedSize64 > 200<<20 {
 				return removed, fmt.Errorf("QIDI model XML exceeds 200 MiB")
 			}
@@ -180,7 +184,7 @@ func stripSliceCacheForQIDI(source, dest string, preserved []string, qidi bool) 
 			if _, err := w.Write(edited); err != nil {
 				return removed, err
 			}
-			qidi = false // never inject a second model part
+			qidiModelAdded = true
 			continue
 		}
 		if f.Name == "Metadata/project_settings.config" && len(preserved) > 0 {
@@ -242,6 +246,9 @@ func stripSliceCacheForQIDI(source, dest string, preserved []string, qidi bool) 
 		if _, err := io.Copy(writer, raw); err != nil {
 			return removed, err
 		}
+	}
+	if qidi && !qidiModelAdded {
+		return removed, fmt.Errorf("QIDI conversion is missing primary 3D/3dmodel.model")
 	}
 	if err := zw.Close(); err != nil {
 		return removed, err

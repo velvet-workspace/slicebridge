@@ -62,58 +62,26 @@ test('source file names display useful details and retain removal affordance',()
 });
 
 
-test('extra virtual filament slots are disclosed without any silent merge',()=>{
+test('conversion results do not render advisory warnings about virtual materials or physical toolheads',()=>{
   const app=read('frontend/dist/app.js');
-  assert.match(app,/virtualSlotsReview:'כל \{n\} ערוצי הצבע/);
-  assert.match(app,/virtualSlotsReview:'All \{n\} source color\/material/);
-  assert.match(app,/נתון זה אינו קובע את קיבולת מערכת הזנת הפילמנט/);
-  assert.match(app,/does not establish feeder capacity/);
-  assert.match(app,/towerPerPlateReview:'ב־3MF המומר יש/);
-  assert.match(app,/towerPerPlateReview:'The converted 3MF has/);
-  assert.match(app,/const needsReview=Boolean\(result\.ok&&requiresConversionReview\(result\.report\)\)/);
-  assert.match(app,/row\.append\(node\('p','warning-line material-mapping-warning'/);
-  assert.match(app,/t\('virtualSlotsReview',\{n:report\.virtual_filament_slots,physical:report\.physical_toolheads\}\)/);
+  assert.doesNotMatch(app,/virtualSlotsReview|toolUseReview|summaryReview|requiresToolUseReview/);
+  assert.doesNotMatch(app,/material-mapping-warning|tool-usage-warning/);
+  assert.match(app,/result\.ok\?'good':'bad'/);
+  assert.match(app,/result\.ok\?t\('summarySuccess'\):t\('summaryFailure'\)/);
+  // Keep the result card quiet, including the old three tower banners;
+  // the backend retains the exact diagnostic data for engineering QA.
+  assert.doesNotMatch(app,/towerClearanceReview|towerPerPlateReview|towerPlateUnknownReview/);
+  assert.doesNotMatch(app,/tower-clearance-warning|tower-per-plate-warning|tower-plate-unknown-warning/);
   assert.doesNotMatch(app,/identical_source_slots_coalesced/);
 });
 
-test('multicolor tool usage remains unverified even if four slots fit four tools',()=>{
-  const app=read('frontend/dist/app.js');
-  const match=app.match(/function requiresConversionReview\(report\)\{[\s\S]*?\n\}/);
-  assert.ok(match,'actual UI tool-use safety decision helper is missing');
-  const check=Function(match[0]+';return requiresConversionReview;')();
-  assert.equal(check({user_slot_mapping_required:false,tool_usage_verification_required:true}),true);
-  assert.equal(check({user_slot_mapping_required:true,tool_usage_verification_required:false}),true);
-  assert.equal(check({user_slot_mapping_required:false,tool_usage_verification_required:false}),false);
-  assert.equal(check({user_slot_mapping_required:false,tool_usage_verification_required:false,
-    native_slicer_material_review_required:true}),true);
-  assert.equal(check({user_slot_mapping_required:false,tool_usage_verification_required:false,
-    native_slicer_material_review_required:false}),false);
-  assert.equal(check(null),false);
-  assert.match(app,/toolUseReview:'[^']*G-code/);
-  assert.match(app,/warning-line tool-usage-warning/);
-});
 
-
-test('QIDI single-filament import requires a visible bilingual native-material warning',()=>{
+test('failed conversions keep their visible error while successful conversions stay concise',()=>{
   const app=read('frontend/dist/app.js');
-  assert.match(app,/nativeSlicerMaterialReview:'ייבוא 3MF ל־QIDIStudio/);
-  assert.match(app,/פתיחת פרויקט חיצוני מחליפה אוטומטית הגדרות מדפסת וחומרים/);
-  assert.match(app,/nativeSlicerMaterialReview:'QIDIStudio may replace imported 3MF/);
-  assert.match(app,/official release notes document automatic printer\/material substitution/);
-  assert.match(app,/even for a single filament/);
-  assert.match(app,/if\(report\.native_slicer_material_review_required\)\{/);
-  assert.match(app,/warning-line native-material-warning/);
-  assert.match(app,/t\('nativeSlicerMaterialReview'\)/);
-  assert.match(app,/summaryReview:'נדרשת בדיקה'/);
-  assert.match(app,/summaryReview:'Review required'/);
-  assert.match(app,/needsReview\?'review':'good'/);
-});
-
-test('unknown target plate metadata has bilingual manual tower review wording',()=>{
-  const app=read('frontend/dist/app.js');
-  assert.match(app,/towerPlateUnknownReview:'לא ניתן לקבוע/);
-  assert.match(app,/towerPlateUnknownReview:'The converted 3MF/);
-  assert.match(app,/tower-plate-unknown-warning/);
+  assert.match(app,/result\.ok\?t\('summarySuccess'\):t\('summaryFailure'\)/);
+  assert.match(app,/parent\.append\(row\)/);
+  assert.match(app,/node\('div','error-line'/);
+  assert.doesNotMatch(app,/towerClearanceReview|towerPerPlateReview|towerPlateUnknownReview/);
 });
 
 test('keyboard-activatable dropzone has a real accessible button role and localized name',()=>{

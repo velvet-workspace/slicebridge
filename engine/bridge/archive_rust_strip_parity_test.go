@@ -1,7 +1,6 @@
 package bridge
 
 import (
-	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -95,32 +94,6 @@ func TestRustArchiveStripParity(t *testing.T) {
 			}
 		})
 	}
-}
-
-func inspectZipEntries(t *testing.T, filename string) map[string][]byte {
-	t.Helper()
-	zr, err := zip.OpenReader(filename)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer zr.Close()
-	out := make(map[string][]byte, len(zr.File))
-	for _, file := range zr.File {
-		rc, err := file.Open()
-		if err != nil {
-			t.Fatal(err)
-		}
-		content, err := io.ReadAll(io.LimitReader(rc, 256<<20))
-		rc.Close()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, exists := out[file.Name]; exists {
-			t.Fatalf("duplicate ZIP entry %q", file.Name)
-		}
-		out[file.Name] = content
-	}
-	return out
 }
 
 func semanticXMLTokens(t *testing.T, data []byte) []string {

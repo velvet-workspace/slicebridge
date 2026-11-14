@@ -209,14 +209,17 @@ func TestFiveVirtualFilamentsAcrossInstalledFourTargets(t *testing.T) {
 	}
 	wantColors := []string{"#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#FFFFFF"}
 	for _, result := range report.Files[0].Results {
-		wantTools := 4
+		// Virtual source filament entries are unrelated to the number of
+		// physical print nozzles. The verified X-Plus 5 has one nozzle;
+		// optional feeder hardware is a separate per-user capability.
+		wantPhysicalTools := 4
 		if result.Target == "qidi" {
-			wantTools = 1
+			wantPhysicalTools = 1
 		}
 		if result.Report["virtual_filament_slots"] != 5 ||
-			result.Report["physical_toolheads"] != wantTools ||
+			result.Report["physical_toolheads"] != wantPhysicalTools ||
 			result.Report["user_slot_mapping_required"] != true {
-			t.Errorf("%s lost review metadata: %+v", result.Target, result.Report)
+			t.Errorf("%s lost correct virtual/physical tool metadata (want %d physical nozzles): %+v", result.Target, wantPhysicalTools, result.Report)
 			continue
 		}
 		mapped, ok := result.Report["source_to_target_slot_map"].(map[int]int)

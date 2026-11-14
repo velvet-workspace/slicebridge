@@ -81,7 +81,9 @@ func TestNativeFilamentSettingsMapEverySlot(t *testing.T) {
 
 func TestNativeFilamentProfileIDsFollowVerifiedInstalledMapEvenWhenMaterialPresetOmitsID(t *testing.T) {
 	bundle := syntheticMaterialBundle()
-	// Real installed Snapmaker Orca U1: one material provides a blank
+	bundle.Target = "qidi"
+	bundle.Profile.ModelID = "X-Plus 5"
+	// An installed target's one material provides a blank
 	// filament_settings_id placeholder and PETG omits the key completely.
 	// The independently resolved installed FilamentProfiles mapping retains
 	// both exact OEM names and must never silently substitute PLA for PETG.
@@ -106,6 +108,8 @@ func TestNativeFilamentProfileIDsFollowVerifiedInstalledMapEvenWhenMaterialPrese
 		t.Fatal("material mapping must not mutate the installed PETG preset")
 	}
 	missing := syntheticMaterialBundle()
+	missing.Target = "qidi"
+	missing.Profile.ModelID = "X-Plus 5"
 	delete(missing.Profile.FilamentProfiles, "PETG")
 	delete(missing.MaterialSettings["PETG"], "filament_settings_id")
 	if err := bindNativeFilamentSettings(missing, []converter.Filament{
@@ -133,5 +137,29 @@ func TestProfileGuardRejectsUnknownMaterial(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "PLA-CF") {
 		t.Fatalf("unlisted material silently accepted: %v", err)
+	}
+}
+
+func TestNonQIDIMaterialIDsRemainFromInstalledMaterialPresets(t *testing.T) {
+	for _, target := range []string{"c5", "cc2", "u1"} {
+		t.Run(target, func(t *testing.T) {
+			bundle := syntheticMaterialBundle()
+			bundle.Target = target
+			bundle.Profile.FilamentProfiles["PLA"] = "Manufacturer profile mapping PLA"
+			bundle.Profile.FilamentProfiles["PETG"] = "Manufacturer profile mapping PETG"
+			bundle.MaterialSettings["PLA"]["filament_settings_id"] = []any{"Preset PLA"}
+			bundle.MaterialSettings["PETG"]["filament_settings_id"] = []any{"Preset PETG"}
+			err := bindNativeFilamentSettings(bundle, []converter.Filament{
+				{ID: 1, Type: "PLA"}, {ID: 2, Type: "PETG"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := bundle.Profile.ProjectSettings["filament_settings_id"]
+			want := []any{"Preset PLA", "Preset PETG"}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("non-QIDI %s material profile IDs changed: got %v, want %v", target, got, want)
+			}
+		})
 	}
 }
