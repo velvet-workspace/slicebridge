@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -87,5 +90,98 @@ func TestRustNativeWailsAppDoesNotUseBuiltinGoPlanner(t *testing.T) {
 	if response.OK || len(response.Results) != 0 || len(response.Failures) != 1 ||
 		response.Failures[0].Code != "TARGET_PROFILE_REQUIRED" {
 		t.Fatalf("opt-in Rust-native silently accepted Go builtin planner: %+v", response)
+	}
+}
+
+func TestRustNativeWailsBatchMultiProjectGoParity(t *testing.T) {
+	if os.Getenv("BRIDGE_TEST_INSTALLED") != "1" {
+		t.Skip("requires installed manufacturer profiles, read only")
+	}
+	binary := os.Getenv("SLICEBRIDGE_RUST_PROBE")
+	if binary == "" {
+		t.Skip("requires the approved Rust-native binary")
+	}
+	t.Setenv("SLICEBRIDGE_RUST_ENGINE_BIN", binary)
+	sources := []string{
+		loadFixture(t, "bambu-one-color.3mf"),
+		loadFixture(t, "bambu-five-colors.3mf"),
+	}
+	sourceCopies := make([][]byte, len(sources))
+	for i, src := range sources {
+		copy, err := os.ReadFile(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sourceCopies[i] = copy
+	}
+	app := &App{}
+	request := BatchRequest{FilePaths: sources, Targets: []string{"u1", "qidi"}, Engine: "go"}
+	baseline := app.ConvertBatch(request)
+	if baseline.Error != "" || baseline.Failures != 0 || baseline.Successes != 4 ||
+		baseline.FilesDone != 2 || len(baseline.Files) != 2 {
+		t.Fatalf("Wails Go batch baseline refused: %+v", baseline)
+	}
+	request.Engine = "rust-native"
+	native := app.ConvertBatch(request)
+	if native.Error != "" || native.Failures != 0 || native.Successes != 4 ||
+		native.FilesDone != 2 || len(native.Files) != 2 {
+		t.Fatalf("Wails Rust-native batch refused: %+v", native)
+	}
+	for i := range sources {
+		originalAfter, err := os.ReadFile(sources[i])
+		if err != nil || !bytes.Equal(originalAfter, sourceCopies[i]) {
+			t.Fatalf("batch modified original 3MF %s", sources[i])
+		}
+		if len(baseline.Files[i].Results) != 2 || len(native.Files[i].Results) != 2 {
+			t.Fatalf("unexpected per-project target counts: Go=%+v Rust=%+v", baseline.Files[i], native.Files[i])
+		}
+		for j, rustResult := range native.Files[i].Results {
+			goResult := baseline.Files[i].Results[j]
+			if rustResult.Target != goResult.Target ||
+				rustResult.Report["engine"] != "rust-native-3mf" ||
+				rustResult.Report["planner"] != "rust-native" ||
+				goResult.Report["engine"] != "bl2std" {
+				t.Fatalf("batch route engine mismatch: Go=%+v Rust=%+v", goResult, rustResult)
+			}
+			if rustResult.OutputPath == goResult.OutputPath {
+				t.Fatal("Go and Rust batch outputs overwrote one another")
+			}
+			got := appRead3MFParts(t, rustResult.OutputPath)
+			want := appRead3MFParts(t, goResult.OutputPath)
+			if len(got) != len(want) {
+				t.Fatalf("%s ZIP member count changed", rustResult.Target)
+			}
+			for name, left := range want {
+				right, ok := got[name]
+				if !ok {
+					t.Fatalf("%s missing member %s", rustResult.Target, name)
+				}
+				if bytes.Equal(left, right) {
+					continue
+				}
+				if name == "Metadata/project_settings.config" {
+					var first, second map[string]any
+					if err := json.Unmarshal(left, &first); err != nil {
+						t.Fatal(err)
+					}
+					if err := json.Unmarshal(right, &second); err != nil {
+						t.Fatal(err)
+					}
+					if !reflect.DeepEqual(first, second) {
+						t.Fatalf("%s project settings mismatch", rustResult.Target)
+					}
+				} else if strings.HasSuffix(name, ".xml") ||
+					strings.HasSuffix(name, ".rels") ||
+					strings.HasSuffix(name, ".model") ||
+					name == "Metadata/model_settings.config" ||
+					name == "Metadata/slice_info.config" {
+					if !reflect.DeepEqual(nativeRustXMLTokens(t, left), nativeRustXMLTokens(t, right)) {
+						t.Fatalf("%s XML mismatch in %s", rustResult.Target, name)
+					}
+				} else {
+					t.Fatalf("%s binary ZIP member differs: %s", rustResult.Target, name)
+				}
+			}
+		}
 	}
 }
