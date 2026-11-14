@@ -16,7 +16,7 @@ use zip::ZipArchive;
 const MAX_SLICE_INFO_BYTES: u64 = 8 << 20;
 
 /// Source filament ID to every distinct (material, color) declared for it.
-type Palette = BTreeMap<u32, BTreeSet<(String, String)>>;
+pub(crate) type Palette = BTreeMap<u32, BTreeSet<(String, String)>>;
 
 fn attribute(start: &BytesStart<'_>, name: &str) -> Result<Option<String>, String> {
     for attribute in start.attributes() {
@@ -36,6 +36,15 @@ fn attribute(start: &BytesStart<'_>, name: &str) -> Result<Option<String>, Strin
 fn source_palette(source: &Path) -> Result<Palette, String> {
     let file = File::open(source).map_err(|e| format!("source open: {e}"))?;
     let mut archive = ZipArchive::new(file).map_err(|e| format!("input 3MF ZIP: {e}"))?;
+    source_palette_from_archive(&mut archive)
+}
+
+// Must also run against the archive converter's OWN frozen source snapshot;
+// checking an independently opened source path is vulnerable to source changes
+// between request validation and snapshot capture.
+pub(crate) fn source_palette_from_archive(
+    archive: &mut ZipArchive<File>,
+) -> Result<Palette, String> {
     let entry = archive
         .by_name("Metadata/slice_info.config")
         .map_err(|_| "input 3MF has no declared slice_info filament palette".to_owned())?;
@@ -81,7 +90,7 @@ fn source_palette(source: &Path) -> Result<Palette, String> {
 /// Every request filament must match exactly one declared source palette entry
 /// (material exact, color case-insensitive). Mismatches would print the wrong
 /// material or color, so they are refused before any output is created.
-fn match_request_palette(request: &Value, palette: &Palette) -> Result<(), String> {
+pub(crate) fn match_request_palette(request: &Value, palette: &Palette) -> Result<(), String> {
     let filaments = request
         .get("filaments")
         .and_then(Value::as_array)
@@ -138,8 +147,11 @@ pub fn convert_native_archive(
     {
         return Err("source_settings snapshot must be a nonempty JSON object".into());
     }
-    let plan = build_native_conversion_plan(request)?;
+    let mut plan = build_native_conversion_plan(request)?;
     match_request_palette(request, &source_palette(source)?)?;
+    // The archive converter re-checks this exact material/color declaration
+    // against its immutable captured ZIP, closing a TOCTOU gap.
+    plan["source_filaments"] = request["filaments"].clone();
     let removed = convert_archive_experimental(source, destination, &plan)?;
     Ok(json!({
         "ok": true,

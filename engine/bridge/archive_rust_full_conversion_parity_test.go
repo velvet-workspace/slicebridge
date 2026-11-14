@@ -254,6 +254,10 @@ func TestRustFullArchiveRejectsUnverifiedSources(t *testing.T) {
 		"incomplete_source_mapping",
 		"invented_source_id",
 		"mapped_to_unallocated_slot",
+		"merged_distinct_material_slots",
+		"unsafe_machine_script_override",
+		"unsafe_material_temperature_override",
+		"source_palette_snapshot_mismatch",
 		"profile_slot_count_mismatch",
 		"empty_material_profile_id",
 		"noncanonical_source_id",
@@ -307,6 +311,17 @@ func TestRustFullArchiveRejectsUnverifiedSources(t *testing.T) {
 				sourceMap["99"] = 1
 			case "mapped_to_unallocated_slot":
 				sourceMap["1"] = 3 // printer has four bays, but only two declared materials
+			case "merged_distinct_material_slots":
+				sourceMap["2"] = sourceMap["1"] // preserve two source IDs; merging is forbidden
+			case "unsafe_machine_script_override":
+				plan["preserved"] = []string{"machine_start_gcode"}
+			case "unsafe_material_temperature_override":
+				plan["preserved"] = []string{"nozzle_temperature"}
+			case "source_palette_snapshot_mismatch":
+				plan["source_filaments"] = []map[string]any{
+					{"id": 1, "type": "ABS", "color": "#FF00FF"},
+					{"id": 2, "type": "PLA", "color": "#00FF00"},
+				}
 			case "profile_slot_count_mismatch":
 				plan["slot_count"] = 5
 			case "empty_material_profile_id":

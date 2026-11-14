@@ -22,6 +22,53 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 const MAX_XML: u64 = 8 << 20;
 const MAX_PRESERVED: usize = 64;
+
+// Match the explicitly bounded process-intent names in Go settings.go.
+// Arbitrary firmware, hardware or material fields must not become override
+// keys, even when a caller bypasses the higher-level Rust native planner.
+fn safe_preserved_process_key(key: &str) -> bool {
+    matches!(
+        key,
+        "layer_height"
+            | "initial_layer_print_height"
+            | "wall_loops"
+            | "top_shell_layers"
+            | "bottom_shell_layers"
+            | "sparse_infill_density"
+            | "support_threshold_angle"
+            | "brim_width"
+            | "skirt_loops"
+            | "skirt_distance"
+            | "elefant_foot_compensation"
+            | "elephant_foot_compensation"
+            | "xy_contour_compensation"
+    )
+}
+
+fn validated_preserved_keys(plan: &Value) -> Result<Vec<String>, String> {
+    let values = match plan.get("preserved") {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(Value::Array(values)) if values.len() <= MAX_PRESERVED => values,
+        _ => return Err("preserved settings must be an array of at most 64 names".into()),
+    };
+    let mut used = BTreeSet::new();
+    let mut result = Vec::with_capacity(values.len());
+    for raw in values {
+        let key = raw
+            .as_str()
+            .filter(|s| !s.is_empty() && s.len() <= 128 && !s.contains(';'))
+            .ok_or_else(|| "preserved setting key invalid".to_owned())?;
+        if !safe_preserved_process_key(key) {
+            return Err(format!("unsafe preserved process key {key:?}"));
+        }
+        if !used.insert(key) {
+            return Err(format!("duplicate preserved process key {key:?}"));
+        }
+        result.push(key.to_owned());
+    }
+    Ok(result)
+}
+
 static NEXT_OUTPUT: AtomicU64 = AtomicU64::new(0);
 type FilamentMapping = (BTreeMap<u32, u32>, BTreeMap<i32, i32>);
 
@@ -195,6 +242,7 @@ fn mapping(plan: &Value, slot_count: usize) -> Result<FilamentMapping, String> {
     }
     let mut paint = BTreeMap::new();
     let mut xml = BTreeMap::new();
+    let mut occupied = BTreeSet::new();
     for (original, slot) in items {
         let canonical = original.as_str();
         let original: u32 = canonical
@@ -210,6 +258,13 @@ fn mapping(plan: &Value, slot_count: usize) -> Result<FilamentMapping, String> {
             .ok_or_else(|| "mapping destination must be a positive integer".to_owned())?;
         if original == 0 || original > i32::MAX as u32 || !(1..=slot_count as u64).contains(&dst) {
             return Err("source or destination mapping ID outside supported range".into());
+        }
+        // Distinct source filament identities must never collapse into one
+        // destination palette slot. Color equality is not slot identity.
+        if !occupied.insert(dst) {
+            return Err(
+                "conversion mapping merges distinct source filaments into one material slot".into(),
+            );
         }
         paint.insert(original, dst as u32);
         xml.insert(original as i32, dst as i32);
@@ -451,19 +506,7 @@ pub fn convert_archive_experimental(
             });
         }
     }
-    let preserved: Vec<String> = match plan.get("preserved").and_then(Value::as_array) {
-        Some(values) if values.len() <= MAX_PRESERVED => values
-            .iter()
-            .map(|v| {
-                v.as_str()
-                    .filter(|s| !s.is_empty() && s.len() <= 128 && !s.contains(';'))
-                    .map(ToOwned::to_owned)
-                    .ok_or_else(|| "preserved setting key invalid".to_owned())
-            })
-            .collect::<Result<Vec<_>, _>>()?,
-        None => Vec::new(),
-        _ => return Err("too many preserved settings".into()),
-    };
+    let preserved = validated_preserved_keys(plan)?;
     let settings = compose_project_settings(plan)?;
     let native_profiles = settings
         .get("filament_settings_id")
@@ -501,6 +544,16 @@ pub fn convert_archive_experimental(
         return Err("source_settings snapshot differs from actual input 3MF".into());
     }
     audit_source_material_references(&mut src, &paint_map)?;
+    if let Some(expected) = plan.get("source_filaments") {
+        // Native OEM requests carry declared source colors/materials in the
+        // plan. Revalidate against THIS immutable archive snapshot, not a
+        // separate source-path read that could have changed between calls.
+        let snapshot_palette = crate::native_archive::source_palette_from_archive(&mut src)?;
+        crate::native_archive::match_request_palette(
+            &serde_json::json!({"filaments": expected}),
+            &snapshot_palette,
+        )?;
+    }
 
     let stage = Stage(fresh_stage_path(parent, "convert")?);
     let file = OpenOptions::new()
@@ -716,5 +769,50 @@ mod snapshot_tests {
             .collect();
         assert_eq!(names.len(), 1, "snapshot left stray partial files");
         fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod archive_plan_policy_tests {
+    use super::{mapping, validated_preserved_keys};
+    use serde_json::json;
+
+    #[test]
+    fn distinct_source_filaments_cannot_merge_into_one_destination_slot() {
+        let bad = json!({"mapping": {"1": 1, "2": 1}});
+        assert!(mapping(&bad, 2).unwrap_err().contains("merges"));
+        let valid = json!({"mapping": {"1": 1, "2": 2}});
+        assert!(mapping(&valid, 2).is_ok());
+    }
+
+    #[test]
+    fn explicit_preserved_keys_are_safe_process_intent_only() {
+        for name in [
+            "machine_start_gcode",
+            "machine_end_gcode",
+            "nozzle_temperature",
+            "bed_temperature",
+            "filament_flow_ratio",
+            "nozzle_diameter",
+            "filament_max_volumetric_speed",
+        ] {
+            let bad = json!({"preserved": [name]});
+            assert!(
+                validated_preserved_keys(&bad)
+                    .unwrap_err()
+                    .contains("unsafe"),
+                "untrusted preserved setting accepted: {name}"
+            );
+        }
+        let good = json!({"preserved": ["layer_height", "wall_loops", "brim_width"]});
+        assert_eq!(validated_preserved_keys(&good).unwrap().len(), 3);
+        for none in [json!({}), json!({"preserved": null})] {
+            assert!(validated_preserved_keys(&none).unwrap().is_empty());
+        }
+        assert!(
+            validated_preserved_keys(&json!({"preserved": ["layer_height", "layer_height"]}))
+                .is_err()
+        );
+        assert!(validated_preserved_keys(&json!({"preserved": "nozzle_temperature"})).is_err());
     }
 }
