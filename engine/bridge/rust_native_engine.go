@@ -38,14 +38,14 @@ func convertWithNativeRust(ctx context.Context, source, destination string, reso
 	if err := validateResolved(resolved); err != nil {
 		return nil, err
 	}
-	// The native Rust planner currently accepts independently verified,
-	// flattened OEM vendor bundles only. It has not yet ported the C5
-	// support-flag or installed Orca-fork compatibility adjustments. Refuse
-	// those instead of silently running Go's planner under a Rust label.
+	// Rust-native accepts independently verified, flattened OEM vendor
+	// bundles. Flash Studio Creator 5 support-flag compatibility is ported
+	// in Rust; installed Orca-fork and builtin-template gaps still refuse
+	// instead of silently using Go's conversion planner.
 	if resolved.bundle == nil {
 		return nil, fail("TARGET_PROFILE_REQUIRED", "Rust-native requires a verified installed OEM bundle; builtin template is not accepted")
 	}
-	if resolved.Kind != ProfileInstalledVendor || resolved.ID == "c5" {
+	if resolved.Kind != ProfileInstalledVendor {
 		return nil, fail("RUST_NATIVE_UNSUPPORTED", "Rust-native OEM compatibility not yet validated for %s", resolved.ID)
 	}
 	if err := resolved.base.Validate(); err != nil {
