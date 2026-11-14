@@ -11,14 +11,15 @@ import (
 	"testing"
 )
 
-// This opt-in native-source-readback test reproduces the observed
-// QIDIStudio import classification without launching the slicer or
+// This opt-in historical QA test checks the original pre-fix converter
+// artifacts. It does not describe the currently converted QIDI outputs.
+// It reproduces vendor import classification without launching the slicer or
 // touching the printer. QIDIStudio source qds_3mf.cpp checks whether
 // the 3MF Application metadata starts with "QIDIStudio-" to set
 // m_is_qdt_3mf. The installed calibration fixture is only a genuine
 // QIDIStudio PRODUCER CONTROL: it targets an unrelated QIDI model,
 // and is never used as a printer profile or copied into an output.
-func TestQIDIExternalProjectOriginAndFiveFilamentPalette(t *testing.T) {
+func TestQIDIPreFixExternalProjectOriginAndFiveFilamentPalette(t *testing.T) {
 	vendor := os.Getenv("SLICEBRIDGE_QIDI_VENDOR_CALIBRATION_3MF")
 	outputs := os.Getenv("SLICEBRIDGE_QIDI_FIVE_SLOT_OUTPUT_DIR")
 	if vendor == "" || outputs == "" {
@@ -36,7 +37,7 @@ func TestQIDIExternalProjectOriginAndFiveFilamentPalette(t *testing.T) {
 			path := filepath.Join(outputs, name)
 			current := project3MFApplication(t, path)
 			if strings.HasPrefix(current, "QIDIStudio-") {
-				t.Fatalf("SliceBridge-generated output falsely asserts native QIDIStudio authorship: %q", current)
+				t.Fatalf("historical pre-fix conversion artifact no longer matches its source receipt: %q", current)
 			}
 			// Vendor logic will classify each as From_Other, regardless of
 			// the correct five material settings in this non-native archive.
@@ -81,7 +82,7 @@ func TestQIDIExternalProjectOriginAndFiveFilamentPalette(t *testing.T) {
 					}
 				}
 			}
-			t.Logf("FOREIGN_3MF_NOT_NATIVE_QIDISTUDIO: five source materials preserved, Application=%q; vendor importer may replace native material settings", current)
+			t.Logf("HISTORICAL_PRE_FIX_FOREIGN_3MF: five source materials were preserved but the former output lacked the importer metadata, Application=%q", current)
 		})
 	}
 }

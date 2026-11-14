@@ -41,6 +41,9 @@ func setQIDIApplicationMetadata(raw []byte) ([]byte, error) {
 				if t.Name.Local != "model" || rootEnd >= 0 {
 					return nil, fmt.Errorf("QIDI 3MF has no single model XML root")
 				}
+				if bytes.HasSuffix(bytes.TrimSpace(raw[from:to]), []byte("/>")) {
+					return nil, fmt.Errorf("self-closing 3MF model root cannot contain Application metadata")
+				}
 				rootEnd = to
 			} else if depth == 1 && t.Name.Local == "metadata" {
 				for _, a := range t.Attr {

@@ -41,6 +41,7 @@ func TestQIDIApplicationMetadataAutomaticAndIdempotent(t *testing.T) {
 		"<model><resources>",
 		"<!DOCTYPE model [<!ENTITY x 'unsafe'>]><model/>",
 		"<not-model/>",
+		"<model/>",
 	} {
 		if _, err := setQIDIApplicationMetadata([]byte(invalid)); err == nil {
 			t.Fatalf("invalid/duplicate 3MF origin XML did not fail: %s", invalid)
@@ -81,9 +82,10 @@ func TestQIDIAutomaticImporterMetadataIsTargetScoped(t *testing.T) {
 			t.Fatalf("QIDI conversion lost ZIP member %q", name)
 		}
 		if name == "3D/3dmodel.model" {
-			want, err := setQIDIApplicationMetadata(original)
-			if err != nil || !bytes.Equal(converted, want) {
-				t.Fatalf("QIDI model changed beyond one Application field: %v", err)
+			element := []byte("\n  <metadata name=\"Application\">QIDIStudio-01.09.03.51</metadata>")
+			if bytes.Count(converted, element) != 1 ||
+				!bytes.Equal(bytes.Replace(converted, element, nil, 1), original) {
+				t.Fatalf("QIDI model changed beyond the single verified Application metadata element")
 			}
 		} else if !bytes.Equal(original, converted) {
 			t.Fatalf("target-scoped importer compatibility altered %s", name)
@@ -122,4 +124,49 @@ func inspectZipEntries(t *testing.T, filename string) map[string][]byte {
 		parts[entry.Name] = raw
 	}
 	return parts
+}
+
+func TestQIDISanitizerRejectsAbsentOrRepeatedPrimaryModel(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		models int
+	}{
+		{"missing", 0},
+		{"duplicate", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			input := filepath.Join(dir, "source.3mf")
+			f, err := os.OpenFile(input, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			zw := zip.NewWriter(f)
+			for i := 0; i < tc.models; i++ {
+				dst, err := zw.Create("3D/3dmodel.model")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err = dst.Write([]byte("<model><resources/><build/></model>")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			dst, err := zw.Create("Metadata/project_settings.config")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = dst.Write([]byte("{}")); err != nil {
+				t.Fatal(err)
+			}
+			if err = zw.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err = f.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = stripSliceCacheForQIDI(input, filepath.Join(dir, "result.3mf"), nil, true); err == nil {
+				t.Fatalf("QIDI conversion accepted 3MF with %d primary model parts", tc.models)
+			}
+		})
+	}
 }

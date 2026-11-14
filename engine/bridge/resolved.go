@@ -158,7 +158,7 @@ func buildPlan(source, destination string, resolve profileResolver) (conversionP
 		// spurious GUI materials. For QIDI only, size the PROJECT palette to
 		// exactly the preserved source filaments, without altering the
 		// manufacturer-owned nozzle arrays or installed preset on disk.
-		if resolved.Kind == ProfileInstalledVendor && resolved.ID == "qidi" {
+		if resolved.Kind == ProfileInstalledVendor && resolved.ID == "qidi" && resolved.ExpectedModel == "X-Plus 5" {
 			resolved.bundle.Profile.FilamentSlots = len(slots)
 		} else if len(slots) > resolved.bundle.Profile.FilamentSlots {
 			resolved.bundle.Profile.FilamentSlots = len(slots)
@@ -243,7 +243,7 @@ func resolveBuiltinTarget(target, profileFile, requestedNozzle, sourceNozzle str
 	// The installed OEM project's default four palette slots are virtual
 	// project metadata and must not determine this count.
 	physicalTools := 4
-	if target == "qidi" {
+	if target == "qidi" && model == "X-Plus 5" {
 		physicalTools = 1
 	}
 	resolved := &ResolvedTargetProfile{
