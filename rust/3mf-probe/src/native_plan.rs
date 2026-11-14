@@ -179,6 +179,41 @@ fn source_supports(settings: &Map<String, Value>) -> bool {
         })
 }
 
+// Port of Go alignFlashStudioFourToolSupportFlags for the verified Creator 5
+// target. Only an absent list or the known single "0" default is expanded;
+// complete or conflicting manufacturer flags are never guessed or remapped.
+// Only the installed Flash Studio owner may enable this OEM-specific fix.
+fn align_c5_support_flags(settings: &mut Map<String, Value>, count: usize) -> Result<(), String> {
+    if settings
+        .get("nozzle_diameter")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        != Some(4)
+    {
+        return Err("Flashforge Creator 5 requires exactly four physical nozzle entries".into());
+    }
+    if let Some(raw) = settings.get("filament_is_support") {
+        let flags = raw
+            .as_array()
+            .ok_or_else(|| "Flashforge Creator 5 support flag type is invalid".to_owned())?;
+        if flags.len() == count {
+            return Ok(());
+        }
+        let known_default =
+            flags.len() == 1 && (flags[0].as_str() == Some("0") || flags[0].as_f64() == Some(0.0));
+        if !known_default {
+            return Err(format!(
+                "Flashforge Creator 5 support flags mismatch {count} material slots"
+            ));
+        }
+    }
+    settings.insert(
+        "filament_is_support".to_owned(),
+        Value::Array(vec![json!("0"); count]),
+    );
+    Ok(())
+}
+
 /// Builds an experimental, Go rustExplicitPlan-compatible plan entirely in memory.
 ///
 /// Request: {"bundle": flattened verified OEM bundle, "filaments": ordered
@@ -192,7 +227,7 @@ fn source_supports(settings: &Map<String, Value>) -> bool {
 /// source_settings, supports, preserved.
 ///
 /// Known parity limits versus Go convert.go/targets.go, not reproduced here:
-/// C5 support-flag normalization, Orca-fork compatibility guards, base-profile
+/// Orca-fork compatibility guards, base-profile
 /// fallback and Go's silent skipping of unsafe preserved keys. Callers must not
 /// treat this plan as an equivalent replacement for the Go path yet.
 pub fn build_native_conversion_plan(request: &Value) -> Result<Value, String> {
@@ -224,6 +259,10 @@ pub fn build_native_conversion_plan(request: &Value) -> Result<Value, String> {
     let settings = profile["project_settings"]
         .as_object_mut()
         .ok_or_else(|| "profile project_settings must be an object".to_owned())?;
+    let slicer = request["bundle"]["slicer"].as_str().unwrap_or_default();
+    if target == "c5" && (slicer == "Flash Studio" || slicer == "Flash Studio Desktop") {
+        align_c5_support_flags(settings, filament_count.max(4))?;
+    }
     // Omission delegates *safe source process intent* selection to Rust.
     // Explicit preserved []/null suppresses automatic selection; an
     // explicit list is validated rather than quietly accepting unsafe keys.
@@ -494,5 +533,120 @@ mod tests {
         request["source_settings"] = json!({"layer_height": "0.2"});
         let plan = build_native_conversion_plan(&request).unwrap();
         assert_eq!(plan["supports"], false);
+    }
+
+    // Synthetic Creator 5 bundle: four physical tools, source truncated to
+    // the requested filament count. Only identity fields are changed.
+    fn c5_request(filament_count: usize) -> Value {
+        let mut request = bundle_request();
+        request["bundle"]["target"] = json!("c5");
+        request["bundle"]["slicer"] = json!("Flash Studio Desktop");
+        request["bundle"]["profile"]["name"] = json!("c5");
+        request["bundle"]["profile"]["display_name"] = json!("Flashforge Creator 5");
+        request["bundle"]["profile"]["printer_model_id"] = json!("Flashforge Creator 5");
+        request["bundle"]["profile"]["project_settings"]["printer_model"] =
+            json!("Flashforge Creator 5");
+        request["filaments"]
+            .as_array_mut()
+            .unwrap()
+            .truncate(filament_count);
+        request
+    }
+
+    #[test]
+    fn c5_missing_support_flags_expand_per_slot_with_four_slot_floor() {
+        let plan = build_native_conversion_plan(&c5_request(4)).unwrap();
+        assert_eq!(
+            plan["profile"]["project_settings"]["filament_is_support"],
+            json!(["0", "0", "0", "0"])
+        );
+        let plan = build_native_conversion_plan(&c5_request(5)).unwrap();
+        assert_eq!(
+            plan["profile"]["project_settings"]["filament_is_support"],
+            json!(["0", "0", "0", "0", "0"])
+        );
+    }
+
+    #[test]
+    fn c5_expands_only_known_zero_default_and_keeps_complete_flags() {
+        let mut request = c5_request(4);
+        request["bundle"]["profile"]["project_settings"]["filament_is_support"] = json!(["0"]);
+        let plan = build_native_conversion_plan(&request).unwrap();
+        assert_eq!(
+            plan["profile"]["project_settings"]["filament_is_support"],
+            json!(["0", "0", "0", "0"])
+        );
+
+        let mut request = c5_request(4);
+        request["bundle"]["profile"]["project_settings"]["filament_is_support"] =
+            json!(["0", "1", "0", "1"]);
+        let plan = build_native_conversion_plan(&request).unwrap();
+        assert_eq!(
+            plan["profile"]["project_settings"]["filament_is_support"],
+            json!(["0", "1", "0", "1"])
+        );
+    }
+
+    #[test]
+    fn c5_refuses_ambiguous_or_malformed_support_flags() {
+        let cases = [
+            (json!(["0", "1"]), "mismatch 4 material slots"),
+            (json!(["1"]), "mismatch 4 material slots"),
+            (json!("0"), "type is invalid"),
+        ];
+        for (flags, expected) in cases {
+            let mut request = c5_request(4);
+            request["bundle"]["profile"]["project_settings"]["filament_is_support"] = flags;
+            assert!(plan_error(&request).contains(expected), "{expected}");
+        }
+    }
+
+    #[test]
+    fn c5_non_flash_studio_profile_is_not_modified() {
+        let mut request = c5_request(4);
+        request["bundle"]["slicer"] = json!("OrcaSlicer");
+        let plan = build_native_conversion_plan(&request).unwrap();
+        assert!(plan["profile"]["project_settings"]
+            .get("filament_is_support")
+            .is_none());
+    }
+
+    #[test]
+    fn c5_refuses_physical_nozzle_array_that_is_not_four_entries() {
+        let mut request = c5_request(4);
+        request["bundle"]["profile"]["project_settings"]["nozzle_diameter"] = json!(["0.4"]);
+        assert!(plan_error(&request).contains("exactly four physical nozzle"));
+    }
+
+    #[test]
+    fn non_c5_targets_never_gain_or_rewrite_support_flags() {
+        for (target, model) in [
+            ("u1", "Snapmaker U1"),
+            ("cc2", "Elegoo Centauri Carbon 2"),
+            ("qidi", "X-Plus 5"),
+        ] {
+            let mut request = bundle_request();
+            request["bundle"]["target"] = json!(target);
+            request["bundle"]["profile"]["name"] = json!(target);
+            request["bundle"]["profile"]["display_name"] = json!(model);
+            request["bundle"]["profile"]["printer_model_id"] = json!(model);
+            request["bundle"]["profile"]["project_settings"]["printer_model"] = json!(model);
+            let plan = build_native_conversion_plan(&request).unwrap();
+            assert!(
+                plan["profile"]["project_settings"]
+                    .get("filament_is_support")
+                    .is_none(),
+                "{target} gained support flags"
+            );
+
+            request["bundle"]["profile"]["project_settings"]["filament_is_support"] =
+                json!(["0", "1"]);
+            let plan = build_native_conversion_plan(&request).unwrap();
+            assert_eq!(
+                plan["profile"]["project_settings"]["filament_is_support"],
+                json!(["0", "1"]),
+                "{target} rewrote support flags"
+            );
+        }
     }
 }
