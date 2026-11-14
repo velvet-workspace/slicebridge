@@ -92,6 +92,20 @@ not silently substitute a wrong temperature/material profile.
 A successful structural round-trip of virtual 3MF slots is not proof
 every slicer UI will retain extra channels after importing it.
 
+### Plate count and prime tower diagnostics
+
+The converted project already contains the plate declarations in
+`Metadata/slice_info.config` when supplied by the source. The backend
+uses explicit `Metadata/model_settings.config` plates first and falls
+back to existing `slice_info.config` plate records where missing.
+Neither a single 3MF build element nor the number of objects is proof
+of a particular number of plates. Do not inject guessed `<plate>`
+instance associations or prime-tower X/Y coordinates into converted
+3MF files, and never rewrite user-owned slicer presets. The UI reports
+successful conversions without repetitive tower warnings; structural
+tower diagnostic fields remain in the backend conversion report for QA.
+The target slicer owns any tower placement or physical printing decisions.
+
 ### QA
 
 Windows:

@@ -68,21 +68,20 @@ test('conversion results do not render advisory warnings about virtual materials
   assert.doesNotMatch(app,/material-mapping-warning|tool-usage-warning/);
   assert.match(app,/result\.ok\?'good':'bad'/);
   assert.match(app,/result\.ok\?t\('summarySuccess'\):t\('summaryFailure'\)/);
-  // Preserve backend reporting and independent geometry/prime tower diagnostics.
-  assert.match(app,/report\.prime_tower_clearance_review_required/);
-  assert.match(app,/towerPerPlateReview:'ב־3MF המומר יש/);
-  assert.match(app,/towerPerPlateReview:'The converted 3MF has/);
-  assert.match(app,/tower-per-plate-warning/);
-  assert.match(app,/tower-plate-unknown-warning/);
+  // Keep the result card quiet, including the old three tower banners;
+  // the backend retains the exact diagnostic data for engineering QA.
+  assert.doesNotMatch(app,/towerClearanceReview|towerPerPlateReview|towerPlateUnknownReview/);
+  assert.doesNotMatch(app,/tower-clearance-warning|tower-per-plate-warning|tower-plate-unknown-warning/);
   assert.doesNotMatch(app,/identical_source_slots_coalesced/);
 });
 
 
-test('unknown target plate metadata has bilingual manual tower review wording',()=>{
+test('failed conversions keep their visible error while successful conversions stay concise',()=>{
   const app=read('frontend/dist/app.js');
-  assert.match(app,/towerPlateUnknownReview:'לא ניתן לקבוע/);
-  assert.match(app,/towerPlateUnknownReview:'The converted 3MF/);
-  assert.match(app,/tower-plate-unknown-warning/);
+  assert.match(app,/result\.ok\?t\('summarySuccess'\):t\('summaryFailure'\)/);
+  assert.match(app,/parent\.append\(row\)/);
+  assert.match(app,/node\('div','error-line'/);
+  assert.doesNotMatch(app,/towerClearanceReview|towerPerPlateReview|towerPlateUnknownReview/);
 });
 
 test('keyboard-activatable dropzone has a real accessible button role and localized name',()=>{

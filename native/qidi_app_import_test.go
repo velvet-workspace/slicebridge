@@ -57,6 +57,15 @@ func TestQIDIAppFiveFilamentImportOnInstalledHost(t *testing.T) {
 		result.Report["source_filament_slots"] != 5 {
 		t.Fatalf("incorrect five-material app contract: %+v", result.Report)
 	}
+	// The centered five-material QA project already declares one plate in
+	// Metadata/slice_info.config, despite no plate in model_settings.config.
+	// Its native App.Convert report must discover it without injecting one.
+	if os.Getenv("BRIDGE_QIDI_MIXED_FIVE_SOURCE") != "" {
+		if result.Report["prime_tower_plates"] != 1 ||
+			result.Report["prime_tower_plate_position_audit_status"] == "plate_count_unknown" {
+			t.Fatalf("QIDI source's existing one-plate metadata was not recognized: %+v", result.Report)
+		}
+	}
 	if _, special := result.Report["native_slicer_material_review_required"]; special {
 		t.Fatalf("QIDI importer metadata compatibility must not add a special UI review field")
 	}
