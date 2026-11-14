@@ -2,7 +2,8 @@ use serde_json::{json, Value};
 use slicebridge_3mf_probe::{
     compose_project_settings, convert_archive_experimental, inspect_package,
     map_native_material_settings, remap_paint_hex, rewrite_model_paint_xml, rewrite_model_settings,
-    rewrite_slice_info_xml, source_slot_plan, strip_slice_cache_preserving, SliceInfoSlot,
+    rewrite_slice_info_xml, source_slot_plan, strip_slice_cache_preserving, validate_native_bundle,
+    SliceInfoSlot,
 };
 use std::collections::BTreeMap;
 use std::env;
@@ -15,7 +16,7 @@ use std::process;
 const MAX_JSON_INPUT_BYTES: u64 = 8 << 20;
 
 fn usage() -> String {
-    "usage: slicebridge-3mf-probe <file.3mf> | --strip-cache [--preserve KEY]... <source.3mf> <output.3mf> | --plan-slots <request.json> | --map-materials <request.json> | --remap-paint <request.json> | --remap-model <request.json> | --rewrite-model-settings <request.json> | --compose-project-settings <request.json> | --rewrite-slice-info <request.json> | --convert-archive <plan.json> <source.3mf> <output.3mf> | --convert-archive-stdio"
+    "usage: slicebridge-3mf-probe <file.3mf> | --strip-cache [--preserve KEY]... <source.3mf> <output.3mf> | --plan-slots <request.json> | --map-materials <request.json> | --validate-native-bundle <request.json> | --remap-paint <request.json> | --remap-model <request.json> | --rewrite-model-settings <request.json> | --compose-project-settings <request.json> | --rewrite-slice-info <request.json> | --convert-archive <plan.json> <source.3mf> <output.3mf> | --convert-archive-stdio"
         .to_owned()
 }
 
@@ -88,6 +89,11 @@ fn run(args: &[OsString]) -> Result<Value, String> {
             let value = read_request(source)?;
             let result = map_native_material_settings(&value)?;
             Ok(json!({"ok": true, "project_settings": result["project_settings"]}))
+        }
+        [flag, source] if flag == OsStr::new("--validate-native-bundle") => {
+            let value = read_request(source)?;
+            let validation = validate_native_bundle(&value)?;
+            Ok(json!({"ok": true, "experimental": true, "validation": validation}))
         }
         [flag, source] if flag == OsStr::new("--compose-project-settings") => {
             let input = read_request(source)?;

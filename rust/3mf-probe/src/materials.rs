@@ -90,19 +90,22 @@ fn is_critical_key(key: &str) -> bool {
         || key == "filament_settings_id"
 }
 
+fn finite_positive_number(value: &Value) -> Option<f64> {
+    match value {
+        Value::String(s) => s.trim().parse::<f64>().ok(),
+        Value::Number(n) => n.as_f64(),
+        _ => None,
+    }
+    .filter(|v| v.is_finite() && *v > 0.0)
+}
+
 fn native_material_safety_value(preset: &Map<String, Value>, key: &str) -> bool {
     preset
         .get(key)
         .and_then(Value::as_array)
         .and_then(|values| values.first())
-        .is_some_and(|value| match value {
-            Value::String(s) => s
-                .trim()
-                .parse::<f64>()
-                .is_ok_and(|v| v.is_finite() && v > 0.0),
-            Value::Number(n) => n.as_f64().is_some_and(|v| v.is_finite() && v > 0.0),
-            _ => false,
-        })
+        .and_then(finite_positive_number)
+        .is_some()
 }
 
 fn bundle_object(input: &Value) -> Result<&Map<String, Value>, String> {
@@ -257,6 +260,125 @@ pub fn map_native_material_settings(input: &Value) -> Result<Value, String> {
     );
 
     Ok(json!({"project_settings": settings}))
+}
+
+/// Model identity and physical nozzles per target, as fixed in Go targets.go.
+fn target_identity(target: &str) -> Option<(&'static str, &'static [f64])> {
+    match target {
+        "u1" => Some(("Snapmaker U1", &[0.2, 0.4, 0.6, 0.8])),
+        "c5" => Some(("Flashforge Creator 5", &[0.25, 0.4, 0.6, 0.8])),
+        "cc2" => Some(("Elegoo Centauri Carbon 2", &[0.2, 0.4, 0.6, 0.8])),
+        "qidi" => Some(("X-Plus 5", &[0.2, 0.4, 0.6, 0.8])),
+        _ => None,
+    }
+}
+
+/// Validates a flattened installed OEM bundle without converting anything.
+/// Material safety is delegated to map_native_material_settings so the rules
+/// exist in one place. Returns machine and material identity only.
+pub fn validate_native_bundle(input: &Value) -> Result<Value, String> {
+    let bundle = bundle_object(input)?;
+    let target = bundle
+        .get("target")
+        .and_then(Value::as_str)
+        .filter(|target| !target.is_empty())
+        .ok_or_else(|| "bundle.target must be a nonempty string".to_owned())?;
+    let (model_id, nozzles) =
+        target_identity(target).ok_or_else(|| format!("unsupported native target {target:?}"))?;
+    let profile = bundle
+        .get("profile")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "bundle.profile must be an object".to_owned())?;
+    if profile.get("name").and_then(Value::as_str) != Some(target) {
+        return Err(format!("profile name must match target {target:?}"));
+    }
+    if profile.get("display_name").and_then(Value::as_str) != Some(model_id) {
+        return Err(format!("profile display_name must be {model_id:?}"));
+    }
+    if profile.get("printer_model_id").and_then(Value::as_str) != Some(model_id) {
+        return Err(format!("profile printer_model_id must be {model_id:?}"));
+    }
+    if profile.get("filament_slots").and_then(Value::as_u64) != Some(4) {
+        return Err("raw OEM profile filament_slots must be 4".to_owned());
+    }
+    if !profile
+        .get("filament_profiles")
+        .and_then(Value::as_object)
+        .is_some_and(|profiles| !profiles.is_empty())
+        || !bundle
+            .get("material_settings")
+            .and_then(Value::as_object)
+            .is_some_and(|settings| !settings.is_empty())
+    {
+        return Err("installed OEM material profiles must be nonempty".into());
+    }
+    let settings = profile
+        .get("project_settings")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "profile project_settings must be an object".to_owned())?;
+    if settings.get("printer_model").and_then(Value::as_str) != Some(model_id) {
+        return Err(format!(
+            "project_settings printer_model must be {model_id:?}"
+        ));
+    }
+    for key in ["machine_start_gcode", "machine_end_gcode"] {
+        if !settings.get(key).is_some_and(Value::is_string) {
+            return Err(format!("project_settings {key} must be a string"));
+        }
+    }
+    // Go's nozzleFromRaw refuses mixed nozzle arrays and >16 entries.
+    // A single matching element is not sufficient to prove machine identity.
+    let raw_nozzles = settings
+        .get("nozzle_diameter")
+        .ok_or_else(|| "project_settings nozzle_diameter is required".to_owned())?;
+    let dimensions: &[Value] = match raw_nozzles {
+        Value::Array(values) => values,
+        single => std::slice::from_ref(single),
+    };
+    if dimensions.is_empty() || dimensions.len() > 16 {
+        return Err("project_settings nozzle_diameter must contain 1..16 entries".into());
+    }
+    let mut physical = None;
+    for value in dimensions {
+        let number = finite_positive_number(value).ok_or_else(|| {
+            "project_settings nozzle_diameter must contain finite numbers".to_owned()
+        })?;
+        let found = nozzles
+            .iter()
+            .copied()
+            .find(|allowed| (allowed - number).abs() < 1e-6)
+            .ok_or_else(|| format!("unsupported {target} nozzle diameter {number}"))?;
+        if physical.is_some_and(|previous| previous != found) {
+            return Err("mixed nozzle diameters are not supported".into());
+        }
+        physical = Some(found);
+    }
+    let physical = physical.ok_or_else(|| "missing physical nozzle".to_owned())?;
+    // Go's validTargetNozzle accepts exact canonical target strings.
+    let bundled_nozzle = bundle
+        .get("nozzle")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "bundle.nozzle must be a canonical string".to_owned())?;
+    if !nozzles
+        .iter()
+        .any(|allowed| allowed.to_string() == bundled_nozzle)
+        || bundled_nozzle != physical.to_string()
+    {
+        return Err("bundle.nozzle does not match the verified physical nozzle".into());
+    }
+
+    // A raw installed OEM bundle has four declared virtual slots. Source
+    // projects can have more virtual materials than physical tools, without
+    // modifying the actual installed OEM profile or printer configuration.
+    let virtual_slots = filaments(input)?.len().max(4);
+    let mut effective = input.clone();
+    effective["bundle"]["profile"]["filament_slots"] = json!(virtual_slots);
+    let mapped = map_native_material_settings(&effective)?;
+    Ok(json!({
+        "machine": {"target": target, "model_id": model_id, "nozzle_diameter": physical},
+        "filament_types": mapped["project_settings"]["filament_type"],
+        "virtual_filament_slots": virtual_slots,
+    }))
 }
 
 #[cfg(test)]
@@ -557,5 +679,140 @@ mod tests {
         assert!(map_native_material_settings(&req)
             .unwrap_err()
             .contains("PLA-CF"));
+    }
+
+    fn synthetic_bundle() -> Value {
+        json!({
+            "bundle": {
+                "target": "u1",
+                "nozzle": "0.4",
+                "profile": {
+                    "name": "u1",
+                    "display_name": "Snapmaker U1",
+                    "printer_model_id": "Snapmaker U1",
+                    "filament_slots": 4,
+                    "filament_profiles": {"PLA": "Synthetic PLA", "PETG": "Synthetic PETG"},
+                    "project_settings": {
+                        "printer_model": "Snapmaker U1",
+                        "nozzle_diameter": ["0.4", "0.4", "0.4", "0.4"],
+                        "machine_start_gcode": "START",
+                        "machine_end_gcode": "END"
+                    }
+                },
+                "material_settings": {
+                    "PLA": {"nozzle_temperature": ["210"], "flow_ratio": ["0.98"], "filament_max_volumetric_speed": ["18"], "filament_settings_id": ["Synthetic PLA"]},
+                    "PETG": {"nozzle_temperature": ["245"], "flow_ratio": ["0.97"], "filament_max_volumetric_speed": ["12"], "filament_settings_id": ["Synthetic PETG"]}
+                }
+            },
+            "filaments": [{"id": 1, "type": "PLA"}, {"id": 2, "type": "PETG"}]
+        })
+    }
+
+    #[test]
+    fn valid_two_material_bundle_reports_identity_without_conversion() {
+        let output = validate_native_bundle(&synthetic_bundle()).unwrap();
+        assert_eq!(output["machine"]["model_id"], "Snapmaker U1");
+        assert_eq!(output["machine"]["nozzle_diameter"], 0.4);
+        assert_eq!(output["filament_types"], json!(["PLA", "PETG"]));
+        assert!(output.get("project_settings").is_none());
+    }
+
+    #[test]
+    fn bundle_refuses_missing_model_identity_and_wrong_nozzle() {
+        let mut req = synthetic_bundle();
+        req["bundle"]["profile"]
+            .as_object_mut()
+            .unwrap()
+            .remove("printer_model_id");
+        assert!(validate_native_bundle(&req)
+            .unwrap_err()
+            .contains("printer_model_id"));
+        let mut req = synthetic_bundle();
+        req["bundle"]["profile"]["project_settings"]["nozzle_diameter"] = json!(["0.3"]);
+        assert!(validate_native_bundle(&req).unwrap_err().contains("nozzle"));
+    }
+
+    #[test]
+    fn bundle_refuses_absent_nozzle_and_missing_machine_scripts() {
+        let mut req = synthetic_bundle();
+        req["bundle"]["profile"]["project_settings"]
+            .as_object_mut()
+            .unwrap()
+            .remove("nozzle_diameter");
+        assert!(validate_native_bundle(&req)
+            .unwrap_err()
+            .contains("nozzle_diameter"));
+        let mut req = synthetic_bundle();
+        req["bundle"]["profile"]["project_settings"]
+            .as_object_mut()
+            .unwrap()
+            .remove("machine_end_gcode");
+        assert!(validate_native_bundle(&req)
+            .unwrap_err()
+            .contains("machine_end_gcode"));
+    }
+
+    #[test]
+    fn bundle_refuses_unsafe_missing_material_settings() {
+        let mut req = synthetic_bundle();
+        req["bundle"]["material_settings"]["PETG"]
+            .as_object_mut()
+            .unwrap()
+            .remove("filament_max_volumetric_speed");
+        let error = validate_native_bundle(&req).unwrap_err();
+        assert!(
+            error.contains("filament_max_volumetric_speed"),
+            "unsafe material accepted: {error}"
+        );
+    }
+
+    #[test]
+    fn bundle_refuses_wrong_name_display_and_mixed_nozzles() {
+        let mut req = synthetic_bundle();
+        req["bundle"]["profile"]["name"] = json!("qidi");
+        assert!(validate_native_bundle(&req)
+            .unwrap_err()
+            .contains("profile name"));
+        let mut req = synthetic_bundle();
+        req["bundle"]["profile"]["display_name"] = json!("invented");
+        assert!(validate_native_bundle(&req)
+            .unwrap_err()
+            .contains("display_name"));
+        let mut req = synthetic_bundle();
+        req["bundle"]["profile"]["project_settings"]["nozzle_diameter"] =
+            json!(["0.4", "0.4", "0.6", "0.4"]);
+        assert!(validate_native_bundle(&req)
+            .unwrap_err()
+            .contains("mixed nozzle"));
+        let mut req = synthetic_bundle();
+        req["bundle"]["nozzle"] = json!("00.4");
+        assert!(validate_native_bundle(&req)
+            .unwrap_err()
+            .contains("bundle.nozzle"));
+    }
+
+    #[test]
+    fn bundle_validates_five_virtual_material_slots_without_changing_raw_machine() {
+        let mut req = synthetic_bundle();
+        req["filaments"] = json!([
+            {"id": 1, "type": "PLA"}, {"id": 2, "type": "PLA"},
+            {"id": 3, "type": "PETG"}, {"id": 4, "type": "PLA"},
+            {"id": 5, "type": "PETG"}
+        ]);
+        assert_eq!(req["bundle"]["profile"]["filament_slots"], 4);
+        let reply = validate_native_bundle(&req).unwrap();
+        assert_eq!(reply["virtual_filament_slots"], 5);
+        assert_eq!(
+            reply["filament_types"],
+            json!(["PLA", "PLA", "PETG", "PLA", "PETG"])
+        );
+        assert_eq!(req["bundle"]["profile"]["filament_slots"], 4);
+    }
+
+    #[test]
+    fn bundle_refuses_source_material_not_in_real_preset() {
+        let mut req = synthetic_bundle();
+        req["filaments"][1]["type"] = json!("ABS");
+        assert!(validate_native_bundle(&req).unwrap_err().contains("ABS"));
     }
 }
