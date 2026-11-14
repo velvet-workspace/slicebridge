@@ -426,6 +426,9 @@ test('a real mixed per-file batch outcome cannot be announced as fully completed
   assert.match(en.dom('activityDetail').textContent,/1 successful, 1 failed/);
   assert.match(en.dom('activityIcon').className,/warning/);
   assert.equal(en.dom('resultList').querySelectorAll('.file-report').length,2);
+  const failedCard=en.dom('resultList').querySelector('.status-pill.bad');
+  assert.ok(failedCard,'an invalid source must still produce a visible red failure card');
+  assert.equal(failedCard.textContent,'Failed');
   assert.equal(en.dom('convertBtn').disabled,false);
   const he=await perform('he');
   assert.equal(he.dom('activityText').textContent,'ההמרה הושלמה חלקית');

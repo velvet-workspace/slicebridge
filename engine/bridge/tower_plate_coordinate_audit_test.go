@@ -217,3 +217,22 @@ func TestConvertedOnePlateProjectAlreadyCarriesCountInSliceInfo(t *testing.T) {
 		t.Fatal("source file was mutated")
 	}
 }
+
+func TestOversizedOptionalSliceInfoDoesNotEraseExplicitNativePlateCount(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "source.3mf")
+	fixture(t, src, 4)
+	rewriteTestSourceArchive(t, src, func(name string, contents []byte) []byte {
+		switch name {
+		case "Metadata/model_settings.config":
+			return []byte(twoTowerPlatesXML)
+		case "Metadata/slice_info.config":
+			return bytes.Repeat([]byte("x"), (16<<20)+1)
+		default:
+			return contents
+		}
+	})
+	got := auditTargetTowerPlatePositions(src)
+	if got.plates != 2 {
+		t.Fatalf("oversized optional slice_info must not erase explicit model_settings plates: %+v", got)
+	}
+}

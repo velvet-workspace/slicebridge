@@ -80,15 +80,24 @@ func auditTargetTowerPlatePositions(filename string) towerPlatePositionAudit {
 			continue
 		}
 		if file.UncompressedSize64 > maxMetadata {
+			if file.Name == "Metadata/slice_info.config" {
+				continue // optional fallback must not invalidate valid model_settings plates
+			}
 			return result
 		}
 		rc, err := file.Open()
 		if err != nil {
+			if file.Name == "Metadata/slice_info.config" {
+				continue
+			}
 			return result
 		}
 		data, err := io.ReadAll(io.LimitReader(rc, maxMetadata+1))
 		rc.Close()
 		if err != nil || len(data) > maxMetadata {
+			if file.Name == "Metadata/slice_info.config" {
+				continue // keep authoritative native plate count if slice_info is bad
+			}
 			return result
 		}
 		switch file.Name {
@@ -120,7 +129,7 @@ func auditTargetTowerPlatePositions(filename string) towerPlatePositionAudit {
 			Plates  []struct{} `xml:"plate"`
 		}
 		if err := xml.Unmarshal(sliceInfoData, &sliceInfo); err == nil &&
-			sliceInfo.XMLName.Local == "config" && len(sliceInfo.Plates) <= 256 {
+			sliceInfo.XMLName.Local == "config" {
 			result.plates = len(sliceInfo.Plates)
 		}
 	}
