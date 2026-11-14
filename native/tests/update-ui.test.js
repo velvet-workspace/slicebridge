@@ -36,6 +36,7 @@ function setupUI() {
   const ids = [
     'fileList', 'queueCount', 'queuedFilesLabel', 'queueFilesShownCount',
     'resultList', 'reportCounts', 'convertBtn',
+    'rustNativeDevControl', 'rustNativeOptIn', 'cancelRustConversionBtn',
     'convertCount', 'activityText', 'activityDetail', 'activityIcon',
     'openFolderBtn', 'settingsDialog', 'clearQueueBtn', 'addFilesBtn',
     'addFolderBtn', 'selectAllBtn', 'settingsBtn', 'myPrintersBtn',
@@ -82,6 +83,7 @@ function setupUI() {
     }),
     OpenUpdatePage: async (kind, tag) => {sent.push({kind, tag});}
   };
+  const docHandlers = {};
   const document = {
     getElementById(id) {
       assert.ok(elements[id], 'unexpected ID read by JS: ' + id);
@@ -104,7 +106,12 @@ function setupUI() {
     createDocumentFragment: () => element('fragment'),
     documentElement: {lang: 'en', dir: 'ltr'},
     body: {dir: 'ltr'},
-    addEventListener() {}
+    addEventListener(type, handler) {
+      (docHandlers[type] ||= []).push(handler);
+    },
+    dispatchEvent(event) {
+      for (const handler of docHandlers[event.type] || []) handler(event);
+    }
   };
   const win = {
     go: {main: {App: app}},
@@ -119,7 +126,7 @@ function setupUI() {
     structuredClone
   };
   vm.runInNewContext(source, context, {filename: 'native-app.js'});
-  return {elements, rows, app, sent, context, win};
+  return {elements, rows, app, sent, context, win, document};
 }
 
 async function settle() {
@@ -217,4 +224,24 @@ test('invalid preferences require explicit recovery and preserve backup location
   assert.equal(recovered, 1);
   assert.equal(elements.settingsDialog.open, true);
   assert.match(elements.activityDetail.textContent, /backup\/settings\.invalid\.bak/);
+});
+
+
+test('Rust-native engine selector stays developer-only and turns off with developer mode', async () => {
+  const {elements, document} = setupUI();
+  await settle();
+  assert.equal(elements.rustNativeDevControl.hidden, true, 'installed default hides pilot');
+  assert.equal(elements.rustNativeOptIn.checked, false, 'installed default is Go');
+  assert.equal(elements.cancelRustConversionBtn.hidden, true);
+
+  document.dispatchEvent({type: 'slicebridge:developer-mode', detail: {enabled: true}});
+  assert.equal(elements.rustNativeDevControl.hidden, false);
+  elements.rustNativeOptIn.checked = true;
+  elements.rustNativeOptIn.handlers.change({target: elements.rustNativeOptIn});
+  assert.equal(elements.rustNativeOptIn.checked, true, 'pilot requires an explicit click');
+
+  document.dispatchEvent({type: 'slicebridge:developer-mode', detail: {enabled: false}});
+  assert.equal(elements.rustNativeDevControl.hidden, true);
+  assert.equal(elements.rustNativeOptIn.checked, false, 'disabling developer mode clears pilot');
+  assert.equal(elements.cancelRustConversionBtn.hidden, true);
 });

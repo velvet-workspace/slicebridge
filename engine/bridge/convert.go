@@ -129,7 +129,11 @@ func physicalToolPhrase(count int) string {
 
 // publishConversion merges the resolved profile into the source project,
 // verifies the sanitized output and publishes it without overwriting.
-func publishConversion(plan conversionPlan) (map[string]any, error) {
+func publishConversion(plan conversionPlan, requestedEngine ...string) (map[string]any, error) {
+	engine := os.Getenv("SLICEBRIDGE_CONVERSION_ENGINE")
+	if len(requestedEngine) > 0 {
+		engine = requestedEngine[0]
+	}
 	src, dst := plan.source, plan.destination
 	base, slots, mapping := plan.base, plan.slots, plan.mapping
 	before := plan.before
@@ -166,15 +170,30 @@ func publishConversion(plan conversionPlan) (map[string]any, error) {
 	clean.Close()
 	defer os.Remove(cleanPath)
 
-	_, err = converter.Convert(src, rawPath, converter.Options{
-		Printer: merged, Slots: slots, Mapping: mapping, Supports: converter.SupportsAuto,
-	})
-	if err != nil {
-		return nil, fail("UPSTREAM_CONVERSION_FAILED", "bl2std: %v", err)
-	}
-	removed, err := stripSliceCacheForQIDI(rawPath, cleanPath, preserved, plan.target == "qidi" && plan.expectedModel == "X-Plus 5")
-	if err != nil {
-		return nil, fail("CACHE_SANITIZE_FAILED", "%v", err)
+	engineName := "bl2std"
+	var removed int
+	if engine == "rust" {
+		// Rust exclusively creates the scratch destination. The ordinary Go
+		// path writes into this already-allocated temporary file instead.
+		if err := os.Remove(cleanPath); err != nil {
+			return nil, fail("OUTPUT_INVALID", "cannot reserve Rust scratch output: %v", err)
+		}
+		removed, err = convertWithExperimentalRust(plan, merged, preserved, cleanPath)
+		if err != nil {
+			return nil, fail("RUST_ENGINE_FAILED", "%v", err)
+		}
+		engineName = "rust-3mf"
+	} else {
+		_, err = converter.Convert(src, rawPath, converter.Options{
+			Printer: merged, Slots: slots, Mapping: mapping, Supports: converter.SupportsAuto,
+		})
+		if err != nil {
+			return nil, fail("UPSTREAM_CONVERSION_FAILED", "bl2std: %v", err)
+		}
+		removed, err = stripSliceCacheForQIDI(rawPath, cleanPath, preserved, plan.target == "qidi" && plan.expectedModel == "X-Plus 5")
+		if err != nil {
+			return nil, fail("CACHE_SANITIZE_FAILED", "%v", err)
+		}
 	}
 	after, err := inspectPackage(cleanPath)
 	if err != nil {
@@ -232,7 +251,7 @@ func publishConversion(plan conversionPlan) (map[string]any, error) {
 		"ok":                                    true,
 		"target":                                plan.target,
 		"output":                                dst,
-		"engine":                                "bl2std",
+		"engine":                                engineName,
 		"source_nozzle":                         plan.sourceNozzle.Nozzle,
 		"source_nozzle_source":                  plan.sourceNozzle.Source,
 		"source_nozzle_assumed":                 plan.sourceNozzle.Assumed,

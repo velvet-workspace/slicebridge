@@ -69,6 +69,8 @@ func writeInstalledOrcaVendor(t *testing.T, root, vendor, printerModel string) {
 		},
 		"filament/Test PLA.json": {
 			"name": "Test PLA", "compatible_printers": []any{machine}, "filament_type": []any{"PLA"},
+			"nozzle_temperature": []any{"210"}, "filament_flow_ratio": []any{"0.98"},
+			"filament_max_volumetric_speed": []any{"18"},
 		},
 	}
 	for rel, body := range files {

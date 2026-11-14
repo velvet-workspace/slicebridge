@@ -262,6 +262,74 @@ func Load(target, sourceNozzle string) (*Bundle, error) {
 	return LoadConfigured(target, sourceNozzle, "auto", nil)
 }
 
+// installedU104MaterialLeaf selects only manufacturer-authored
+// Snapmaker U1 0.4mm-compatible *leaf* profiles with verified inheritance,
+// exact printer identity, complete nozzle temperature bounds and material
+// limits. The previously selected @U1 base presets omit distinct critical
+// settings, so cross-material 3MF conversion must never copy PLA defaults
+// to PETG or assume another physical nozzle's constraints.
+func installedU104MaterialLeaf(index catalog, machineName, materialType string) string {
+	var leafName, inheritedBase string
+	switch materialType {
+	case "PLA":
+		leafName, inheritedBase = "Generic PLA High Speed", "Generic PLA High Speed @U1 base"
+	case "PETG":
+		leafName, inheritedBase = "Generic PETG", "Generic PETG @U1 base"
+	default:
+		return ""
+	}
+	for _, entry := range index["filament:"+leafName] {
+		if filepath.Base(entry.file) != leafName+".json" ||
+			entry.settings["inherits"] != inheritedBase {
+			continue
+		}
+		compatible, ok := entry.settings["compatible_printers"].([]any)
+		if !ok {
+			continue
+		}
+		matched := false
+		for _, name := range compatible {
+			if value, ok := name.(string); ok && value == machineName {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		flattened, err := flatten(index, "filament", leafName, map[string]bool{})
+		if err != nil {
+			continue
+		}
+		materials, ok := flattened["filament_type"].([]any)
+		if !ok || len(materials) != 1 || fmt.Sprint(materials[0]) != materialType {
+			continue
+		}
+		numeric := func(key string) (float64, bool) {
+			items, ok := flattened[key].([]any)
+			if !ok || len(items) != 1 {
+				return 0, false
+			}
+			number, err := strconv.ParseFloat(fmt.Sprint(items[0]), 64)
+			// Positive finite values only, never manufacturer-unverified
+			// placeholders, zeroes, infinities or negative limits.
+			return number, err == nil && number > 0 && number < 1000
+		}
+		low, okLow := numeric("nozzle_temperature_range_low")
+		high, okHigh := numeric("nozzle_temperature_range_high")
+		temp, okTemp := numeric("nozzle_temperature")
+		flow, okFlow := numeric("filament_flow_ratio")
+		volume, okVolume := numeric("filament_max_volumetric_speed")
+		if !okLow || !okHigh || !okTemp || !okFlow || !okVolume ||
+			low >= high || high > 450 || temp < low || temp > high ||
+			flow > 2.0 || volume > 100 {
+			continue
+		}
+		return leafName
+	}
+	return ""
+}
+
 // LoadConfigured uses only installed vendor presets, with verified saved
 // physical nozzle, slicer and material overrides.
 func LoadConfigured(target, sourceNozzle, slicerID string, overrides map[string]string) (*Bundle, error) {
@@ -327,6 +395,13 @@ func LoadConfigured(target, sourceNozzle, slicerID string, overrides map[string]
 		override := overrides[m]
 		if override != "" {
 			name = override
+		} else if target == "u1" && nozzle == "0.4" && (m == "PLA" || m == "PETG") {
+			// Both installed OEM 0.4mm leaf profiles carry the material's
+			// distinct native temperature, flow and speed limits. Do not
+			// bind an abstract base which omitted those safety keys.
+			if validated := installedU104MaterialLeaf(index, machineName, m); validated != "" {
+				name = validated
+			}
 		}
 		preset, loadErr := get("filament", name)
 		if loadErr != nil && override == "" {

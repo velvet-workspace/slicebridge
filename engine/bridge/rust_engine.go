@@ -1,0 +1,239 @@
+package bridge
+
+import (
+	"archive/zip"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/BryanSmee/bl_to_std/pkg/printer"
+)
+
+// rustEngineSelected is an explicit, developer-only opt-in. It never
+// guesses a runtime from PATH and does not change the installed app default.
+// Profile/nozzle/material policy remains under buildPlan and publishConversion.
+func rustEngineSelected() bool {
+	return os.Getenv("SLICEBRIDGE_CONVERSION_ENGINE") == "rust"
+}
+
+// readRustSourceSettings mirrors bl2std's source settings input. The production
+// source inspector has already rejected duplicate ZIP entries and unsafe paths.
+// No machine-owned settings are taken from the original source.
+func readRustSourceSettings(source string) (map[string]any, error) {
+	reader, err := zip.OpenReader(source)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+	settings := map[string]any{}
+	for _, part := range reader.File {
+		if part.Name != "Metadata/project_settings.config" {
+			continue
+		}
+		const maxSettings = 8 << 20
+		if part.UncompressedSize64 > maxSettings {
+			return nil, fmt.Errorf("oversized source project settings")
+		}
+		stream, err := part.Open()
+		if err != nil {
+			return nil, err
+		}
+		data, readErr := io.ReadAll(io.LimitReader(stream, maxSettings+1))
+		closeErr := stream.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		if len(data) > maxSettings {
+			return nil, fmt.Errorf("source project settings exceed 8 MiB")
+		}
+		if err := json.Unmarshal(data, &settings); err != nil {
+			return nil, fmt.Errorf("source project settings: %w", err)
+		}
+		if settings == nil {
+			return nil, fmt.Errorf("source project settings must be an object")
+		}
+		break
+	}
+	return settings, nil
+}
+
+// sourceSupportsForRust exactly matches the existing bl2std SupportsAuto
+// contract: a direct "1" or an explicit settings override containing the key.
+func sourceSupportsForRust(settings map[string]any) bool {
+	if raw, ok := settings["enable_support"].(string); ok && raw == "1" {
+		return true
+	}
+	if differences, ok := settings["different_settings_to_system"].([]any); ok {
+		for _, item := range differences {
+			if value, ok := item.(string); ok && strings.Contains(value, "enable_support") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// rustExplicitPlan binds the *already validated* resolved target and original
+// project metadata to the experimental Rust ZIP assembler. It never uses a
+// synthetic or fallback profile, and no unsafe guessed material assignments.
+func rustExplicitPlan(plan conversionPlan, profile *printer.Profile, preserved []string) ([]byte, error) {
+	sourceSettings, err := readRustSourceSettings(plan.source)
+	if err != nil {
+		return nil, err
+	}
+	mapping := make(map[string]int, len(plan.mapping))
+	for from, to := range plan.mapping {
+		mapping[strconv.Itoa(from)] = to
+	}
+	return json.Marshal(map[string]any{
+		"profile":         profile,
+		"slots":           plan.slots,
+		"slot_count":      profile.FilamentSlots,
+		"source_settings": sourceSettings,
+		"mapping":         mapping,
+		"supports":        sourceSupportsForRust(sourceSettings),
+		"preserved":       preserved,
+	})
+}
+
+// cappedRustTranscript drains a child process stream without unbounded
+// memory growth. A truncated or oversized receipt fails closed. Unlike a
+// writer that returns a short count, this does not strand the child blocked
+// on its inherited stdout/stderr pipes after a large diagnostic burst.
+type cappedRustTranscript struct {
+	buffer    bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (out *cappedRustTranscript) Write(p []byte) (int, error) {
+	n := len(p)
+	remaining := out.limit - out.buffer.Len()
+	if remaining > 0 {
+		take := n
+		if take > remaining {
+			take = remaining
+		}
+		_, _ = out.buffer.Write(p[:take])
+		if take < n {
+			out.truncated = true
+		}
+	} else if n > 0 {
+		out.truncated = true
+	}
+	return n, nil
+}
+
+// convertWithExperimentalRust runs the real Rust full-ZIP assembler in a
+// bounded, child process. Its output goes to an unoccupied scratch path;
+// the surrounding Go path still validates geometry, printer identity, stale
+// G-code, native material plan, and atomic exclusive final publication.
+// Failure is always returned: there is no silent Go fallback or empty success.
+func convertWithExperimentalRust(plan conversionPlan, profile *printer.Profile, preserved []string, scratchOutput string) (removed int, err error) {
+	binary := os.Getenv("SLICEBRIDGE_RUST_ENGINE_BIN")
+	if binary == "" || !filepath.IsAbs(binary) {
+		return 0, fmt.Errorf("experimental Rust engine requires an explicit absolute SLICEBRIDGE_RUST_ENGINE_BIN")
+	}
+	info, err := os.Stat(binary)
+	if err != nil || !info.Mode().IsRegular() {
+		return 0, fmt.Errorf("experimental Rust binary is not a regular local file: %s", binary)
+	}
+	// Go's upstream converter validates the resolved profile before any
+	// ZIP rewriting. The Rust path must enforce the same safety gate.
+	if err := profile.Validate(); err != nil {
+		return 0, fmt.Errorf("resolved target profile invalid: %w", err)
+	}
+	payload, err := rustExplicitPlan(plan, profile, preserved)
+	if err != nil {
+		return 0, err
+	}
+	// Stage every Rust-owned temporary file inside one private per-invocation
+	// directory. A killed Rust child cannot run its Drop handlers; the Go
+	// parent still cleans its entire job directory after Wait returns.
+	// Keeping the directory alongside the eventual output also guarantees
+	// same-filesystem atomic hard-link publication without overwriting.
+	jobDir, err := os.MkdirTemp(filepath.Dir(scratchOutput), ".bridge-rust-job-*")
+	if err != nil {
+		return 0, fmt.Errorf("cannot create private Rust job directory: %w", err)
+	}
+	defer func() {
+		if cleanupErr := os.RemoveAll(jobDir); cleanupErr != nil {
+			err = errors.Join(err, fmt.Errorf("cannot remove private Rust job directory: %w", cleanupErr))
+			removed = 0
+		}
+	}()
+	workerOutput := filepath.Join(jobDir, "converted.3mf")
+	request, err := os.CreateTemp(jobDir, "plan-*.json")
+	if err != nil {
+		return 0, err
+	}
+	defer os.Remove(request.Name())
+	if err := request.Chmod(0600); err != nil {
+		request.Close()
+		return 0, err
+	}
+	if _, err := request.Write(payload); err != nil {
+		request.Close()
+		return 0, err
+	}
+	if err := request.Sync(); err != nil {
+		request.Close()
+		return 0, err
+	}
+	if err := request.Close(); err != nil {
+		return 0, err
+	}
+	if _, err := os.Stat(scratchOutput); !os.IsNotExist(err) {
+		return 0, fmt.Errorf("Rust scratch destination is not vacant")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, "--convert-archive", request.Name(), plan.source, workerOutput)
+	// A child may spawn a grandchild inheriting pipes; WaitDelay bounds the
+	// wait for inherited streams after the direct process exits or times out.
+	cmd.WaitDelay = 2 * time.Second
+	stdout := &cappedRustTranscript{limit: 64 << 10}
+	stderr := &cappedRustTranscript{limit: 64 << 10}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	err = cmd.Run()
+	if ctx.Err() != nil {
+		return 0, fmt.Errorf("experimental Rust conversion exceeded 120s limit: %w", ctx.Err())
+	}
+	if stdout.truncated || stderr.truncated {
+		return 0, fmt.Errorf("experimental Rust converter produced over 64 KiB stdout/stderr; refusing oversized response")
+	}
+	if err != nil {
+		return 0, fmt.Errorf("experimental Rust conversion refused input: %w (stderr: %.512s)", err, stderr.buffer.String())
+	}
+	var response struct {
+		OK           bool   `json:"ok"`
+		Removed      int    `json:"removed"`
+		Experimental bool   `json:"experimental"`
+		Error        string `json:"error"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(stdout.buffer.Bytes()), &response); err != nil {
+		return 0, fmt.Errorf("experimental Rust converter returned malformed receipt: %w", err)
+	}
+	if !response.OK || !response.Experimental || response.Removed < 0 {
+		return 0, fmt.Errorf("experimental Rust conversion rejected plan: %s", response.Error)
+	}
+	// Never rename onto an existing temporary or final output. os.Link is
+	// exclusive and atomic; publishConversion performs its own independent
+	// validation and second exclusive link to the user's destination.
+	if linkErr := os.Link(workerOutput, scratchOutput); linkErr != nil {
+		return 0, fmt.Errorf("cannot publish private Rust scratch without overwrite: %w", linkErr)
+	}
+	return response.Removed, nil
+}

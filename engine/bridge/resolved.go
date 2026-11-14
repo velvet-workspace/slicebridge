@@ -1,6 +1,9 @@
 package bridge
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/BryanSmee/bl_to_std/pkg/converter"
@@ -42,6 +45,10 @@ const (
 // ProfileFile is the flattened installed bundle prepared by the native resolver
 // and Nozzle is the user's saved physical nozzle, if any.
 type TargetRequest struct {
+	// Engine is an explicit per-call experimental override. Empty leaves the
+	// developer environment selector and default Go behavior unchanged.
+	// A request-scoped choice cannot affect other concurrent conversions.
+	Engine string
 	// Target is a stable built-in alias (u1, c5, cc2, qidi) or an installed
 	// Orca target ID (orca-...).
 	Target string
@@ -192,30 +199,77 @@ func buildPlan(source, destination string, resolve profileResolver) (conversionP
 	}, nil
 }
 
-// convertWith runs the one shared path: plan, then publish.
+// convertWith retains the historical default while allowing a separately
+// selected Rust-native planner that never constructs a Go conversion plan.
 func convertWith(source, destination string, resolve profileResolver) (map[string]any, error) {
+	return convertWithContext(context.Background(), source, destination, resolve)
+}
+
+func convertWithContext(ctx context.Context, source, destination string, resolve profileResolver) (map[string]any, error) {
+	return convertWithContextEngine(ctx, source, destination, resolve, os.Getenv("SLICEBRIDGE_CONVERSION_ENGINE"))
+}
+
+func convertWithContextEngine(ctx context.Context, source, destination string, resolve profileResolver, engine string) (map[string]any, error) {
+	switch engine {
+	case "", "go", "rust", "rust-native":
+		// Go remains default. Both Rust paths are explicit experimental opt-ins.
+	default:
+		return nil, fail("ENGINE_INVALID", "unknown experimental conversion engine")
+	}
+	if engine == "rust" || engine == "rust-native" {
+		// Validate original source/output identity BEFORE replacing source with
+		// its captured immutable copy (otherwise equal paths could be masked).
+		if _, _, err := resolvePaths(source, destination); err != nil {
+			return nil, err
+		}
+		if engine == "rust-native" {
+			// Reclaim only old, verifiably orphaned private Rust scratch in
+			// this output directory; never scan other user directories.
+			_, _ = recoverRustNativeScratch(filepath.Dir(destination))
+		}
+		frozen, cleanup, err := freezeRustSourceForPlan(source, destination)
+		if err != nil {
+			return nil, fail("RUST_SOURCE_INVALID", "%v", err)
+		}
+		defer cleanup()
+		source = frozen
+	}
+	if engine == "rust-native" {
+		return convertWithNativeRust(ctx, source, destination, resolve)
+	}
 	plan, err := buildPlan(source, destination, resolve)
 	if err != nil {
 		return nil, err
 	}
-	return publishConversion(plan)
+	return publishConversion(plan, engine)
 }
 
 // ConvertTarget converts a project for one physical target. It is the only
 // entry point the desktop app needs: built-in aliases and installed Orca IDs are
 // distinguished solely by how their profile bundle is loaded and validated.
 func ConvertTarget(source, destination string, req TargetRequest) (map[string]any, error) {
+	return ConvertTargetContext(context.Background(), source, destination, req)
+}
+
+// ConvertTargetContext allows the desktop host to cancel a Rust-native child
+// when its app lifetime ends. The same exported conversion API and Go default
+// remain available to existing callers.
+func ConvertTargetContext(ctx context.Context, source, destination string, req TargetRequest) (map[string]any, error) {
+	engine := os.Getenv("SLICEBRIDGE_CONVERSION_ENGINE")
+	if req.Engine != "" {
+		engine = req.Engine
+	}
 	if orcaTargetID.MatchString(req.Target) {
-		return convertWith(source, destination, func(NozzleInfo) (*ResolvedTargetProfile, error) {
+		return convertWithContextEngine(ctx, source, destination, func(NozzleInfo) (*ResolvedTargetProfile, error) {
 			return resolveInstalledOrca(req.ProfileFile, req.Target, req.Nozzle)
-		})
+		}, engine)
 	}
 	if targetModels[strings.ToLower(req.Target)] == "" {
 		return nil, fail("TARGET_NOT_VALIDATED", "unknown target %q", strings.ToLower(req.Target))
 	}
-	return convertWith(source, destination, func(src NozzleInfo) (*ResolvedTargetProfile, error) {
+	return convertWithContextEngine(ctx, source, destination, func(src NozzleInfo) (*ResolvedTargetProfile, error) {
 		return resolveBuiltinTarget(req.Target, req.ProfileFile, req.Nozzle, src.Nozzle)
-	})
+	}, engine)
 }
 
 // resolveBuiltinTarget resolves one of the four stable aliases. A user-selected
