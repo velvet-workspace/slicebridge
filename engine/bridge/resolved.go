@@ -150,7 +150,17 @@ func buildPlan(source, destination string, resolve profileResolver) (conversionP
 	if resolved.bundle != nil {
 		// The machine's physical tools remain unchanged. Extra slots are virtual
 		// project filaments for manual slicer review.
-		if len(slots) > resolved.bundle.Profile.FilamentSlots {
+		//
+		// QIDIStudio's installed X-Plus 5 vendor bundle begins with four
+		// *virtual* default palette slots even though the hardware has one
+		// printing nozzle. When the source has ONE filament, emitting the
+		// remaining three synthetic/white fillers is misleading and can cause
+		// spurious GUI materials. For QIDI only, size the PROJECT palette to
+		// exactly the preserved source filaments, without altering the
+		// manufacturer-owned nozzle arrays or installed preset on disk.
+		if resolved.Kind == ProfileInstalledVendor && resolved.ID == "qidi" {
+			resolved.bundle.Profile.FilamentSlots = len(slots)
+		} else if len(slots) > resolved.bundle.Profile.FilamentSlots {
 			resolved.bundle.Profile.FilamentSlots = len(slots)
 		}
 		if err = bindNativeFilamentSettings(resolved.bundle, insp.Filaments); err != nil {

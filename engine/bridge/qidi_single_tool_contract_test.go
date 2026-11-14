@@ -86,8 +86,15 @@ func TestQIDIOnePhysicalToolKeepsSourceFilamentsVirtual(t *testing.T) {
 				t.Fatalf("test fixture's manufacturer nozzle metadata was overwritten: %v", slicerSettings["nozzle_diameter"])
 			}
 			colors, ok := slicerSettings["filament_colour"].([]any)
-			if !ok || len(colors) < sourceCount {
-				t.Fatalf("conversion lost source virtual palette: %v", slicerSettings["filament_colour"])
+			if !ok || len(colors) != sourceCount {
+				t.Fatalf("QIDI output palette must match actual source count, without four-slot fillers: %v", slicerSettings["filament_colour"])
+			}
+			for _, key := range []string{"filament_type", "filament_settings_id"} {
+				values, ok := slicerSettings[key].([]any)
+				if !ok || len(values) != sourceCount {
+					t.Fatalf("QIDI %s must contain exactly %d native material entries, got %v",
+						key, sourceCount, slicerSettings[key])
+				}
 			}
 			for i := 0; i < sourceCount; i++ {
 				if colors[i] != fixtureColors[i] {

@@ -162,6 +162,15 @@ func TestRustInstalledOEMProductionPlanParity(t *testing.T) {
 				); err != nil {
 					t.Fatal(err)
 				}
+				if target == "qidi" {
+					for _, key := range []string{"filament_type", "filament_colour", "filament_settings_id"} {
+						list, ok := goSettings[key].([]any)
+						if !ok || len(list) != len(plan.filaments) {
+							t.Fatalf("QIDI native 3MF should have exactly %d source palette entries for %s, got %v",
+								len(plan.filaments), key, goSettings[key])
+						}
+					}
+				}
 
 				// Source snapshot must come from original 3MF, not the Go output.
 				var sourceSettings map[string]any

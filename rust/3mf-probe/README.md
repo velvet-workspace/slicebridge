@@ -673,8 +673,15 @@ cannot establish a physically usable five-material print on this
 machine. The target resolver had also *incorrectly hardcoded four
 physical toolheads for QIDI*. That count is now **one print nozzle**
 (the optional BOX is a material feeder, not four physical nozzles);
-the vendor's existing four default **virtual palette slots** remain
-unchanged, as do all installed machine firmware/nozzle settings.
+the installed vendor bundle's four initial **virtual palette slots**
+remain unchanged on disk, as do its firmware/nozzle settings. In the
+*converted QIDI 3MF only*, the material palette is now sized to the
+number of **actual source filaments** instead of outputting the
+manufacturer bundle's four default entries unconditionally: one source
+PLA produces one output PLA slot (no three synthetic white fillers);
+five source materials still produce five distinct virtual slots. This
+small in-memory-only correction is verified against Go/Rust full ZIP
+parity with the installed read-only OEM QIDI profile.
 
 The isolated `TestQIDIOnePhysicalToolKeepsSourceFilamentsVirtual`
 verifies that a one-color source reports one physical print tool,
