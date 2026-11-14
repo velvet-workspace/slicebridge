@@ -7,6 +7,7 @@ mod materials;
 mod modelsettings;
 mod paint;
 mod projectsettings;
+mod qidi_origin;
 mod sanitize;
 mod sliceinfo;
 pub use archive_convert::convert_archive_experimental;

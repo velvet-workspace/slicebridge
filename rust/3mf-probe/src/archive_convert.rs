@@ -4,8 +4,9 @@
 //! outputs are created as new files and never submitted to a printer.
 use crate::{
     compose_project_settings, inspect_package, rewrite_model_settings, rewrite_slice_info_xml,
-    strip_slice_cache_preserving, SliceInfoSlot, MAX_COMPRESSED_BYTES, MAX_MODEL_XML_BYTES,
+    SliceInfoSlot, MAX_COMPRESSED_BYTES, MAX_MODEL_XML_BYTES,
 };
+use crate::sanitize::strip_slice_cache_preserving_for_qidi;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 use serde_json::Value;
@@ -589,7 +590,9 @@ pub fn convert_archive_experimental(
     // Strip old G-code and references only after conversion, exactly as the
     // real Go engine does. This also atomically installs the final file and
     // refuses to overwrite an existing destination.
-    strip_slice_cache_preserving(&stage.0, destination, &preserved)
+    let qidi = model_id == "X-Plus 5"
+        && settings.get("printer_model").and_then(Value::as_str) == Some("X-Plus 5");
+    strip_slice_cache_preserving_for_qidi(&stage.0, destination, &preserved, qidi)
 }
 
 #[cfg(test)]

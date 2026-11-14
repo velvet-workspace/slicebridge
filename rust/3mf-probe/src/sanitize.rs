@@ -1,6 +1,7 @@
 //! Experimental 3MF cache stripping, independent from production Go conversion.
 //! Source is never written; the output is installed atomically without overwrite.
 use crate::{is_cache, safe_entry_name, verify_central_directory};
+use crate::qidi_origin::set_qidi_application_metadata;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, Writer, XmlVersion};
 use serde_json::Value;
@@ -44,6 +45,17 @@ pub fn strip_slice_cache_preserving(
     source: impl AsRef<Path>,
     destination: impl AsRef<Path>,
     preserved: &[String],
+) -> Result<usize, String> {
+    strip_slice_cache_preserving_for_qidi(source, destination, preserved, false)
+}
+
+// Shared final ZIP stage for experimental native QIDI conversion. Existing
+// non-QIDI callers retain the original byte-for-byte cache cleanup behavior.
+pub(crate) fn strip_slice_cache_preserving_for_qidi(
+    source: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    preserved: &[String],
+    qidi: bool,
 ) -> Result<usize, String> {
     let source = source.as_ref();
     let destination = destination.as_ref();
@@ -102,12 +114,35 @@ pub fn strip_slice_cache_preserving(
     let cleanup = TemporaryOutput(tmp);
     let mut dst = ZipWriter::new(file);
     let mut removed = 0usize;
+    let mut marked_qidi_model = false;
 
     for index in 0..src.len() {
         let mut entry = src.by_index(index).map_err(|e| e.to_string())?;
         let name = entry.name().to_owned();
         if is_cache(&name) {
             removed += 1;
+            continue;
+        }
+        if qidi && name == "3D/3dmodel.model" {
+            if entry.size() > 200 << 20 {
+                return Err("QIDI model XML exceeds 200 MiB".into());
+            }
+            let mut data = Vec::new();
+            entry
+                .by_ref()
+                .take((200 << 20) + 1)
+                .read_to_end(&mut data)
+                .map_err(|e| format!("QIDI model XML read: {e}"))?;
+            if data.len() > 200 << 20 {
+                return Err("QIDI model XML exceeds 200 MiB".into());
+            }
+            let edited = set_qidi_application_metadata(&data)?;
+            let options = entry.options();
+            dst.start_file(name, options)
+                .map_err(|e| format!("QIDI model ZIP output: {e}"))?;
+            dst.write_all(&edited)
+                .map_err(|e| format!("QIDI model ZIP write: {e}"))?;
+            marked_qidi_model = true;
             continue;
         }
         if name == "Metadata/project_settings.config" && !preserved.is_empty() {
@@ -155,6 +190,9 @@ pub fn strip_slice_cache_preserving(
             .map_err(|e| format!("ZIP raw copy: {e}"))?;
     }
 
+    if qidi && !marked_qidi_model {
+        return Err("QIDI conversion missing primary model for importer compatibility".into());
+    }
     let result = dst.finish().map_err(|e| format!("ZIP finalize: {e}"))?;
     result.sync_all().map_err(|e| format!("ZIP sync: {e}"))?;
     drop(result);

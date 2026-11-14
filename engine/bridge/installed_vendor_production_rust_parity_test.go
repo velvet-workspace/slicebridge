@@ -132,15 +132,20 @@ func TestRustInstalledOEMProductionPlanParity(t *testing.T) {
 				for _, message := range warnings {
 					importWarningFound = importWarningFound || strings.Contains(message, "QIDIStudio may replace printer and material settings")
 				}
-				if expected := target == "qidi"; importWarningFound != expected {
+				if expected := false; importWarningFound != expected {
 					t.Fatalf("QIDI native GUI import warning mismatch for %s/%s: got=%t want=%t; warnings=%v",
 						target, sourceKind, importWarningFound, expected, warnings)
 				}
-				if got, want := result["native_slicer_material_review_required"], target == "qidi"; got != want {
+				if got, want := result["native_slicer_material_review_required"], false; got != want {
 					t.Fatalf("native importer review flag mismatch for %s/%s: got=%v want=%v",
 						target, sourceKind, got, want)
 				}
 
+				if target == "qidi" {
+					if got := project3MFApplication(t, goOutput); got != qidiStudioApplication {
+						t.Fatalf("QIDI importer metadata missing: %q", got)
+					}
+				}
 				plan, err := buildPlan(source, filepath.Join(dir, "unused-plan.3mf"),
 					func(src NozzleInfo) (*ResolvedTargetProfile, error) {
 						return resolveBuiltinTarget(target, bundlePath, "0.4", src.Nozzle)

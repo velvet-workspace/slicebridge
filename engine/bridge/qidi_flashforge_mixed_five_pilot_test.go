@@ -136,6 +136,18 @@ func TestQIDIFlashforgeMixedFiveCenteredRustParity(t *testing.T) {
 				t.Fatalf("Rust conversion unsuccessful: reply=%+v parse=%v exec=%v stdout=%s", reply, err, runErr, stdout)
 			}
 			compareConverted3MFParts(t, goOutput, rustOutput)
+			for _, output := range []string{goOutput, rustOutput} {
+				wantApplication := ""
+				if tc.target == "qidi" {
+					wantApplication = qidiStudioApplication
+				}
+				if got := project3MFApplication(t, output); got != wantApplication {
+					t.Fatalf("target-specific native importer metadata mismatch for %s: got=%q want=%q", output, got, wantApplication)
+				}
+			}
+			if got := report["native_slicer_material_review_required"]; got != false {
+				t.Fatalf("successful automatic material import must not request a special QIDI warning: %v", got)
+			}
 			// Independent Go and Rust package settings and the original source
 			// each preserve all five explicit source material identities.
 			wantedTypes := []string{"PLA", "PLA", "PLA", "PLA", "PETG"}

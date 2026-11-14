@@ -103,7 +103,7 @@ func TestRustFullArchiveInstalledVendorProfileParity(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Go OEM-base conversion failed: %v", err)
 			}
-			removedGo, err := stripSliceCache(goRaw, goFinal, nil)
+			removedGo, err := stripSliceCacheForQIDI(goRaw, goFinal, nil, tc.target == "qidi")
 			if err != nil {
 				t.Fatal(err)
 			}

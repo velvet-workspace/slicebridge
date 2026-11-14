@@ -127,28 +127,6 @@ func physicalToolPhrase(count int) string {
 	return fmt.Sprintf("%d physical tools", count)
 }
 
-// vendorNativeImportWarnings distinguishes an archive's material metadata
-// from what a particular native slicer will actually display on import.
-// QIDIStudio can replace the printer/materials of an imported non-QIDI 3MF
-// with local presets, so ZIP parity alone must not imply GUI material parity.
-func vendorNativeImportWarnings(target string, slotCount int) []string {
-	if target != "qidi" || slotCount < 1 {
-		return nil
-	}
-	// A single-spool project still needs a native importer/material review:
-	// QIDIStudio can replace imported non-native material settings even when
-	// there is no material changer and the 3MF palette has only one slot.
-	if slotCount == 1 {
-		return []string{
-			"QIDI X-Plus 5 has one physical print tool. QIDIStudio may replace printer and material settings when importing a 3MF it does not recognize as a native QIDIStudio project, including single-material projects. Verify the actual selected printer/nozzle, loaded physical filament, local material preset, temperature and flow settings before slicing or printing. A geometry-only import does not verify material compatibility; the bridge does not claim native QIDI GUI material acceptance. QIDIStudio's official release notes document automatic printer/material replacement for non-QIDIStudio 3MF projects. SliceBridge does not identify itself as QIDIStudio, so a correct on-disk material profile is not proof of native QIDIStudio import acceptance.",
-		}
-	}
-	return []string{fmt.Sprintf(
-		"QIDI X-Plus 5 has one physical print tool; multiple virtual filament slots do not provide automatic material switching. Actual automatic material switching depends on the specific user's installed feeder and printer configuration, not the physical nozzle count; verify the available material-switching path independently of 3MF import before printing. QIDIStudio may replace printer and material settings when importing a 3MF that it does not recognize as a native QIDIStudio project. This file contains %d separate virtual material slots, but the installed GUI may instead show one local filament preset. Verify that all %d material profiles, types and colours actually appear in QIDIStudio before slicing or printing; if not, treat the import as geometry-only. The bridge does not claim native QIDI multi-material GUI acceptance. QIDIStudio's official releases document automatic printer/material replacement when opening non-QIDIStudio 3MF projects. This SliceBridge output is not authored by QIDIStudio: the preserved archive palette can legitimately be ignored by that importer in favor of the active local filament.",
-		slotCount, slotCount,
-	)}
-}
-
 // publishConversion merges the resolved profile into the source project,
 // verifies the sanitized output and publishes it without overwriting.
 func publishConversion(plan conversionPlan) (map[string]any, error) {
@@ -194,7 +172,7 @@ func publishConversion(plan conversionPlan) (map[string]any, error) {
 	if err != nil {
 		return nil, fail("UPSTREAM_CONVERSION_FAILED", "bl2std: %v", err)
 	}
-	removed, err := stripSliceCache(rawPath, cleanPath, preserved)
+	removed, err := stripSliceCacheForQIDI(rawPath, cleanPath, preserved, plan.target == "qidi")
 	if err != nil {
 		return nil, fail("CACHE_SANITIZE_FAILED", "%v", err)
 	}
@@ -237,7 +215,6 @@ func publishConversion(plan conversionPlan) (map[string]any, error) {
 		warnings = append(warnings,
 			"Multi-color tool use is not verified by this 3MF conversion. Check the native slicer layer preview, physical material assignments and intended tool changes in sliced G-code before printing.")
 	}
-	warnings = append(warnings, vendorNativeImportWarnings(plan.target, len(slots))...)
 	if primeTowerReview {
 		warnings = append(warnings,
 			"Target prime/wipe tower position and clearance are not verified. Check for collision with the model, brim and excluded bed areas in the actual target slicer before printing; no tower coordinates are automatically moved.")
@@ -270,7 +247,7 @@ func publishConversion(plan conversionPlan) (map[string]any, error) {
 		"physical_toolheads":                     plan.physicalTools,
 		"user_slot_mapping_required":             len(slots) > plan.physicalTools,
 		"tool_usage_verification_required":       len(slots) > 1,
-		"native_slicer_material_review_required": plan.target == "qidi",
+		"native_slicer_material_review_required": false,
 		"prime_tower_clearance_review_required":  primeTowerReview,
 		"prime_tower_plate_coordinate_review_required": primeTowerReview && towerPositions.incomplete(),
 		"prime_tower_plate_position_audit_status":      towerPositions.status(primeTowerReview),

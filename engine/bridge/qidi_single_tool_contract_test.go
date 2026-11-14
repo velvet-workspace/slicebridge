@@ -71,8 +71,11 @@ func TestQIDIOnePhysicalToolKeepsSourceFilamentsVirtual(t *testing.T) {
 			if got := result["tool_usage_verification_required"]; got != (sourceCount > 1) {
 				t.Fatalf("multicolor native tool-use review missing: %v", got)
 			}
-			if got := result["native_slicer_material_review_required"]; got != true {
-				t.Fatalf("single-tool QIDI requires material verification even for one slot: %v", got)
+			if got := result["native_slicer_material_review_required"]; got != false {
+				t.Fatalf("automatic QIDI importer compatibility must not raise a special warning: %v", got)
+			}
+			if got := project3MFApplication(t, target); got != qidiStudioApplication {
+				t.Fatalf("QIDI conversion did not set expected importer metadata: %q", got)
 			}
 			slotMap, ok := result["source_to_target_slot_map"].(map[int]int)
 			if !ok || len(slotMap) != sourceCount {
@@ -107,12 +110,15 @@ func TestQIDIOnePhysicalToolKeepsSourceFilamentsVirtual(t *testing.T) {
 				}
 			}
 			warnings := strings.Join(result["warnings"].([]string), "\n")
+			if strings.Contains(warnings, "QIDIStudio may replace") || strings.Contains(warnings, "native QIDI GUI import") {
+				t.Fatalf("automatic QIDI importer compatibility must not display a special importer warning: %s", warnings)
+			}
 			hasUserSpecificHardwareClaim := strings.Contains(warnings, "Without a verified QIDI BOX")
 			if hasUserSpecificHardwareClaim {
 				t.Fatalf("converter must not apply the owner's missing feeder to all QIDI users: %s", warnings)
 			}
-			if sourceCount > 1 && !strings.Contains(warnings, "specific user's installed feeder") {
-				t.Fatalf("multi-filament hardware review must be based on the actual user's configuration: %s", warnings)
+			if sourceCount > 1 && !strings.Contains(warnings, "does not establish filament feeder capacity") {
+				t.Fatalf("a source palette does not establish a printer's installed feeder capacity: %s", warnings)
 			}
 			after, err := os.ReadFile(source)
 			if err != nil || !bytes.Equal(before, after) || sha256.Sum256(after) != digest {

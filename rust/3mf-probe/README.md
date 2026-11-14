@@ -654,20 +654,14 @@ not proof of the exact QIDIStudio 02.07.02.73 decision path; actual
 QIDI material-box configuration and native-project provenance were
 not verified. No user profile or installed slicer files were modified.
 
-The Go production conversion now emits a native QIDI importer warning
-for **every** QIDI source, including a single-filament 3MF. A single
-physical spool still requires confirming the active local material
-preset, physical filament, nozzle, temperature and flow: QIDIStudio
-may substitute a saved local preset even when the converted archive
-contains exactly one correct OEM material entry. With multiple source
-materials, the warning additionally explains that the archived slots
-are virtual, the owner's printer lacks a QIDI BOX, and the native
-GUI may show only one local filament. The returned
-`native_slicer_material_review_required` field is true for QIDI
-regardless of source count; it does not authorize printing. Regression
-tests preserve the target's hardware settings and fail-closed behavior
-without inventing a QIDIStudio provenance marker or asserting an
-unverified native importer fix.
+This paragraph recorded the **pre-fix behavior** observed in the
+older native GUI experiments. Subsequent user-proven A/B evidence
+identified the 3MF model's `Application` metadata as the importer
+classification switch; the experimental development engines now
+write the compatibility metadata automatically only for QIDI,
+instead of raising a special QIDI import warning. Existing
+generic multi-material/process checks remain independent of
+file import compatibility.
 
 The owner subsequently confirmed the X-Plus 5 **has no QIDI BOX** and
 can feed **only one physical filament at a time**. This materially
@@ -883,11 +877,13 @@ The opt-in `TestQIDIApplicationMarkerABExactDelta` proves from archive
 bytes that each experiment added **only one** `Application` XML tag
 (`QIDIStudio-01.09.03.51`) and did not alter any other ZIP member,
 including geometry, build location or material profiles. The source
-QIDIStudio importer uses this marker to classify a project as native,
-but artificially claiming QIDIStudio authorship **must not be silently
-shipped as a production conversion fix**. Future work is a truthful
-native-project interoperability route and isolated native reopen/save
-acceptance. The experiments remain explicitly labeled DO NOT PRINT.
+QIDIStudio importer uses this marker to classify a project as native.
+The owner then authorized applying this same compatibility metadata
+automatically during conversion, without a new UI control or special
+warning. The installed application is not changed by this Draft PR;
+the metadata affects importer classification and is not proof that a
+project was created by the proprietary QIDIStudio exporter. The
+original standalone experiments remain explicitly labeled DO NOT PRINT.
 
 **Important scope correction:** the owner's presently missing
 multi-filament feeder/QIDI BOX belongs to **that user's hardware
@@ -896,9 +892,46 @@ format limitation. The converter's job is to preserve materials and
 make them visible to the native slicer; the ability to change filament
 automatically depends on each customer's actual installed feeder,
 firmware and tool assignment. One physical nozzle does not prove
-that automatic multi-material feeding is unavailable. The backend's
-generic QIDI warning now requests a hardware-specific check rather
-than assuming every owner lacks a QIDI BOX.
+that automatic multi-material feeding is unavailable. The conversion preserves its virtual filament palette independently
+of any owner's installed material feeder; no special QIDI importer
+warning is added by the automatic metadata step.
+
+### Automatic QIDIStudio importer compatibility in Go and Rust engines (2026-11-14)
+
+Implemented as part of QIDI conversion — **no new user-facing option
+or special importer warning**. In Go, the shared final ZIP cleanup
+now calls `stripSliceCacheForQIDI` only when the resolved target
+is `qidi`. Experimental Rust's final archive writer applies the
+same model-level metadata when the verified target profile and
+project settings identify `X-Plus 5`. The isolated XML splice
+adds/replaces one root-level `Application` element with
+`QIDIStudio-01.09.03.51`, preserving geometry, build transform,
+material arrays, all other XML bytes and every other 3MF ZIP part.
+Non-QIDI targets retain their old output. Pre-existing Application
+metadata is replaced exactly once and repeated operations are
+idempotent; invalid/duplicate XML fails closed.
+
+**Verified execution:** Go's full engine tests and Rust unit tests
+passed on Windows Chris. The opt-in installed OEM parity suite
+passed **all eight** QIDI/Snapmaker one/five/mixed source cases.
+An independent fresh QIDI + Flashforge Go/Rust run regenerated
+the centered **four PLA + one PETG** tetrahedron. Both converted
+QIDI outputs have the same uncompressed ZIP member contents
+as the two earlier owner-accepted QIDIStudio marker-only GUI
+samples (confirmed via an independent Python ZIP comparison).
+The full ZIP binary hashes differ because ZIP packaging metadata
+differs; no source materials or geometry changed. The fresh
+Flashforge Go/Rust outputs did not acquire QIDI metadata.
+Artifacts are scratch-only at
+`D:\\VelvetOps\\SliceBridge-RustPilot-20261113\\slicer-qa\\qidi-auto-origin-4PLA-1PETG-20261114`.
+
+The Go/Wails desktop installation has **not** been updated or
+deployed; this change exists on the experimental Draft PR branch.
+QIDIStudio has not separately reopened the newly generated
+automatic output, though its complete 3MF parts match the
+previously GUI-accepted files. Mixed PLA/PETG printer-native
+temperature warnings and physical feeder configuration are
+independent concerns outside this importer-compatibility step.
 
 ### Bounded local Rust JSONL worker — persistent-process experiment
 
