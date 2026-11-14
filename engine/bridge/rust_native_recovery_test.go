@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -235,5 +236,140 @@ func TestRustNativeNextAppConversionReclaimsDeadOwnerWithoutTouchingOutput(t *te
 	remaining, err := filepath.Glob(filepath.Join(dir, ".bridge-*"))
 	if err != nil || len(remaining) != 0 {
 		t.Fatalf("restart leaked scratch: %v (%v)", remaining, err)
+	}
+}
+
+// A real worker subprocess remains alive after its owner is killed. Scratch
+// recovery must preserve that worker's immutable 3MF until it has stopped,
+// even if the abandoned parent-owned scratch already exceeds the age limit.
+func TestRustNativeOrphanedLiveWorkerSurvivesReaperAndLaterReclaims(t *testing.T) {
+	const testName = "^TestRustNativeOrphanedLiveWorkerSurvivesReaperAndLaterReclaims$"
+	if os.Getenv("SLICEBRIDGE_TEST_ORPHAN_WORKER_CHILD") == "1" {
+		time.Sleep(25 * time.Second)
+		return
+	}
+	if os.Getenv("SLICEBRIDGE_TEST_ORPHAN_WORKER_PARENT") == "1" {
+		dir := os.Getenv("SLICEBRIDGE_TEST_ORPHAN_WORKER_DIR")
+		job, err := newRustNativeJob(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot, err := os.CreateTemp(dir, fmt.Sprintf(".bridge-rust-source-p%d-*.3mf", os.Getpid()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := snapshot.Name()
+		if _, err := snapshot.Write([]byte("private worker input")); err != nil {
+			t.Fatal(err)
+		}
+		if err := snapshot.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeRustSnapshotOwner(source); err != nil {
+			t.Fatal(err)
+		}
+		if err := rustNativeWorkerSpawnAttempted(job); err != nil {
+			t.Fatal(err)
+		}
+		worker := exec.Command(os.Args[0], "-test.run="+testName)
+		worker.Env = append(os.Environ(), "SLICEBRIDGE_TEST_ORPHAN_WORKER_CHILD=1")
+		if err := worker.Start(); err != nil {
+			t.Fatal(err)
+		}
+		if err := rustNativeWorkerStarted(job, worker.Process.Pid); err != nil {
+			_ = worker.Process.Kill()
+			_ = worker.Wait()
+			t.Fatal(err)
+		}
+		message := fmt.Sprintf("%s\n%s\n%d", job, source, worker.Process.Pid)
+		if err := os.WriteFile(filepath.Join(dir, "orphan-child-ready"), []byte(message), 0600); err != nil {
+			_ = worker.Process.Kill()
+			_ = worker.Wait()
+			t.Fatal(err)
+		}
+		_ = worker.Wait()
+		return
+	}
+	dir := t.TempDir()
+	parent := exec.Command(os.Args[0], "-test.run="+testName)
+	parent.Env = append(os.Environ(), "SLICEBRIDGE_TEST_ORPHAN_WORKER_PARENT=1", "SLICEBRIDGE_TEST_ORPHAN_WORKER_DIR="+dir)
+	if err := parent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = parent.Process.Kill(); _ = parent.Wait() }()
+	var job, source string
+	var workerPID int
+	deadline := time.After(8 * time.Second)
+	for workerPID == 0 {
+		data, err := os.ReadFile(filepath.Join(dir, "orphan-child-ready"))
+		if err == nil {
+			parts := strings.Split(strings.TrimSpace(string(data)), "\n")
+			if len(parts) == 3 {
+				pid, e := strconv.Atoi(parts[2])
+				if e == nil && pid > 0 {
+					job, source, workerPID = parts[0], parts[1], pid
+				}
+			}
+		}
+		if workerPID > 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("parent failed to create live Rust worker")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	defer func() {
+		if p, e := os.FindProcess(workerPID); e == nil {
+			_ = p.Kill()
+		}
+	}()
+	if !rustProcessAlive(workerPID) {
+		t.Fatalf("verified worker PID %d not alive", workerPID)
+	}
+	if err := parent.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = parent.Wait()
+	old := time.Now().Add(-10 * time.Minute)
+	if err := os.Chtimes(job, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(source, old, old); err != nil {
+		t.Fatal(err)
+	}
+	count, err := recoverRustNativeScratch(dir)
+	if err != nil || count != 0 {
+		t.Fatalf("reaper touched scratch of live orphaned Rust worker: count=%d err=%v", count, err)
+	}
+	for _, path := range []string{job, source} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("live orphan worker lost resource %s: %v", path, err)
+		}
+	}
+	worker, err := os.FindProcess(workerPID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.Kill(); err != nil {
+		t.Fatalf("test could not stop isolated orphaned child: %v", err)
+	}
+	until := time.Now().Add(5 * time.Second)
+	for rustProcessAlive(workerPID) && time.Now().Before(until) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if rustProcessAlive(workerPID) {
+		t.Skip("OS did not confirm orphan child termination; protect scratch instead of deleting it")
+	}
+	count, err = recoverRustNativeScratch(dir)
+	if err != nil || count != 2 {
+		t.Fatalf("dead worker scratch not reclaimed after exit: count=%d err=%v", count, err)
+	}
+	for _, path := range []string{job, source, source + ".owner"} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("orphan scratch still exists: %s: %v", path, err)
+		}
 	}
 }
