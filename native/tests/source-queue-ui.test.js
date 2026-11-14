@@ -62,31 +62,19 @@ test('source file names display useful details and retain removal affordance',()
 });
 
 
-test('extra virtual filament slots are disclosed without any silent merge',()=>{
+test('conversion results do not render advisory warnings about virtual materials or physical toolheads',()=>{
   const app=read('frontend/dist/app.js');
-  assert.match(app,/virtualSlotsReview:'כל \{n\} ערוצי הצבע/);
-  assert.match(app,/virtualSlotsReview:'All \{n\} source color\/material/);
-  assert.match(app,/נתון זה אינו קובע את קיבולת מערכת הזנת הפילמנט/);
-  assert.match(app,/does not establish feeder capacity/);
+  assert.doesNotMatch(app,/virtualSlotsReview|toolUseReview|summaryReview|requiresToolUseReview/);
+  assert.doesNotMatch(app,/material-mapping-warning|tool-usage-warning/);
+  assert.match(app,/result\.ok\?'good':'bad'/);
+  assert.match(app,/result\.ok\?t\('summarySuccess'\):t\('summaryFailure'\)/);
+  // Preserve backend reporting and independent geometry/prime tower diagnostics.
+  assert.match(app,/report\.prime_tower_clearance_review_required/);
   assert.match(app,/towerPerPlateReview:'ב־3MF המומר יש/);
   assert.match(app,/towerPerPlateReview:'The converted 3MF has/);
-  assert.match(app,/const mappingReview=Boolean\(result\.ok&&requiresToolUseReview\(result\.report\)\)/);
-  assert.match(app,/row\.append\(node\('p','warning-line material-mapping-warning'/);
-  assert.match(app,/t\('virtualSlotsReview',\{n:report\.virtual_filament_slots,physical:report\.physical_toolheads\}\)/);
+  assert.match(app,/tower-per-plate-warning/);
+  assert.match(app,/tower-plate-unknown-warning/);
   assert.doesNotMatch(app,/identical_source_slots_coalesced/);
-});
-
-test('multicolor tool usage remains unverified even if four slots fit four tools',()=>{
-  const app=read('frontend/dist/app.js');
-  const match=app.match(/function requiresToolUseReview\(report\)\{[\s\S]*?\n\}/);
-  assert.ok(match,'actual UI tool-use safety decision helper is missing');
-  const check=Function(match[0]+';return requiresToolUseReview;')();
-  assert.equal(check({user_slot_mapping_required:false,tool_usage_verification_required:true}),true);
-  assert.equal(check({user_slot_mapping_required:true,tool_usage_verification_required:false}),true);
-  assert.equal(check({user_slot_mapping_required:false,tool_usage_verification_required:false}),false);
-  assert.equal(check(null),false);
-  assert.match(app,/toolUseReview:'[^']*G-code/);
-  assert.match(app,/warning-line tool-usage-warning/);
 });
 
 

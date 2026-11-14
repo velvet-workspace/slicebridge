@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class VersionContract(unittest.TestCase):
     def test_current_commit_milestone_consistent(self):
-        self.assertEqual(validate(ROOT), "0.4.0-beta.6.dev.1")
+        self.assertEqual(validate(ROOT), "0.4.0-beta.6.dev.2")
 
     def test_native_app_version_matches_root_version(self):
         source = (ROOT / "native" / "updates_bridge.go").read_text(encoding="utf-8")
