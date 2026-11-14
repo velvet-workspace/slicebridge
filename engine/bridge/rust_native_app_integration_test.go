@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 )
 
@@ -135,5 +136,73 @@ func TestRustNativeRejectsBuiltinWithoutGuessingOEM(t *testing.T) {
 	}
 	if _, err := os.Stat(dst); !os.IsNotExist(err) {
 		t.Fatal("unsupported native plan created output")
+	}
+}
+
+func TestRustNativeConcurrentSameOutputIsAtomicAndCleansUp(t *testing.T) {
+	binary := os.Getenv("SLICEBRIDGE_RUST_PROBE")
+	oemRoot := os.Getenv("SLICEBRIDGE_INSTALLED_BUNDLE_DIR")
+	if binary == "" || oemRoot == "" {
+		t.Skip("requires approved Rust binary and read-only installed OEM snapshots")
+	}
+	t.Setenv("SLICEBRIDGE_RUST_ENGINE_BIN", binary)
+	directory := t.TempDir()
+	original, err := os.ReadFile(filepath.Join("..", "..", "tests", "fixtures", "bambu-five-colors.3mf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(directory, "input.3mf")
+	if err := os.WriteFile(source, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(directory, "published.3mf")
+	request := TargetRequest{
+		Target: "qidi", Nozzle: "0.4", Engine: "rust-native",
+		ProfileFile: filepath.Join(oemRoot, "scratch-qidi-0.4-resolved.json"),
+	}
+	const concurrent = 12
+	type outcome struct {
+		report map[string]any
+		err    error
+	}
+	results := make([]outcome, concurrent)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for index := range results {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			results[i].report, results[i].err = ConvertTargetContext(
+				context.Background(), source, destination, request)
+		}(index)
+	}
+	close(start)
+	wg.Wait()
+	successes := 0
+	for i, result := range results {
+		if result.err == nil {
+			successes++
+			if result.report["engine"] != "rust-native-3mf" {
+				t.Fatalf("winner %d used wrong engine: %v", i, result.report)
+			}
+		} else if ErrorCode(result.err) != "OUTPUT_EXISTS" {
+			t.Fatalf("loser %d returned unexpected error: %v", i, result.err)
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("expected exactly one atomic output publisher, got %d/%d", successes, concurrent)
+	}
+	after, err := os.ReadFile(source)
+	if err != nil || !bytes.Equal(original, after) {
+		t.Fatal("concurrent Rust jobs modified the source file")
+	}
+	pkg, err := inspectPackage(destination)
+	if err != nil || pkg.sliceCaches != 0 || pkg.triangles == 0 {
+		t.Fatalf("atomic winner published invalid 3MF: %+v (%v)", pkg, err)
+	}
+	leftovers, err := filepath.Glob(filepath.Join(directory, ".bridge-*"))
+	if err != nil || len(leftovers) != 0 {
+		t.Fatalf("concurrent Rust jobs leaked scratch files: %v (%v)", leftovers, err)
 	}
 }
