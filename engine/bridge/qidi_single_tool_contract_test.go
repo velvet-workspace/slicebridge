@@ -12,9 +12,10 @@ import (
 )
 
 // One physical QIDI X-Plus 5 print tool remains one even if its installed
-// slicer has multiple *virtual* project palette slots. A QIDI BOX feeder
-// (which is not present on the owner's printer) must not be confused with
-// multiple physical nozzles. No user files, slicers or printers are touched.
+// slicer has multiple *virtual* project palette slots. An optional
+// filament feeder is separate from the count of physical print nozzles;
+// individual owners may have different material-switching hardware.
+// No user files, slicers or printers are touched.
 func TestQIDIOnePhysicalToolKeepsSourceFilamentsVirtual(t *testing.T) {
 	expectedColors := append(append([]any(nil), fixtureColors...), "#00FFFF")
 	for _, sourceCount := range []int{1, 2, 3, 4, 5, 6} {
@@ -106,9 +107,12 @@ func TestQIDIOnePhysicalToolKeepsSourceFilamentsVirtual(t *testing.T) {
 				}
 			}
 			warnings := strings.Join(result["warnings"].([]string), "\n")
-			hasNoBoxWarning := strings.Contains(warnings, "Without a verified QIDI BOX")
-			if hasNoBoxWarning != (sourceCount > 1) {
-				t.Fatalf("single vs multi QIDI hardware warning mismatch: %s", warnings)
+			hasUserSpecificHardwareClaim := strings.Contains(warnings, "Without a verified QIDI BOX")
+			if hasUserSpecificHardwareClaim {
+				t.Fatalf("converter must not apply the owner's missing feeder to all QIDI users: %s", warnings)
+			}
+			if sourceCount > 1 && !strings.Contains(warnings, "specific user's installed feeder") {
+				t.Fatalf("multi-filament hardware review must be based on the actual user's configuration: %s", warnings)
 			}
 			after, err := os.ReadFile(source)
 			if err != nil || !bytes.Equal(before, after) || sha256.Sum256(after) != digest {

@@ -34,7 +34,7 @@ func TestQIDINativeMultiMaterialImportWarning(t *testing.T) {
 	}
 	message := warnings[0]
 	for _, required := range []string{
-		"QIDI X-Plus 5 has one physical print tool", "Without a verified QIDI BOX",
+		"QIDI X-Plus 5 has one physical print tool", "specific user's installed feeder", "not the physical nozzle count",
 		"QIDIStudio", "replace printer and material settings",
 		"5 separate virtual material slots", "one local filament preset",
 		"Verify that all 5 material profiles", "geometry-only",

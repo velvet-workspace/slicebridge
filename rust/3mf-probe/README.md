@@ -867,6 +867,39 @@ readback are separate development gates. The experimental software
 continues to warn that foreign QIDI 3MFs may be displayed with active
 local materials; no QIDI BOX or multi-material printing was assumed.
 
+### QIDIStudio marker-only GUI A/B PASS — scope correction (2026-11-14)
+
+The owner opened both isolated `EXPERIMENTAL-MARKER-ONLY-DO-NOT-PRINT`
+Go and Rust samples in **actual QIDIStudio** and provided a screenshot
+of two native windows. Both displayed **five filament entries** (four
+Generic PLA source colours plus one Generic PETG) for X-Plus 5 / 0.4 mm.
+The earlier unmodified Go/Rust 3MFs showed only the currently active
+local black PETG. This is a native **GUI palette-import PASS** for the
+marker-only experimental variant with both engines; it is not yet a
+certified native-project exporter or a sliced/printed job. The expected
+mixed-temperature warning for PLA/PETG was visible and must remain.
+
+The opt-in `TestQIDIApplicationMarkerABExactDelta` proves from archive
+bytes that each experiment added **only one** `Application` XML tag
+(`QIDIStudio-01.09.03.51`) and did not alter any other ZIP member,
+including geometry, build location or material profiles. The source
+QIDIStudio importer uses this marker to classify a project as native,
+but artificially claiming QIDIStudio authorship **must not be silently
+shipped as a production conversion fix**. Future work is a truthful
+native-project interoperability route and isolated native reopen/save
+acceptance. The experiments remain explicitly labeled DO NOT PRINT.
+
+**Important scope correction:** the owner's presently missing
+multi-filament feeder/QIDI BOX belongs to **that user's hardware
+configuration only**. It is not a product-wide SliceBridge or QIDI
+format limitation. The converter's job is to preserve materials and
+make them visible to the native slicer; the ability to change filament
+automatically depends on each customer's actual installed feeder,
+firmware and tool assignment. One physical nozzle does not prove
+that automatic multi-material feeding is unavailable. The backend's
+generic QIDI warning now requests a hardware-specific check rather
+than assuming every owner lacks a QIDI BOX.
+
 ### Bounded local Rust JSONL worker — persistent-process experiment
 
 The optional `--convert-archive-stdio` mode processes a **finite**
