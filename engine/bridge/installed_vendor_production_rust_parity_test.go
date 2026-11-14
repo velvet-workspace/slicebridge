@@ -34,6 +34,7 @@ func TestRustInstalledOEMProductionPlanParity(t *testing.T) {
 	for _, target := range []string{"u1", "qidi"} {
 		for _, sourceKind := range []string{
 			"bambu-one-color.3mf",
+			"centered-one.3mf",
 			"bambu-five-colors.3mf",
 			"mixed-five.3mf",
 		} {
@@ -51,6 +52,8 @@ func TestRustInstalledOEMProductionPlanParity(t *testing.T) {
 				source := filepath.Join(dir, sourceKind)
 				if sourceKind == "mixed-five.3mf" {
 					createPinnedNativeReadableMixedFiveSource(t, source)
+				} else if sourceKind == "centered-one.3mf" {
+					createPinnedCenteredOneSource(t, source)
 				} else {
 					raw, err := os.ReadFile(filepath.Join("..", "..", "tests", "fixtures", sourceKind))
 					if err != nil {
@@ -108,6 +111,19 @@ func TestRustInstalledOEMProductionPlanParity(t *testing.T) {
 					result["profile_kind"] != string(ProfileInstalledVendor) {
 					t.Fatalf("actual Go conversion used unexpected printer: %+v", result)
 				}
+				// The X-Plus 5 has one physical print nozzle, with or
+				// without a QIDI BOX; the OEM bundle's four virtual
+				// filament palette slots do not imply four toolheads.
+				wantPhysicalTools := 4
+				if target == "qidi" {
+					wantPhysicalTools = 1
+				}
+				multiMaterial := sourceKind == "bambu-five-colors.3mf" || sourceKind == "mixed-five.3mf"
+				if result["physical_toolheads"] != wantPhysicalTools ||
+					result["user_slot_mapping_required"] != multiMaterial ||
+					result["tool_usage_verification_required"] != multiMaterial {
+					t.Fatalf("OEM hardware tool/mapping reporting incorrect for %s/%s: %+v", target, sourceKind, result)
+				}
 				warnings, ok := result["warnings"].([]string)
 				if !ok {
 					t.Fatalf("production conversion omitted native-slicer warnings: %+v", result)
@@ -116,7 +132,7 @@ func TestRustInstalledOEMProductionPlanParity(t *testing.T) {
 				for _, message := range warnings {
 					importWarningFound = importWarningFound || strings.Contains(message, "QIDIStudio may replace printer and material settings")
 				}
-				if expected := target == "qidi" && sourceKind != "bambu-one-color.3mf"; importWarningFound != expected {
+				if expected := target == "qidi" && multiMaterial; importWarningFound != expected {
 					t.Fatalf("QIDI native GUI import warning mismatch for %s/%s: got=%t want=%t; warnings=%v",
 						target, sourceKind, importWarningFound, expected, warnings)
 				}
@@ -199,7 +215,7 @@ func TestRustInstalledOEMProductionPlanParity(t *testing.T) {
 					t.Fatalf("Go/Rust stale slice removal count differs: Go=%d Rust=%d", expected, reply.Removed)
 				}
 				compareConverted3MFParts(t, goOutput, rustOutput)
-				if sourceKind == "mixed-five.3mf" {
+				if sourceKind == "mixed-five.3mf" || sourceKind == "centered-one.3mf" {
 					for _, converted := range []string{goOutput, rustOutput} {
 						model := inspectZipEntries(t, converted)["3D/3dmodel.model"]
 						if !bytes.Contains(model, []byte("120 120 0")) {

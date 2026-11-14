@@ -136,7 +136,7 @@ func vendorNativeImportWarnings(target string, slotCount int) []string {
 		return nil
 	}
 	return []string{fmt.Sprintf(
-		"QIDIStudio may replace printer and material settings when importing a 3MF that it does not recognize as a native QIDIStudio project. This file contains %d separate virtual material slots, but the installed GUI may instead show one local filament preset. Verify that all %d material profiles, types and colours actually appear in QIDIStudio before slicing or printing; if not, treat the import as geometry-only. The bridge does not claim native QIDI multi-material GUI acceptance.",
+		"QIDI X-Plus 5 has one physical print tool; multiple virtual filament slots do not provide automatic material switching. Without a verified QIDI BOX/filament changer, do not attempt a multi-material print. QIDIStudio may replace printer and material settings when importing a 3MF that it does not recognize as a native QIDIStudio project. This file contains %d separate virtual material slots, but the installed GUI may instead show one local filament preset. Verify that all %d material profiles, types and colours actually appear in QIDIStudio before slicing or printing; if not, treat the import as geometry-only. The bridge does not claim native QIDI multi-material GUI acceptance.",
 		slotCount, slotCount,
 	)}
 }

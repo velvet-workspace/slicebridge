@@ -664,6 +664,32 @@ native limitation visible without falsely changing material
 identities, inventing a QIDIStudio provenance marker, or claiming
 that the Rust converter fixed a vendor import rule.
 
+The owner subsequently confirmed the X-Plus 5 **has no QIDI BOX** and
+can feed **only one physical filament at a time**. This materially
+changes the GUI acceptance criterion: the single local filament UI
+is consistent with the available feeder, not itself proof that the
+bridge lost material metadata. Conversely, a valid five-slot archive
+cannot establish a physically usable five-material print on this
+machine. The target resolver had also *incorrectly hardcoded four
+physical toolheads for QIDI*. That count is now **one print nozzle**
+(the optional BOX is a material feeder, not four physical nozzles);
+the vendor's existing four default **virtual palette slots** remain
+unchanged, as do all installed machine firmware/nozzle settings.
+
+The isolated `TestQIDIOnePhysicalToolKeepsSourceFilamentsVirtual`
+verifies that a one-color source reports one physical print tool,
+one active virtual source filament and no extra slot-mapping
+requirement; a five-color source still preserves all five virtual
+identities but now requests explicit owner slot-mapping review. The
+installed OEM Go/Rust archive parity gate additionally verifies
+`physical_toolheads=1` for QIDI and includes a **centered
+one-material** pinned 3MF test source, whose mesh is preserved but
+whose build item is translated into the printable bed. This produces
+scratch-only Go and Rust QIDI outputs suitable for **future owner
+native GUI verification of the actual single-spool workflow**.
+A centered single-material GUI PASS, G-code or print operation has
+**not** been claimed.
+
 ### Bounded local Rust JSONL worker — persistent-process experiment
 
 The optional `--convert-archive-stdio` mode processes a **finite**
