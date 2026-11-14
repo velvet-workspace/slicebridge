@@ -88,6 +88,21 @@ fn is_critical_key(key: &str) -> bool {
         || key == "filament_settings_id"
 }
 
+fn native_material_safety_value(preset: &Map<String, Value>, key: &str) -> bool {
+    preset
+        .get(key)
+        .and_then(Value::as_array)
+        .and_then(|values| values.first())
+        .is_some_and(|value| match value {
+            Value::String(s) => s
+                .trim()
+                .parse::<f64>()
+                .is_ok_and(|v| v.is_finite() && v > 0.0),
+            Value::Number(n) => n.as_f64().is_some_and(|v| v.is_finite() && v > 0.0),
+            _ => false,
+        })
+}
+
 fn bundle_object(input: &Value) -> Result<&Map<String, Value>, String> {
     input
         .get("bundle")
@@ -150,6 +165,24 @@ pub fn map_native_material_settings(input: &Value) -> Result<Value, String> {
         names.push(material.trim());
         native_profile_ids.push(profile_name);
         chosen_presets.push(preset);
+    }
+
+    // The union of present OEM keys cannot detect a critical value missing
+    // from every selected material. Refuse before copying any settings.
+    for (slot, preset) in chosen_presets.iter().enumerate() {
+        for key in ["nozzle_temperature", "filament_max_volumetric_speed"] {
+            if !native_material_safety_value(preset, key) {
+                return Err(format!(
+                    "missing critical native material setting {key:?} in source slot {}",
+                    slot + 1
+                ));
+            }
+        }
+        if !native_material_safety_value(preset, "filament_flow_ratio")
+            && !native_material_safety_value(preset, "flow_ratio")
+        {
+            return Err(format!("missing critical native material setting \"filament_flow_ratio/flow_ratio\" in source slot {}", slot + 1));
+        }
     }
 
     let mut settings = profile
@@ -283,6 +316,7 @@ mod tests {
                     "PLA": {
                         "nozzle_temperature": ["210"],
                         "flow_ratio": ["0.98"],
+                        "filament_max_volumetric_speed": ["18"],
                         "filament_settings_id": ["PLA-native"],
                         "cooling_fan": ["60"],
                         "nozzle_diameter": ["0.2"]
@@ -290,6 +324,7 @@ mod tests {
                     "PETG": {
                         "nozzle_temperature": ["245"],
                         "flow_ratio": ["0.97"],
+                        "filament_max_volumetric_speed": ["12"],
                         "filament_settings_id": ["PETG-native"],
                         "nozzle_diameter": ["0.6"]
                     }
@@ -327,9 +362,11 @@ mod tests {
                 "material_settings": {
                     "PLA": {
                         "filament_settings_id": [""],
-                        "nozzle_temperature": ["210"]
+                        "nozzle_temperature": ["210"],
+                        "flow_ratio": ["0.98"],
+                        "filament_max_volumetric_speed": ["18"]
                     },
-                    "PETG": {"nozzle_temperature": ["245"]}
+                    "PETG": {"nozzle_temperature": ["245"], "flow_ratio": ["0.97"], "filament_max_volumetric_speed": ["12"]}
                 }
             },
             "filaments": [
@@ -370,8 +407,8 @@ mod tests {
                     "project_settings": {"machine_start_gcode": "G28"}
                 },
                 "material_settings": {
-                    "PLA": {"filament_settings_id": ["Installed leaf PLA"], "nozzle_temperature": ["210"]},
-                    "PETG": {"filament_settings_id": ["Installed leaf PETG"], "nozzle_temperature": ["245"]}
+                    "PLA": {"filament_settings_id": ["Installed leaf PLA"], "nozzle_temperature": ["210"], "flow_ratio": ["0.98"], "filament_max_volumetric_speed": ["18"]},
+                    "PETG": {"filament_settings_id": ["Installed leaf PETG"], "nozzle_temperature": ["245"], "flow_ratio": ["0.97"], "filament_max_volumetric_speed": ["12"]}
                 }
             },
             "filaments": [{"id": 1, "type": "PLA"}, {"id": 2, "type": "PETG"}]
@@ -397,6 +434,74 @@ mod tests {
     }
 
     #[test]
+    fn all_missing_or_blank_installed_material_values_fail_closed() {
+        let original = json!({
+            "bundle": {
+                "target": "c5",
+                "profile": {
+                    "filament_slots": 2,
+                    "filament_profiles": {"PLA": "Native PLA", "PETG": "Native PETG"},
+                    "project_settings": {}
+                },
+                "material_settings": {
+                    "PLA": {
+                        "nozzle_temperature": ["210"],
+                        "flow_ratio": ["0.98"],
+                        "filament_max_volumetric_speed": ["18"],
+                        "filament_settings_id": ["Native PLA"]
+                    },
+                    "PETG": {
+                        "nozzle_temperature": ["245"],
+                        "flow_ratio": ["0.97"],
+                        "filament_max_volumetric_speed": ["12"],
+                        "filament_settings_id": ["Native PETG"]
+                    }
+                }
+            },
+            "filaments": [{"id": 1, "type": "PLA"}, {"id": 2, "type": "PETG"}]
+        });
+        assert!(map_native_material_settings(&original).is_ok());
+        for key in [
+            "nozzle_temperature",
+            "flow_ratio",
+            "filament_max_volumetric_speed",
+        ] {
+            let mut missing = original.clone();
+            for material in ["PLA", "PETG"] {
+                missing["bundle"]["material_settings"][material]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(key);
+            }
+            let error = map_native_material_settings(&missing).unwrap_err();
+            assert!(
+                error.contains(key),
+                "missing all {key} fields must fail: {error}"
+            );
+        }
+        for bad_value in [
+            json!(""),
+            json!("  "),
+            Value::Null,
+            json!(0),
+            json!("0"),
+            json!("-5"),
+            json!("abc"),
+            json!("NaN"),
+            json!("Infinity"),
+        ] {
+            let mut invalid = original.clone();
+            invalid["bundle"]["material_settings"]["PLA"]["nozzle_temperature"] =
+                json!([bad_value]);
+            let error = map_native_material_settings(&invalid).unwrap_err();
+            assert!(
+                error.contains("nozzle_temperature"),
+                "blank or null temperature accepted: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn mapping_rejects_unknown_material_and_missing_critical_values() {
         let mut req = json!({
             "bundle": {
@@ -407,8 +512,8 @@ mod tests {
                     "project_settings": {}
                 },
                 "material_settings": {
-                    "PLA": {"nozzle_temperature": ["210"], "flow_ratio": ["0.98"]},
-                    "PETG": {"flow_ratio": ["0.97"]}
+                    "PLA": {"nozzle_temperature": ["210"], "flow_ratio": ["0.98"], "filament_max_volumetric_speed": ["18"]},
+                    "PETG": {"flow_ratio": ["0.97"], "filament_max_volumetric_speed": ["12"]}
                 }
             },
             "filaments": [{"id": 1, "type": "PLA"}, {"id": 2, "type": "PETG"}]

@@ -66,8 +66,8 @@ fn material_map_cli_does_not_change_hardware_owned_settings() {
               "project_settings": {"nozzle_diameter": ["0.4", "0.4"], "machine_start_gcode": "G28"}
             },
             "material_settings": {
-              "PLA": {"nozzle_temperature": ["210"], "nozzle_diameter": ["0.2"]},
-              "PETG": {"nozzle_temperature": ["240"], "nozzle_diameter": ["0.6"]}
+              "PLA": {"nozzle_temperature": ["210"], "flow_ratio": ["0.98"], "filament_max_volumetric_speed": ["18"], "nozzle_diameter": ["0.2"]},
+              "PETG": {"nozzle_temperature": ["240"], "flow_ratio": ["0.97"], "filament_max_volumetric_speed": ["12"], "nozzle_diameter": ["0.6"]}
             }
           },
           "filaments": [{"id": 1, "type": "PLA"}, {"id": 2, "type": "PETG"}]

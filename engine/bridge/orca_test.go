@@ -36,10 +36,11 @@ func syntheticOrcaBundle(tools int) *orcaBundle {
 			},
 			MaterialSettings: map[string]map[string]any{
 				"PLA": {
-					"nozzle_temperature":   []any{"210"},
-					"filament_flow_ratio":  []any{"0.98"},
-					"filament_type":        []any{"PLA"},
-					"filament_settings_id": []any{"Acme PLA"},
+					"nozzle_temperature":            []any{"210"},
+					"filament_flow_ratio":           []any{"0.98"},
+					"filament_max_volumetric_speed": []any{"18"},
+					"filament_type":                 []any{"PLA"},
+					"filament_settings_id":          []any{"Acme PLA"},
 				},
 			},
 		},

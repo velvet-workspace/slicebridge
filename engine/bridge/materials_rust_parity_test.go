@@ -231,6 +231,31 @@ func TestRustNativeMaterialMappingParity(t *testing.T) {
 			{ID: 1, Type: "PLA"}, {ID: 2, Type: "PLA"}, {ID: 3, Type: "PLA"},
 			{ID: 4, Type: "PLA"}, {ID: 5, Type: "PLA"},
 		}, nil},
+		{"all_presets_missing_nozzle_with_stale_project_value", []converter.Filament{
+			{ID: 1, Type: "PLA"}, {ID: 2, Type: "PETG"},
+		}, func(bundle *targetBundle) {
+			bundle.Profile.ProjectSettings["nozzle_temperature"] = []any{"999"}
+			delete(bundle.MaterialSettings["PLA"], "nozzle_temperature")
+			delete(bundle.MaterialSettings["PETG"], "nozzle_temperature")
+		}},
+		{"all_presets_missing_max_volumetric_speed", []converter.Filament{
+			{ID: 1, Type: "PLA"}, {ID: 2, Type: "PETG"},
+		}, func(bundle *targetBundle) {
+			delete(bundle.MaterialSettings["PLA"], "filament_max_volumetric_speed")
+			delete(bundle.MaterialSettings["PETG"], "filament_max_volumetric_speed")
+		}},
+		{"all_presets_missing_flow_ratio", []converter.Filament{
+			{ID: 1, Type: "PLA"}, {ID: 2, Type: "PETG"},
+		}, func(bundle *targetBundle) {
+			delete(bundle.MaterialSettings["PLA"], "filament_flow_ratio")
+			delete(bundle.MaterialSettings["PETG"], "filament_flow_ratio")
+		}},
+		{"invalid_native_numerical_temperature", []converter.Filament{{ID: 1, Type: "PLA"}}, func(bundle *targetBundle) {
+			bundle.MaterialSettings["PLA"]["nozzle_temperature"] = []any{"abc"}
+		}},
+		{"null_native_flow", []converter.Filament{{ID: 1, Type: "PLA"}}, func(bundle *targetBundle) {
+			bundle.MaterialSettings["PLA"]["filament_flow_ratio"] = []any{nil}
+		}},
 		{"scalar_values_only", []converter.Filament{{ID: 1, Type: "PLA"}}, func(bundle *targetBundle) {
 			bundle.MaterialSettings["PLA"] = map[string]any{"comment": "installed"}
 		}},
@@ -264,10 +289,11 @@ func TestRustNativeMaterialMappingParity(t *testing.T) {
 				if _, ok := bundle.Profile.FilamentProfiles[f.Type]; !ok {
 					bundle.Profile.FilamentProfiles[f.Type] = "Synthetic " + f.Type
 					bundle.MaterialSettings[f.Type] = map[string]any{
-						"nozzle_temperature":   []any{"210"},
-						"filament_flow_ratio":  []any{"0.99"},
-						"filament_type":        []any{f.Type},
-						"filament_settings_id": []any{"Synthetic " + f.Type},
+						"nozzle_temperature":            []any{"210"},
+						"filament_flow_ratio":           []any{"0.99"},
+						"filament_max_volumetric_speed": []any{"18"},
+						"filament_type":                 []any{f.Type},
+						"filament_settings_id":          []any{"Synthetic " + f.Type},
 					}
 				}
 			}
