@@ -5,6 +5,7 @@
 mod archive_convert;
 mod materials;
 mod modelsettings;
+mod native_archive;
 mod native_plan;
 mod paint;
 mod projectsettings;
@@ -14,6 +15,7 @@ mod sliceinfo;
 pub use archive_convert::convert_archive_experimental;
 pub use materials::{map_native_material_settings, source_slot_plan, validate_native_bundle};
 pub use modelsettings::rewrite_model_settings;
+pub use native_archive::convert_native_archive;
 pub use native_plan::build_native_conversion_plan;
 pub use paint::{remap_paint_hex, rewrite_model_paint_xml};
 pub use projectsettings::compose_project_settings;
