@@ -97,7 +97,10 @@ test('multicolor tool usage remains unverified even if four slots fit four tools
 test('QIDI single-filament import requires a visible bilingual native-material warning',()=>{
   const app=read('frontend/dist/app.js');
   assert.match(app,/nativeSlicerMaterialReview:'ייבוא 3MF ל־QIDIStudio/);
+  assert.match(app,/פתיחת פרויקט חיצוני מחליפה אוטומטית הגדרות מדפסת וחומרים/);
   assert.match(app,/nativeSlicerMaterialReview:'QIDIStudio may replace imported 3MF/);
+  assert.match(app,/official release notes document automatic printer\/material substitution/);
+  assert.match(app,/even for a single filament/);
   assert.match(app,/if\(report\.native_slicer_material_review_required\)\{/);
   assert.match(app,/warning-line native-material-warning/);
   assert.match(app,/t\('nativeSlicerMaterialReview'\)/);

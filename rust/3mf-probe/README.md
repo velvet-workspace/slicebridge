@@ -816,6 +816,57 @@ and `qa-manifest-20261114.json`, and was independently reopened and
 checked for exactly eight entries. ZIP SHA-256:
 `b369a7741e07d232f153ea839226606b4f4a7df4bf38ab7da29edfbe641e667e`.
 
+### Owner GUI readback: Flashforge PASSES, QIDI foreign-project import (2026-11-14)
+
+After opening the above generated 4×PLA + 1×PETG QA artifacts in the
+actual target applications, the owner independently confirmed:
+- **Flash Studio Desktop / Flashforge Creator 5 Pro:** Go and Rust both
+  display all **five** source palette entries, matching each other.
+- **QIDIStudio / X-Plus 5:** Go and Rust both display **only the active
+  black PETG filament currently loaded for an ongoing print**, not the
+  four PLA + one white PETG virtual source slots. Since the same
+  user-visible mismatch occurs for both engines, it is **not
+  demonstrated to be a Rust regression**. The on-disk 3MF material
+  arrays remain exact, as shown by archive-readback tests.
+
+**Vendor policy and importer source evidence:**
+- Official QIDIStudio release notes for **v02.06.00.51 (2026-05-22)**
+  and **v02.07.02.01 (2026-07-09)** explicitly document automatic
+  replacement of the printer/materials when importing non-QIDIStudio
+  3MF projects. https://github.com/QIDITECH/QIDIStudio/releases
+- The vendor's public `src/libslic3r/Format/qds_3mf.cpp` importer
+  (`_QDS_3MF_Importer::_handle_end_metadata`, lines 4071–4088)
+  sets `m_is_qdt_3mf=true` only for a 3MF `Application` metadata
+  value beginning with `QIDIStudio-`. Its `Model.cpp` loader
+  (lines 427–459) distinguishes `From_QDS` from `From_Other`.
+  Merely having the right `printer_model` and
+  `filament_settings_id` JSON values is **not enough**.
+- Read-only inspection of **an actual shipped QIDIStudio calibration
+  project** at
+  `C:\\Program Files\\QIDIStudio\\resources\\calib\\filament_flow\\flowrate-test-pass1.3mf`
+  confirms the QIDIStudio `Application`, `QIDIStudio:3mfVersion`
+  and QIDI namespace/relationship/header metadata. This is a
+  genuine QIDIStudio *producer-format control only* (for X-Max 3),
+  **not a valid X-Plus 5 machine template**.
+- A new opt-in
+  `TestQIDIExternalProjectOriginAndFiveFilamentPalette` independently
+  decoded the 3MF model XML and all five material-type/color
+  entries from the exact scratch Go and Rust QIDI artifacts.
+  Both had `Application=""` and five correct source slots.
+  Both are **external/foreign 3MF** under the documented vendor
+  importer check (2/2 subtests PASS).
+
+**Engineering implication:** the gap is the QIDI-native *project
+creation/import contract*, not demonstrated loss of PLA/PETG slots in
+the Go/Rust archive converter. Do **not** spoof a `QIDIStudio-`
+creator marker on a file not actually authored by that application:
+the producer's full project schema, material mapping and native GUI
+reopen behavior remain unverified. A truthful native-project
+serialization/round-trip integration and independent QIDI GUI
+readback are separate development gates. The experimental software
+continues to warn that foreign QIDI 3MFs may be displayed with active
+local materials; no QIDI BOX or multi-material printing was assumed.
+
 ### Bounded local Rust JSONL worker — persistent-process experiment
 
 The optional `--convert-archive-stdio` mode processes a **finite**

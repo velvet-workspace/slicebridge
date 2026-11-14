@@ -15,6 +15,8 @@ func TestQIDISingleFilamentNativeImportWarning(t *testing.T) {
 		"loaded physical filament", "local material preset",
 		"temperature and flow", "geometry-only",
 		"does not claim native QIDI GUI material acceptance",
+		"official release notes", "non-QIDIStudio 3MF projects",
+		"not proof of native QIDIStudio import acceptance",
 	} {
 		if !strings.Contains(warnings[0], required) {
 			t.Fatalf("single-spool warning omitted %q: %s", required, warnings[0])
@@ -37,6 +39,8 @@ func TestQIDINativeMultiMaterialImportWarning(t *testing.T) {
 		"5 separate virtual material slots", "one local filament preset",
 		"Verify that all 5 material profiles", "geometry-only",
 		"does not claim native QIDI multi-material GUI acceptance",
+		"official releases", "not authored by QIDIStudio",
+		"active local filament",
 	} {
 		if !strings.Contains(message, required) {
 			t.Fatalf("warning omitted %q: %s", required, message)
