@@ -1,9 +1,9 @@
 use serde_json::{json, Value};
 use slicebridge_3mf_probe::{
-    compose_project_settings, convert_archive_experimental, inspect_package,
-    map_native_material_settings, remap_paint_hex, rewrite_model_paint_xml, rewrite_model_settings,
-    rewrite_slice_info_xml, source_slot_plan, strip_slice_cache_preserving, validate_native_bundle,
-    SliceInfoSlot,
+    build_native_conversion_plan, compose_project_settings, convert_archive_experimental,
+    inspect_package, map_native_material_settings, remap_paint_hex, rewrite_model_paint_xml,
+    rewrite_model_settings, rewrite_slice_info_xml, source_slot_plan, strip_slice_cache_preserving,
+    validate_native_bundle, SliceInfoSlot,
 };
 use std::collections::BTreeMap;
 use std::env;
@@ -16,7 +16,7 @@ use std::process;
 const MAX_JSON_INPUT_BYTES: u64 = 8 << 20;
 
 fn usage() -> String {
-    "usage: slicebridge-3mf-probe <file.3mf> | --strip-cache [--preserve KEY]... <source.3mf> <output.3mf> | --plan-slots <request.json> | --map-materials <request.json> | --validate-native-bundle <request.json> | --remap-paint <request.json> | --remap-model <request.json> | --rewrite-model-settings <request.json> | --compose-project-settings <request.json> | --rewrite-slice-info <request.json> | --convert-archive <plan.json> <source.3mf> <output.3mf> | --convert-archive-stdio"
+    "usage: slicebridge-3mf-probe <file.3mf> | --strip-cache [--preserve KEY]... <source.3mf> <output.3mf> | --plan-slots <request.json> | --map-materials <request.json> | --validate-native-bundle <request.json> | --plan-native-conversion <request.json> | --remap-paint <request.json> | --remap-model <request.json> | --rewrite-model-settings <request.json> | --compose-project-settings <request.json> | --rewrite-slice-info <request.json> | --convert-archive <plan.json> <source.3mf> <output.3mf> | --convert-archive-stdio"
         .to_owned()
 }
 
@@ -58,6 +58,20 @@ fn request_mapping(request: &Value) -> Result<BTreeMap<u32, u32>, String> {
     Ok(mapping)
 }
 
+// The receipt deliberately omits the OEM profile: machine scripts never reach
+// stdout. The full Go-compatible plan is only available to in-process callers.
+fn plan_receipt(plan: &Value) -> Value {
+    json!({
+        "profile_name": plan["profile"]["name"],
+        "printer_model_id": plan["profile"]["printer_model_id"],
+        "slot_count": plan["slot_count"],
+        "slots": plan["slots"],
+        "mapping": plan["mapping"],
+        "supports": plan["supports"],
+        "preserved": plan["preserved"],
+    })
+}
+
 fn run(args: &[OsString]) -> Result<Value, String> {
     match args {
         [source] => inspect_package(PathBuf::from(source)).map(|facts| {
@@ -94,6 +108,11 @@ fn run(args: &[OsString]) -> Result<Value, String> {
             let value = read_request(source)?;
             let validation = validate_native_bundle(&value)?;
             Ok(json!({"ok": true, "experimental": true, "validation": validation}))
+        }
+        [flag, source] if flag == OsStr::new("--plan-native-conversion") => {
+            let value = read_request(source)?;
+            let plan = build_native_conversion_plan(&value)?;
+            Ok(json!({"ok": true, "experimental": true, "receipt": plan_receipt(&plan)}))
         }
         [flag, source] if flag == OsStr::new("--compose-project-settings") => {
             let input = read_request(source)?;
