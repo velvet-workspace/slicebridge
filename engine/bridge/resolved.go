@@ -202,6 +202,17 @@ func convertWith(source, destination string, resolve profileResolver) (map[strin
 	default:
 		return nil, fail("ENGINE_INVALID", "unknown experimental conversion engine")
 	}
+	if rustEngineSelected() {
+		// The production policy decision and experimental Rust transform
+		// must inspect the SAME captured input; concurrent source edits
+		// cannot change geometry between Go's plan and Rust's writer.
+		frozen, cleanup, err := freezeRustSourceForPlan(source, destination)
+		if err != nil {
+			return nil, fail("RUST_SOURCE_INVALID", "%v", err)
+		}
+		defer cleanup()
+		source = frozen
+	}
 	plan, err := buildPlan(source, destination, resolve)
 	if err != nil {
 		return nil, err

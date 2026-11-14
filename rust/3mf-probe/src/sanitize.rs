@@ -1,7 +1,7 @@
 //! Experimental 3MF cache stripping, independent from production Go conversion.
 //! Source is never written; the output is installed atomically without overwrite.
-use crate::{is_cache, safe_entry_name, verify_central_directory};
 use crate::qidi_origin::set_qidi_application_metadata;
+use crate::{is_cache, safe_entry_name, verify_central_directory};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, Writer, XmlVersion};
 use serde_json::Value;

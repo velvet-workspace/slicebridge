@@ -125,10 +125,7 @@ pub fn map_native_material_settings(input: &Value) -> Result<Value, String> {
     // for QIDI's exact X-Plus 5 profile. Other slicers own their preset IDs
     // through their actual material leaf values and may reject missing IDs.
     let qidi_name_mapping = target == "qidi"
-        && profile
-            .get("printer_model_id")
-            .and_then(Value::as_str)
-            == Some("X-Plus 5");
+        && profile.get("printer_model_id").and_then(Value::as_str) == Some("X-Plus 5");
 
     let input_filaments = filaments(input)?;
     if input_filaments.len() > slots {
@@ -359,6 +356,44 @@ mod tests {
         assert!(map_native_material_settings(&req)
             .unwrap_err()
             .contains("no installed"));
+    }
+
+    #[test]
+    fn non_qidi_keeps_real_installed_leaf_ids_and_refuses_partial_material_ids() {
+        let mut req = json!({
+            "bundle": {
+                "target": "u1",
+                "profile": {
+                    "printer_model_id": "Snapmaker U1",
+                    "filament_slots": 4,
+                    "filament_profiles": {"PLA": "Profile-map name PLA", "PETG": "Profile-map name PETG"},
+                    "project_settings": {"machine_start_gcode": "G28"}
+                },
+                "material_settings": {
+                    "PLA": {"filament_settings_id": ["Installed leaf PLA"], "nozzle_temperature": ["210"]},
+                    "PETG": {"filament_settings_id": ["Installed leaf PETG"], "nozzle_temperature": ["245"]}
+                }
+            },
+            "filaments": [{"id": 1, "type": "PLA"}, {"id": 2, "type": "PETG"}]
+        });
+        let output = map_native_material_settings(&req).unwrap();
+        assert_eq!(
+            output["project_settings"]["filament_settings_id"],
+            json!(["Installed leaf PLA", "Installed leaf PETG"])
+        );
+        assert_eq!(
+            output["project_settings"]["nozzle_temperature"],
+            json!(["210", "245"])
+        );
+        req["bundle"]["material_settings"]["PETG"]
+            .as_object_mut()
+            .unwrap()
+            .remove("filament_settings_id");
+        let error = map_native_material_settings(&req).unwrap_err();
+        assert!(
+            error.contains("missing critical native material setting"),
+            "incomplete non-QIDI material IDs must fail closed: {error}"
+        );
     }
 
     #[test]

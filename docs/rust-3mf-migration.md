@@ -16,6 +16,13 @@ The real Go ConvertTarget / Wails App.Convert call chain now has an opt-in Rust
 full-archive writer in engine/bridge/rust_engine.go and engine/bridge/convert.go.
 It executes Rust through an explicitly supplied absolute binary path in a
 bounded 120-second child process with a machine-readable success receipt.
+Before Go plans the conversion, the experimental path freezes the source 3MF
+into a private copy, limits it to 250 MiB and compares a second read against
+the captured SHA-256. Go and Rust process that same immutable private source,
+not two independent reads of a possibly edited user document. Rust independently
+captures its own bounded stage copy before transforming bytes.
+Rust subprocess stdout/stderr are capped at 64 KiB each, oversized responses
+fail closed, and a 2-second WaitDelay bounds inherited pipe waits on timeout.
 The output undergoes the production Go inspections (geometry, target identity,
 stale G-code and atomic exclusive publication). Rust failures fail closed;
 there is no silent Go fallback.
@@ -43,6 +50,9 @@ environment, installed desktop binaries or active print jobs for this pilot.
 
 - Experimental PR #117 merged with verified current main into a scratch branch
   without conflict. Retired duplicate/obsolete tests; preserved quiet UI.
+  The production main beta had ALREADY removed the redundant QIDI-specific
+  native_slicer_material_review_required field, so this integration retains
+  the current main contract rather than restoring that obsolete field.
 - Rust and Go native material-ID behavior agree with QIDI X-Plus 5's special
   installed profile map; non-QIDI targets use their real preset profile IDs.
 - Five direct Go ConvertTarget vs Rust selectable ConvertTarget conversions
@@ -80,6 +90,8 @@ environment, installed desktop binaries or active print jobs for this pilot.
    and native Wails UI acceptance.
 5. Expand adversarial ZIP/XML/JSON, symlink, race and source mutation tests;
    ensure original files, installed presets and existing outputs remain safe.
+   Unexpected hard kills can leave private source/plan scratch files: bounded
+   orphan recovery and output-directory concurrency need independent QA.
 
 **Decision:** leave the owner-accepted Go/Wails app untouched. The experimental
 Rust full-archive converter is connected and independently testable but is

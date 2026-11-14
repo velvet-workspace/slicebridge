@@ -183,3 +183,76 @@ func TestRustEngineDefaultDoesNotDependOnConfiguredBinary(t *testing.T) {
 		t.Fatalf("default Go output missing: %v", err)
 	}
 }
+
+func TestFrozenRustInputAnchorsGoPlanToImmutableSource(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.3mf")
+	original := fixture(t, source, 5)
+	frozen, cleanup, err := freezeRustSourceForPlan(source, filepath.Join(dir, "final.3mf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if filepath.Base(frozen) == filepath.Base(source) {
+		t.Fatal("snapshot must never alias original source")
+	}
+	inside, err := os.ReadFile(frozen)
+	if err != nil || !bytes.Equal(inside, original) {
+		t.Fatal("frozen source does not match the original archive")
+	}
+	if err := os.WriteFile(source, bytes.Repeat([]byte("x"), len(original)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	stillFrozen, err := os.ReadFile(frozen)
+	if err != nil || !bytes.Equal(stillFrozen, original) {
+		t.Fatal("source replaced after capture affected Go/Rust plan snapshot")
+	}
+	cleanup()
+	if _, err := os.Stat(frozen); !os.IsNotExist(err) {
+		t.Fatal("source snapshot cleanup failed")
+	}
+}
+func TestFrozenRustInputRejectsInvalidSourceAndLeavesNoScratch(t *testing.T) {
+	dir := t.TempDir()
+	empty := filepath.Join(dir, "empty.3mf")
+	if err := os.WriteFile(empty, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(dir, "output.3mf")
+	if _, cleanup, err := freezeRustSourceForPlan(empty, dest); err == nil || cleanup != nil {
+		t.Fatalf("empty 3MF snapshot must fail safely: %v", err)
+	}
+	if _, cleanup, err := freezeRustSourceForPlan(filepath.Join(dir, "missing.3mf"), dest); err == nil || cleanup != nil {
+		t.Fatalf("missing 3MF snapshot must fail safely: %v", err)
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatal("invalid source created a destination")
+	}
+	scratch, err := filepath.Glob(filepath.Join(dir, ".bridge-rust-source-*"))
+	if err != nil || len(scratch) != 0 {
+		t.Fatalf("invalid input leaked Rust source snapshots: %v %v", scratch, err)
+	}
+}
+
+func TestRustChildTranscriptMemoryBoundAndDrain(t *testing.T) {
+	var out cappedRustTranscript
+	out.limit = 64 << 10
+	chunk := bytes.Repeat([]byte("D"), 200<<10)
+	n, err := out.Write(chunk)
+	if err != nil || n != len(chunk) {
+		t.Fatalf("oversized child stdout must be drained without short writes: count=%d err=%v", n, err)
+	}
+	if !out.truncated || out.buffer.Len() != 64<<10 {
+		t.Fatalf("oversized output was not bounded: truncated=%t size=%d", out.truncated, out.buffer.Len())
+	}
+	n, err = out.Write(chunk)
+	if err != nil || n != len(chunk) || out.buffer.Len() != 64<<10 {
+		t.Fatal("subsequent child stdout was not drained without memory growth")
+	}
+	out = cappedRustTranscript{limit: 64 << 10}
+	ok := []byte("{\"ok\":true,\"experimental\":true,\"removed\":1}\n")
+	n, err = out.Write(ok)
+	if err != nil || n != len(ok) || out.truncated || !bytes.Equal(out.buffer.Bytes(), ok) {
+		t.Fatalf("small valid Rust receipt was damaged: %+v err=%v", out, err)
+	}
+}

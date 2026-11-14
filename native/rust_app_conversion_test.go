@@ -101,8 +101,8 @@ func TestRustNativeAppFourTargetFiveMaterialConversion(t *testing.T) {
 		}
 		if result.Report["source_filament_slots"] != 5 ||
 			result.Report["target_filament_slots_used"] != 5 ||
-			result.Report["prime_tower_plates"] != goResult.Report["prime_tower_plates"] ||
-			result.Report["geometry_triangles"] != goResult.Report["geometry_triangles"] {
+			!reflect.DeepEqual(result.Report["prime_tower_plates"], goResult.Report["prime_tower_plates"]) ||
+			!reflect.DeepEqual(result.Report["geometry_triangles"], goResult.Report["geometry_triangles"]) {
 			t.Fatalf("%s lost five materials/plate/geometry facts: Rust=%+v Go=%+v",
 				result.Target, result.Report, goResult.Report)
 		}

@@ -107,6 +107,34 @@ func rustExplicitPlan(plan conversionPlan, profile *printer.Profile, preserved [
 	})
 }
 
+// cappedRustTranscript drains a child process stream without unbounded
+// memory growth. A truncated or oversized receipt fails closed. Unlike a
+// writer that returns a short count, this does not strand the child blocked
+// on its inherited stdout/stderr pipes after a large diagnostic burst.
+type cappedRustTranscript struct {
+	buffer    bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (out *cappedRustTranscript) Write(p []byte) (int, error) {
+	n := len(p)
+	remaining := out.limit - out.buffer.Len()
+	if remaining > 0 {
+		take := n
+		if take > remaining {
+			take = remaining
+		}
+		_, _ = out.buffer.Write(p[:take])
+		if take < n {
+			out.truncated = true
+		}
+	} else if n > 0 {
+		out.truncated = true
+	}
+	return n, nil
+}
+
 // convertWithExperimentalRust runs the real Rust full-ZIP assembler in a
 // bounded, child process. Its output goes to an unoccupied scratch path;
 // the surrounding Go path still validates geometry, printer identity, stale
@@ -158,14 +186,21 @@ func convertWithExperimentalRust(plan conversionPlan, profile *printer.Profile, 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, "--convert-archive", request.Name(), plan.source, scratchOutput)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	stdout, err := cmd.Output()
+	// A child may spawn a grandchild inheriting pipes; WaitDelay bounds the
+	// wait for inherited streams after the direct process exits or times out.
+	cmd.WaitDelay = 2 * time.Second
+	stdout := &cappedRustTranscript{limit: 64 << 10}
+	stderr := &cappedRustTranscript{limit: 64 << 10}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	err = cmd.Run()
 	if ctx.Err() != nil {
 		return 0, fmt.Errorf("experimental Rust conversion exceeded 120s limit: %w", ctx.Err())
 	}
+	if stdout.truncated || stderr.truncated {
+		return 0, fmt.Errorf("experimental Rust converter produced over 64 KiB stdout/stderr; refusing oversized response")
+	}
 	if err != nil {
-		return 0, fmt.Errorf("experimental Rust conversion refused input: %w (stderr: %.512s)", err, stderr.String())
+		return 0, fmt.Errorf("experimental Rust conversion refused input: %w (stderr: %.512s)", err, stderr.buffer.String())
 	}
 	var response struct {
 		OK           bool   `json:"ok"`
@@ -173,7 +208,7 @@ func convertWithExperimentalRust(plan conversionPlan, profile *printer.Profile, 
 		Experimental bool   `json:"experimental"`
 		Error        string `json:"error"`
 	}
-	if err := json.Unmarshal(bytes.TrimSpace(stdout), &response); err != nil {
+	if err := json.Unmarshal(bytes.TrimSpace(stdout.buffer.Bytes()), &response); err != nil {
 		return 0, fmt.Errorf("experimental Rust converter returned malformed receipt: %w", err)
 	}
 	if !response.OK || !response.Experimental || response.Removed < 0 {

@@ -2,11 +2,11 @@
 //! conversion components. This is not connected to the installed application.
 //! An explicit caller-provided target profile and mapping are mandatory;
 //! outputs are created as new files and never submitted to a printer.
+use crate::sanitize::strip_slice_cache_preserving_for_qidi;
 use crate::{
     compose_project_settings, inspect_package, rewrite_model_settings, rewrite_slice_info_xml,
     SliceInfoSlot, MAX_COMPRESSED_BYTES, MAX_MODEL_XML_BYTES,
 };
-use crate::sanitize::strip_slice_cache_preserving_for_qidi;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 use serde_json::Value;

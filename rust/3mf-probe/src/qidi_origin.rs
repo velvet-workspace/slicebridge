@@ -3,8 +3,7 @@
 use quick_xml::events::Event;
 use quick_xml::Reader;
 
-const QIDI_APPLICATION: &[u8] =
-    b"<metadata name=\"Application\">QIDIStudio-01.09.03.51</metadata>";
+const QIDI_APPLICATION: &[u8] = b"<metadata name=\"Application\">QIDIStudio-01.09.03.51</metadata>";
 const QIDI_INSERTION: &[u8] =
     b"\n  <metadata name=\"Application\">QIDIStudio-01.09.03.51</metadata>";
 
@@ -103,12 +102,22 @@ mod tests {
     fn adds_and_replaces_only_model_application() {
         let source = b"<?xml version='1.0'?><model xmlns='urn:3mf'><resources/><build/></model>";
         let converted = set_qidi_application_metadata(source).unwrap();
-        assert_eq!(converted.iter().filter(|b| **b==b'<').count(), source.iter().filter(|b| **b==b'<').count()+2);
-        assert!(converted.windows(QIDI_APPLICATION.len()).any(|w| w==QIDI_APPLICATION));
-        assert_eq!(set_qidi_application_metadata(&converted).unwrap(), converted);
+        assert_eq!(
+            converted.iter().filter(|b| **b == b'<').count(),
+            source.iter().filter(|b| **b == b'<').count() + 2
+        );
+        assert!(converted
+            .windows(QIDI_APPLICATION.len())
+            .any(|w| w == QIDI_APPLICATION));
+        assert_eq!(
+            set_qidi_application_metadata(&converted).unwrap(),
+            converted
+        );
         let old = b"<model><metadata name='Application'>BambuStudio-1.0</metadata><build/></model>";
         let changed = set_qidi_application_metadata(old).unwrap();
-        assert!(!changed.windows(b"BambuStudio".len()).any(|w| w==b"BambuStudio"));
+        assert!(!changed
+            .windows(b"BambuStudio".len())
+            .any(|w| w == b"BambuStudio"));
         assert_eq!(set_qidi_application_metadata(&changed).unwrap(), changed);
         assert!(set_qidi_application_metadata(b"<model><metadata name='Application'>A</metadata><metadata name='Application'>B</metadata></model>").is_err());
     }
