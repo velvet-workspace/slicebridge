@@ -730,7 +730,12 @@ The Go `TestRustStdioWorkerFullArchiveParity` passes two complete
 3MF conversions through one Rust process and compares both resulting
 ZIP packages to the actual Go converter. It confirms a bad request
 does not kill the worker, a duplicate output path is refused without
-changing the file, and the source remains unmodified.
+changing the file, and the source remains unmodified. It additionally
+kills one separate worker **after a completed conversion response**,
+then starts a fresh worker that successfully converts another source-
+identical archive with full Go ZIP parity. This tests restart between
+jobs, **not** an in-flight process crash, source-write race, partial
+output repair or unattended worker lifecycle.
 
 On two **tiny synthetic** Bambu 3MF fixtures, end-to-end
 `-benchtime=300–350ms` optimized Release benchmarks show:

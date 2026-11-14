@@ -160,9 +160,74 @@ func TestRustStdioWorkerFullArchiveParity(t *testing.T) {
 	if err := worker.Wait(); err != nil {
 		t.Fatalf("Rust worker did not exit cleanly on EOF: %v stderr=%s", err, stderr.String())
 	}
+
+	// A process can disappear between jobs. The next isolated worker must
+	// restart without changing an already published archive, reusing stale
+	// state or needing an installed slicer. This deliberately terminates only
+	// AFTER a complete success response; in-flight crash recovery is separate.
+	for _, step := range []struct {
+		name     string
+		hardStop bool
+	}{
+		{name: "completed-before-hard-stop.3mf", hardStop: true},
+		{name: "completed-after-restart.3mf", hardStop: false},
+	} {
+		destination := filepath.Join(dir, step.name)
+		command := exec.CommandContext(ctx, rust, "--convert-archive-stdio")
+		input, err := command.StdinPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		output, err := command.StdoutPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var restartStderr bytes.Buffer
+		command.Stderr = &restartStderr
+		if err := command.Start(); err != nil {
+			t.Fatalf("start independent Rust worker: %v", err)
+		}
+		request, err := json.Marshal(map[string]any{
+			"source": source, "destination": destination, "plan_file": planFile,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := input.Write(append(request, '\n')); err != nil {
+			t.Fatal(err)
+		}
+		line, err := bufio.NewReader(output).ReadBytes('\n')
+		if err != nil {
+			t.Fatalf("restarted Rust worker did not reply: %v stderr=%s", err, restartStderr.String())
+		}
+		var response struct {
+			OK    bool   `json:"ok"`
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(line, &response); err != nil || !response.OK {
+			t.Fatalf("restarted Rust worker rejected valid request: %+v parse=%v stderr=%s", response, err, restartStderr.String())
+		}
+		compareConverted3MFParts(t, goOutput, destination)
+		if step.hardStop {
+			if err := command.Process.Kill(); err != nil {
+				t.Fatalf("hard-stop completed-job worker: %v", err)
+			}
+			_ = input.Close()
+			if err := command.Wait(); err == nil {
+				t.Fatal("hard-stopped worker unexpectedly exited cleanly")
+			}
+		} else {
+			if err := input.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := command.Wait(); err != nil {
+				t.Fatalf("restarted worker did not exit cleanly: %v stderr=%s", err, restartStderr.String())
+			}
+		}
+	}
 	after, err := os.ReadFile(source)
 	if err != nil || !bytes.Equal(before, after) {
 		t.Fatal("persistent worker modified input 3MF")
 	}
-	t.Log("two full 3MF ZIPs match Go, bad input and existing destination fail closed, worker exited on EOF")
+	t.Log("four full Rust 3MF ZIPs match Go; invalid/duplicate requests fail closed, EOF exits cleanly, and a new worker converts after a completed-job hard stop")
 }
