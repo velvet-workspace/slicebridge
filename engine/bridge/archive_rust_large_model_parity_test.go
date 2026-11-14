@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,69 +16,40 @@ import (
 	"github.com/BryanSmee/bl_to_std/pkg/printer"
 )
 
-// TestRustLargeModelArchiveParity generates a private >8 MiB model XML part
-// from the pinned source 3MF. This proves that the archive converter's
-// streaming paint path does not hit its former small-model allocation limit.
-// The 3MF is test-only and never loaded into a slicer or sent to a printer.
+// TestRustLargeModelArchiveParity generates 24,000 closed tetrahedra with
+// 96,000 real triangles (not an XML comment) and two independently declared
+// slice-info plates with stale caches. It verifies >8MiB streamed 3D XML
+// and complete 3MF Go/Rust archive parity. This is synthetic QA geometry:
+// not real multi-plate production source or permission to slice/print.
 func TestRustLargeModelArchiveParity(t *testing.T) {
 	rust := os.Getenv("SLICEBRIDGE_RUST_PROBE")
 	if rust == "" {
 		t.Skip("set SLICEBRIDGE_RUST_PROBE")
 	}
 	dir := t.TempDir()
-	original := filepath.Join("..", "..", "tests", "fixtures", "bambu-one-color.3mf")
-	source := filepath.Join(dir, "large-model.3mf")
-	orig, err := zip.OpenReader(original)
+	source := filepath.Join(dir, "large-two-plate-geometry.3mf")
+	const solids = 24000
+	createBoundedTwoPlateGeometrySource(t, source, solids)
+	archive, err := zip.OpenReader(source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer orig.Close()
-	out, err := os.Create(source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	zipOut := zip.NewWriter(out)
 	enlarged := false
-	for _, entry := range orig.File {
-		r, err := entry.Open()
-		if err != nil {
-			t.Fatal(err)
-		}
-		content, err := io.ReadAll(r)
-		r.Close()
-		if err != nil {
-			t.Fatal(err)
-		}
+	for _, entry := range archive.File {
 		if entry.Name == "3D/3dmodel.model" {
-			needle := []byte("</model>")
-			insertion := []byte("<!--" + string(bytes.Repeat([]byte{'x'}, 9<<20)) + "-->")
-			index := bytes.LastIndex(content, needle)
-			if index < 0 {
-				t.Fatal("missing model XML root terminator")
+			if entry.UncompressedSize64 <= 8<<20 || entry.UncompressedSize64 >= 200<<20 {
+				t.Fatalf("real geometry did not exercise 8-200 MiB streaming range: %d bytes", entry.UncompressedSize64)
 			}
-			content = append(append(append([]byte{}, content[:index]...), insertion...), content[index:]...)
 			enlarged = true
-			if len(content) <= 8<<20 {
-				t.Fatal("model did not exceed old 8MB limit")
-			}
-		}
-		header := &zip.FileHeader{Name: entry.Name, Method: entry.Method}
-		writer, err := zipOut.CreateHeader(header)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := writer.Write(content); err != nil {
-			t.Fatal(err)
+			t.Logf("synthetic closed-tetrahedron geometry=%d solids, vertices=%d, triangles=%d, model XML=%d bytes",
+				solids, solids*4, solids*4, entry.UncompressedSize64)
 		}
 	}
-	if err := zipOut.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := out.Close(); err != nil {
+	if err := archive.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if !enlarged {
-		t.Fatal("model member missing")
+		t.Fatal("model entry missing")
 	}
 	inputBytes, err := os.ReadFile(source)
 	if err != nil {
@@ -87,6 +57,14 @@ func TestRustLargeModelArchiveParity(t *testing.T) {
 	}
 
 	originalParts := inspectZipEntries(t, source)
+	if got := bytes.Count(originalParts["Metadata/slice_info.config"], []byte("<plate>")); got != 2 {
+		t.Fatalf("expected two source plate metadata sections, got %d", got)
+	}
+	for _, stale := range []string{"Metadata/plate_1.gcode", "Metadata/plate_1.gcode.md5", "Metadata/plate_2.gcode", "Metadata/plate_2.gcode.md5", "Metadata/plate_2.json"} {
+		if _, ok := originalParts[stale]; !ok {
+			t.Fatalf("source no longer has intended stale slice cache %s", stale)
+		}
+	}
 	var sourceSettings map[string]any
 	if err := json.Unmarshal(originalParts["Metadata/project_settings.config"], &sourceSettings); err != nil {
 		t.Fatal(err)
@@ -148,7 +126,26 @@ func TestRustLargeModelArchiveParity(t *testing.T) {
 	if commandErr != nil || !result.OK || result.Removed != removed {
 		t.Fatalf("Rust failed to convert large valid model: %v %+v", commandErr, result)
 	}
+	if removed < 6 {
+		t.Fatalf("expected independent stale caches for both plates removed: %d", removed)
+	}
 	compareConverted3MFParts(t, goFinal, rustFinal)
+	outputFacts, err := inspectPackage(rustFinal)
+	if err != nil {
+		t.Fatalf("Go cannot inspect Rust large geometry: %v", err)
+	}
+	if outputFacts.vertices != solids*4 || outputFacts.triangles != solids*4 || outputFacts.sliceCaches != 0 {
+		t.Fatalf("output mesh cardinality/cache changed: vertices=%d triangles=%d cached=%d", outputFacts.vertices, outputFacts.triangles, outputFacts.sliceCaches)
+	}
+	convertedParts := inspectZipEntries(t, rustFinal)
+	if got := bytes.Count(convertedParts["Metadata/slice_info.config"], []byte("<plate")); got != 2 {
+		t.Fatalf("two source plates were not preserved after Go/Rust conversion: got %d", got)
+	}
+	for _, cached := range []string{"Metadata/plate_1.gcode", "Metadata/plate_1.gcode.md5", "Metadata/plate_2.gcode", "Metadata/plate_2.gcode.md5", "Metadata/plate_2.json"} {
+		if _, ok := convertedParts[cached]; ok {
+			t.Fatalf("stale two-plate cache leaked into published output: %s", cached)
+		}
+	}
 	after, err := os.ReadFile(source)
 	if err != nil || !bytes.Equal(inputBytes, after) {
 		t.Fatal("source changed during conversion")
@@ -156,5 +153,5 @@ func TestRustLargeModelArchiveParity(t *testing.T) {
 	if files, _ := filepath.Glob(filepath.Join(dir, ".slicebridge-*.partial")); len(files) != 0 {
 		t.Fatalf("streaming archive left scratch partial files: %v", files)
 	}
-	t.Logf("Go/Rust full 3MF ZIP parity on model XML >8MiB; source ZIP=%d bytes; output validated", len(inputBytes))
+	t.Logf("Go/Rust full 3MF ZIP parity on 24,000 tetrahedra, 96,000 triangles and 2 distinct plate metadata sections; compressed source=%d bytes; no stale caches", len(inputBytes))
 }

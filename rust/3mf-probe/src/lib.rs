@@ -84,6 +84,14 @@ pub fn inspect_package(path: impl AsRef<Path>) -> Result<PackageFacts, String> {
         }
 
         if name.starts_with("3D/") && name.to_ascii_lowercase().ends_with(".model") {
+            // Reject via the central-directory size *before* asking the XML
+            // reader to materialize a huge text/comment token. The old
+            // take(200MiB) limit could consume 200 MiB and end mid-XML.
+            // The complete archive converter independently enforces this
+            // same bound while auditing and rewriting model parts.
+            if entry.size() > MAX_MODEL_XML_BYTES {
+                return Err(format!("{name}: model XML exceeds 200 MiB limit"));
+            }
             has_model = true;
             let mut xml = Reader::from_reader(BufReader::new(entry.take(MAX_MODEL_XML_BYTES)));
             let mut buf = Vec::new();

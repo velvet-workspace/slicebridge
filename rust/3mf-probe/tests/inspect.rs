@@ -166,6 +166,56 @@ fn cli_emits_machine_readable_json() {
 }
 
 #[test]
+fn oversized_model_member_rejected_from_zip_metadata_before_xml_allocation() {
+    // 201 MiB *uncompressed*, but highly deflatable. Memory stays bounded:
+    // generate in 1 MiB chunks without constructing a 201 MiB Vec.
+    let path = std::env::temp_dir().join(format!(
+        "slicebridge-model-overflow-{}-{}.3mf",
+        std::process::id(),
+        SERIAL.fetch_add(1, Ordering::Relaxed)
+    ));
+    let file = Test3mf(path);
+    let mut writer = ZipWriter::new(File::create(file.as_ref()).unwrap());
+    // Fast low-compression deflate avoids a costly full CPU compression
+    // benchmark in a security-limit regression while keeping scratch small.
+    let opts = SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .compression_level(Some(1));
+    writer.start_file("[Content_Types].xml", opts).unwrap();
+    writer.write_all(b"<Types/>").unwrap();
+    writer.start_file("3D/3dmodel.model", opts).unwrap();
+    let chunk = [b'x'; 1 << 20];
+    for _ in 0..201 {
+        writer.write_all(&chunk).unwrap();
+    }
+    writer.finish().unwrap();
+    let compressed = fs::metadata(file.as_ref()).unwrap().len();
+    assert!(
+        compressed < 2 << 20,
+        "test fixture unexpectedly uses too much disk space: {compressed}"
+    );
+    let error = inspect_package(file.as_ref()).unwrap_err();
+    assert!(
+        error.contains("model XML exceeds 200 MiB"),
+        "oversize ZIP model was not rejected before XML parsing: {error}"
+    );
+    let reply = Command::new(env!("CARGO_BIN_EXE_slicebridge-3mf-probe"))
+        .arg(file.as_ref())
+        .output()
+        .unwrap();
+    assert!(!reply.status.success());
+    let answer: serde_json::Value = serde_json::from_slice(&reply.stdout).unwrap();
+    assert_eq!(answer["ok"], false);
+    assert!(
+        answer["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("model XML exceeds 200 MiB"),
+        "CLI must preserve the precise oversized-model rejection: {answer}"
+    );
+}
+
+#[test]
 fn corrupted_archive_is_rejected() {
     let file = make_archive(&valid_entries());
     let mut data = Vec::new();

@@ -441,15 +441,28 @@ the standalone `--remap-model` JSON API remains bounded to 8 MB.
 The archive converter still requires a verified 250 MB maximum
 compressed input and a complete explicit source filament mapping.
 
-A new Rust unit test streams an XML model containing more than 8 MB
-of many small vertex tokens and verifies precise paint transformation.
-A separate opt-in `TestRustLargeModelArchiveParity` enlarges an
-existing synthetic Bambu fixture to more than 8 MB of XML, converts
-the complete ZIP with actual Go and standalone Rust, compares every
-package member semantically, and verifies source immutability plus
-scratch cleanup. The **Mac pilot passed** on this synthetic fixture.
-It is not a validated 200 MB stress test, nor a real print-ready
-manufacturing project.
+A Rust unit test streams an XML model containing more than 8 MiB of
+many small vertex tokens and verifies precise paint transformation.
+The opt-in `TestRustLargeModelArchiveParity` was strengthened from
+its earlier **9 MiB repeated XML-comment fixture** to actual
+**24,000 closed tetrahedra, 96,000 vertices and 96,000 triangles**,
+with **8,778,159 bytes of model XML**. It uses two distinct
+`slice_info.config` plate metadata sections and independently stale
+cached artifacts for both plates. Real Go conversion and the
+experimental Rust full-ZIP converter now produce semantically identical
+3MF members; the source is unchanged, both metadata plates survive,
+both slice caches are removed, no private partial files remain, and
+final geometry counts are verified again by Go's inspector. This is
+**synthetic mesh/multi-plate metadata stress**, not two separate real
+slicer-layout plates or a print-ready manufacturing project.
+
+Separately, Rust inspection now refuses an individual model member
+larger than **200 MiB** from the ZIP central-directory size *before*
+reading or allocating its XML event buffer. A passing Rust regression
+creates a **201 MiB uncompressed** model member in fixed 1 MiB chunks
+(with a small deflated scratch ZIP), then verifies both the library and
+CLI reject it. This proves early **limit enforcement**, not successful
+conversion of a real 200 MiB production geometry dataset.
 
 ### Post-snapshot and streaming Release benchmark (tiny QA models)
 
