@@ -695,8 +695,15 @@ and order in the virtual archive palette (no default filler slots),
 and requires manual source-to-physical mapping only for multi-slot
 projects. Every QIDI case requires native material verification,
 including the single-spool import. Neither the installed vendor
-presets nor the owner's active slicer session are edited. The
-installed OEM Go/Rust archive parity gate additionally verifies
+presets nor the owner's active slicer session are edited.
+The opt-in installed-OEM Go/Rust production-plan parity gate now
+asserts the QIDI native importer review flag and warning for **both
+single- and multi-material** input. All eight captured OEM U1/QIDI
+one/five/mixed scenarios passed on Windows Chris (2026-11-14), with
+full ZIP parity and original source immutability; this is not a native
+QIDIStudio single-spool GUI preview test.
+
+The installed OEM Go/Rust archive parity gate additionally verifies
 `physical_toolheads=1` for QIDI and includes a **centered
 one-material** pinned 3MF test source, whose mesh is preserved but
 whose build item is translated into the printable bed. This produces
