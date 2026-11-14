@@ -79,6 +79,42 @@ func TestNativeFilamentSettingsMapEverySlot(t *testing.T) {
 	}
 }
 
+func TestNativeFilamentProfileIDsFollowVerifiedInstalledMapEvenWhenMaterialPresetOmitsID(t *testing.T) {
+	bundle := syntheticMaterialBundle()
+	// Real installed Snapmaker Orca U1: one material provides a blank
+	// filament_settings_id placeholder and PETG omits the key completely.
+	// The independently resolved installed FilamentProfiles mapping retains
+	// both exact OEM names and must never silently substitute PLA for PETG.
+	bundle.MaterialSettings["PLA"]["filament_settings_id"] = []any{""}
+	delete(bundle.MaterialSettings["PETG"], "filament_settings_id")
+	originalPLA := bundle.Profile.FilamentProfiles["PLA"]
+	originalPETG := bundle.Profile.FilamentProfiles["PETG"]
+	err := bindNativeFilamentSettings(bundle, []converter.Filament{
+		{ID: 1, Type: "PLA"}, {ID: 2, Type: "PETG"},
+	})
+	if err != nil {
+		t.Fatalf("installed native profile map should be authoritative: %v", err)
+	}
+	wantIDs := []any{originalPLA, originalPETG}
+	if !reflect.DeepEqual(bundle.Profile.ProjectSettings["filament_settings_id"], wantIDs) {
+		t.Fatalf("native filament IDs lost or substituted: got %v want %v", bundle.Profile.ProjectSettings["filament_settings_id"], wantIDs)
+	}
+	if !reflect.DeepEqual(bundle.Profile.ProjectSettings["nozzle_temperature"], []any{"210", "240"}) {
+		t.Fatal("native PLA/PETG temperatures were not preserved")
+	}
+	if _, exists := bundle.MaterialSettings["PETG"]["filament_settings_id"]; exists {
+		t.Fatal("material mapping must not mutate the installed PETG preset")
+	}
+	missing := syntheticMaterialBundle()
+	delete(missing.Profile.FilamentProfiles, "PETG")
+	delete(missing.MaterialSettings["PETG"], "filament_settings_id")
+	if err := bindNativeFilamentSettings(missing, []converter.Filament{
+		{ID: 1, Type: "PLA"}, {ID: 2, Type: "PETG"},
+	}); err == nil {
+		t.Fatal("missing native PETG profile identity was silently accepted")
+	}
+}
+
 func TestMissingCriticalMaterialValuesFailClosed(t *testing.T) {
 	bundle := syntheticMaterialBundle()
 	delete(bundle.MaterialSettings["PETG"], "nozzle_temperature")
