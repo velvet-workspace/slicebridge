@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -140,7 +141,7 @@ func (out *cappedRustTranscript) Write(p []byte) (int, error) {
 // the surrounding Go path still validates geometry, printer identity, stale
 // G-code, native material plan, and atomic exclusive final publication.
 // Failure is always returned: there is no silent Go fallback or empty success.
-func convertWithExperimentalRust(plan conversionPlan, profile *printer.Profile, preserved []string, scratchOutput string) (int, error) {
+func convertWithExperimentalRust(plan conversionPlan, profile *printer.Profile, preserved []string, scratchOutput string) (removed int, err error) {
 	binary := os.Getenv("SLICEBRIDGE_RUST_ENGINE_BIN")
 	if binary == "" || !filepath.IsAbs(binary) {
 		return 0, fmt.Errorf("experimental Rust engine requires an explicit absolute SLICEBRIDGE_RUST_ENGINE_BIN")
@@ -158,9 +159,23 @@ func convertWithExperimentalRust(plan conversionPlan, profile *printer.Profile, 
 	if err != nil {
 		return 0, err
 	}
-	// Both the plan and destination live inside the same authorized scratch
-	// output directory. Plan files are private and promptly deleted.
-	request, err := os.CreateTemp(filepath.Dir(scratchOutput), ".bridge-rust-plan-*.json")
+	// Stage every Rust-owned temporary file inside one private per-invocation
+	// directory. A killed Rust child cannot run its Drop handlers; the Go
+	// parent still cleans its entire job directory after Wait returns.
+	// Keeping the directory alongside the eventual output also guarantees
+	// same-filesystem atomic hard-link publication without overwriting.
+	jobDir, err := os.MkdirTemp(filepath.Dir(scratchOutput), ".bridge-rust-job-*")
+	if err != nil {
+		return 0, fmt.Errorf("cannot create private Rust job directory: %w", err)
+	}
+	defer func() {
+		if cleanupErr := os.RemoveAll(jobDir); cleanupErr != nil {
+			err = errors.Join(err, fmt.Errorf("cannot remove private Rust job directory: %w", cleanupErr))
+			removed = 0
+		}
+	}()
+	workerOutput := filepath.Join(jobDir, "converted.3mf")
+	request, err := os.CreateTemp(jobDir, "plan-*.json")
 	if err != nil {
 		return 0, err
 	}
@@ -185,7 +200,7 @@ func convertWithExperimentalRust(plan conversionPlan, profile *printer.Profile, 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, binary, "--convert-archive", request.Name(), plan.source, scratchOutput)
+	cmd := exec.CommandContext(ctx, binary, "--convert-archive", request.Name(), plan.source, workerOutput)
 	// A child may spawn a grandchild inheriting pipes; WaitDelay bounds the
 	// wait for inherited streams after the direct process exits or times out.
 	cmd.WaitDelay = 2 * time.Second
@@ -213,6 +228,12 @@ func convertWithExperimentalRust(plan conversionPlan, profile *printer.Profile, 
 	}
 	if !response.OK || !response.Experimental || response.Removed < 0 {
 		return 0, fmt.Errorf("experimental Rust conversion rejected plan: %s", response.Error)
+	}
+	// Never rename onto an existing temporary or final output. os.Link is
+	// exclusive and atomic; publishConversion performs its own independent
+	// validation and second exclusive link to the user's destination.
+	if linkErr := os.Link(workerOutput, scratchOutput); linkErr != nil {
+		return 0, fmt.Errorf("cannot publish private Rust scratch without overwrite: %w", linkErr)
 	}
 	return response.Removed, nil
 }
