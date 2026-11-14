@@ -50,9 +50,6 @@ const translations = {
     cacheRemoved:'קובצי Slice ישנים שהוסרו',
     sourceAssumed:'קוטר דיזת המקור לא זוהה — הונחה 0.4 מ״מ.',
     switchedNozzle:'בוצעה התאמת קוטר דיזה לפי הגדרות המדפסת.',
-    towerClearanceReview:'מיקום מגדל הניקוי לא אומת. יש לבדוק בסלייסר היעד שאין התנגשות בין המגדל או שוליו לבין המודל, ה־brim או אזורים מוחרגים של משטח ההדפסה. SliceBridge אינו מזיז את המגדל אוטומטית.',
-    towerPlateUnknownReview:'לא ניתן לקבוע מתוך מטא־דאטה של קובץ ה־3MF המומר כמה משטחים קיימים, ולכן לא ניתן לבדוק אם לכל משטח הוגדר מיקום מגדל ניקוי. פתח את הפרויקט בסלייסר היעד ובדוק את כל המשטחים ומרווחי מגדל הניקוי לפני הדפסה.',
-    towerPerPlateReview:'ב־3MF המומר יש {plates} משטחים, אך נמצאו רק {x} ערכי X ו־{y} ערכי Y למיקומי מגדל הניקוי. בדוק וקבע מיקום נפרד לכל משטח בסלייסר היעד לפני חיתוך או הדפסה. SliceBridge לא המציא מיקומים.',
     summarySuccess:'הומר בהצלחה',summaryFailure:'נכשל',
     noSource:'הוסף לפחות קובץ אחד.',noTargets:'בחר מדפסת יעד אחת לפחות.',
     fileLimit:'מותר להוסיף לכל היותר 200 קבצים.',queueEmpty:'עדיין אין קבצים בתור.',
@@ -118,9 +115,6 @@ const translations = {
     cacheRemoved:'Stale sliced files removed',
     sourceAssumed:'No source nozzle specified — 0.4 mm assumed.',
     switchedNozzle:'Nozzle diameter was adapted to match the saved target configuration.',
-    towerClearanceReview:'Target prime/wipe tower clearance is unverified. Check for collision with the model, brim and excluded bed areas in the native slicer before printing. SliceBridge does not move tower coordinates automatically.',
-    towerPlateUnknownReview:'The converted 3MF has an unknown plate count in its metadata, so the prime tower positions could not be audited for each plate. Inspect all plates and tower clearance in the native slicer before printing.',
-    towerPerPlateReview:'The converted 3MF has {plates} plates but only {x} X and {y} Y prime tower coordinate entries. Set and verify per-plate tower placement for each plate in the native slicer before slicing or printing. SliceBridge has not invented positions.',
     summarySuccess:'Converted',summaryFailure:'Failed',
     noSource:'Add at least one source project.',noTargets:'Select one or more printers.',
     fileLimit:'You can queue a maximum of 200 projects.',queueEmpty:'No files in the queue yet.',
@@ -555,16 +549,6 @@ function resultLine(parent,result,source){
     const heading=node('summary','',t('details'));
     const grid=node('div','detail-grid');
     const report=result.report||{};
-    if(report.prime_tower_clearance_review_required){
-      row.append(node('p','warning-line tower-clearance-warning',t('towerClearanceReview')));
-    }
-    if(report.prime_tower_clearance_review_required&&report.prime_tower_plate_coordinate_review_required){
-      row.append(node('p','warning-line tower-per-plate-warning',
-        t('towerPerPlateReview',{plates:report.prime_tower_plates,x:report.prime_tower_coordinate_x_entries,y:report.prime_tower_coordinate_y_entries})));
-    }
-    if(report.prime_tower_clearance_review_required&&report.prime_tower_plate_position_audit_status==='plate_count_unknown'){
-      row.append(node('p','warning-line tower-plate-unknown-warning',t('towerPlateUnknownReview')));
-    }
     addMetric(grid,t('source')+' '+t('nozzle'),(source.nozzle||'?')+' mm');
     addMetric(grid,t('target')+' '+t('nozzle'),(report.target_nozzle||'?')+' mm');
     addMetric(grid,t('materialSlots'),(report.source_filament_slots??(source.filaments||[]).length)+' → '+(report.target_filament_slots||'?'));

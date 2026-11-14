@@ -295,7 +295,7 @@ test('real five-printer setup: Creator 5 Pro 0.25 is checked, Select all toggles
   assert.deepEqual([...sent[0]].sort(),['cc2','c5','qidi','u1',proId].sort());
 });
 
-test('successful five-material conversion remains quiet while genuine tower diagnostics stay visible',async()=>{
+test('successful five-material conversion stays quiet when tower QA flags are set',async()=>{
   const source={path:'C:/qa/four-colours.3mf',name:'four-colours.3mf',
     folder:'C:/qa',sizeLabel:'1 KB',nozzle:'0.4',objects:1,instances:1,plates:1,
     filaments:[
@@ -361,32 +361,28 @@ test('successful five-material conversion remains quiet while genuine tower diag
   assert.equal(matchingRow.querySelector('.tool-usage-warning'),null);
   assert.equal(matchingRow.querySelector('.material-mapping-warning'),null);
 
-  const placement=await perform(false,true,4,4,true);
-  const placementRow=placement.dom('resultList').querySelector('.result-row');
-  const placementWarning=placementRow.querySelector('.tower-clearance-warning');
-  assert.ok(placementWarning,'a native prime tower must trigger visible clearance review');
-  assert.equal(placementWarning.closest('details'),null,'the tower caution must not be hidden');
-  assert.match(placementWarning.textContent,/collision/);
-  assert.match(placementWarning.textContent,/excluded bed/);
-  const multi=await perform(true,true,1,4,true,true);
-  const multiRow=multi.dom('resultList').querySelector('.result-row');
-  const perPlate=multiRow.querySelector('.tower-per-plate-warning');
-  assert.ok(perPlate,'two plates with incomplete tower X/Y must have their own visible warning');
-  assert.equal(perPlate.closest('details'),null,'per-plate blocker cannot hide in collapsed diagnostics');
-  assert.match(perPlate.textContent,/2.*plates/);
-  assert.match(perPlate.textContent,/1.*X/);
-  assert.match(perPlate.textContent,/1.*Y/);
-  assert.match(perPlate.textContent,/native slicer/);
-
-  const unknown=await perform(false,true,4,4,true,false,true);
-  const unknownRow=unknown.dom('resultList').querySelector('.result-row');
-  const unknownWarning=unknownRow.querySelector('.tower-plate-unknown-warning');
-  assert.ok(unknownWarning,'unknown plate count must be disclosed outside collapsed details');
-  assert.equal(unknownWarning.closest('details'),null);
-  assert.match(unknownWarning.textContent,/plate count/i);
-  assert.match(unknownWarning.textContent,/native slicer/);
-  assert.equal(unknownRow.querySelector('.tower-per-plate-warning'),null,
-    'unknown and incomplete are distinct states');
+  // Native tower settings remain in the machine-readable backend report,
+  // but a completed 3MF conversion should not lecture about prime towers.
+  for(const scene of [
+    await perform(false,true,4,4,true),
+    await perform(true,true,1,4,true,true),
+    await perform(false,true,4,4,true,false,true),
+  ]){
+    const rendered=scene.dom('resultList').querySelector('.result-row');
+    assert.equal(rendered.querySelector('.status-pill').classList.contains('good'),true);
+    assert.equal(rendered.querySelector('.tower-clearance-warning'),null);
+    assert.equal(rendered.querySelector('.tower-per-plate-warning'),null);
+    assert.equal(rendered.querySelector('.tower-plate-unknown-warning'),null);
+    assert.ok(rendered.querySelector('.open-slicer'),'user can inspect any towers in the target slicer');
+    assert.ok(rendered.querySelector('.report-details'),'technical conversion details remain available');
+  }
+  const hebrew=await perform(true,true,1,5,true,false,true);
+  hebrew.dom('heBtn').fire('click');
+  await settle();
+  const hebrewResult=hebrew.dom('resultList').querySelector('.result-row');
+  assert.equal(hebrewResult.querySelector('.status-pill').textContent,'הומר בהצלחה');
+  assert.equal(hebrewResult.querySelector('.tower-clearance-warning'),null);
+  assert.equal(hebrewResult.querySelector('.tower-plate-unknown-warning'),null);
 
   const ordinary=await perform(false,false,1,1);
   const ordinaryRow=ordinary.dom('resultList').querySelector('.result-row');
