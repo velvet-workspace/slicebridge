@@ -283,23 +283,91 @@ pub fn validate_native_bundle(input: &Value) -> Result<Value, String> {
         .and_then(Value::as_str)
         .filter(|target| !target.is_empty())
         .ok_or_else(|| "bundle.target must be a nonempty string".to_owned())?;
-    let (model_id, nozzles) =
-        target_identity(target).ok_or_else(|| format!("unsupported native target {target:?}"))?;
     let profile = bundle
         .get("profile")
         .and_then(Value::as_object)
         .ok_or_else(|| "bundle.profile must be an object".to_owned())?;
+    // The generic Orca pilot intentionally starts with one installed,
+    // independently verified owner/vendor family. Other forks have distinct
+    // compatibility transformations in Go that must not be skipped in Rust.
+    // The opaque installed target ID and physical tool count are verified
+    // identities, never inferred from source color slots.
+    let (model_id, nozzles, raw_slots, exact_tools): (String, &[f64], usize, Option<usize>) =
+        if let Some((model, nozzle_sizes)) = target_identity(target) {
+            (model.to_owned(), nozzle_sizes, 4, None)
+        } else {
+            if bundle.get("slicer").and_then(Value::as_str) != Some("Flash Studio Desktop")
+                || !target.starts_with("orca-flashforge-")
+            {
+                return Err(format!("unsupported native target {target:?}"));
+            }
+            let suffix = target.trim_start_matches("orca-flashforge-");
+            let (slug, hash) = suffix
+                .rsplit_once('-')
+                .ok_or_else(|| "installed Flashforge Orca target ID malformed".to_owned())?;
+            if slug.is_empty()
+                || slug.split('-').any(|part| {
+                    part.is_empty()
+                        || !part
+                            .bytes()
+                            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+                })
+                || hash.len() != 10
+                || !hash
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err("installed Flashforge Orca target ID malformed".into());
+            }
+            let model = profile
+                .get("display_name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if !model.starts_with("Flashforge ")
+                || model.len() > 120
+                || model.to_ascii_lowercase().contains("creator 5")
+            {
+                return Err(
+                    "Flash Studio model is not in the validated Rust-native Orca subset".into(),
+                );
+            }
+            let tools = bundle
+                .get("physical_tools")
+                .and_then(Value::as_u64)
+                .and_then(|n| usize::try_from(n).ok())
+                .filter(|n| (1..=8).contains(n))
+                .ok_or_else(|| "installed Orca physical_tools must be 1..8".to_owned())?;
+            // The source may request other materials only when a real OEM leaf
+            // supplies them. PLA is a minimum verified binding for this pilot.
+            if profile
+                .get("filament_profiles")
+                .and_then(Value::as_object)
+                .and_then(|presets| presets.get("PLA"))
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+            {
+                return Err("installed Flash Studio profile must carry a real PLA preset".into());
+            }
+            (
+                model.to_owned(),
+                &[0.2, 0.25, 0.4, 0.6, 0.8],
+                tools,
+                Some(tools),
+            )
+        };
     if profile.get("name").and_then(Value::as_str) != Some(target) {
         return Err(format!("profile name must match target {target:?}"));
     }
-    if profile.get("display_name").and_then(Value::as_str) != Some(model_id) {
+    if profile.get("display_name").and_then(Value::as_str) != Some(model_id.as_str()) {
         return Err(format!("profile display_name must be {model_id:?}"));
     }
-    if profile.get("printer_model_id").and_then(Value::as_str) != Some(model_id) {
+    if profile.get("printer_model_id").and_then(Value::as_str) != Some(model_id.as_str()) {
         return Err(format!("profile printer_model_id must be {model_id:?}"));
     }
-    if profile.get("filament_slots").and_then(Value::as_u64) != Some(4) {
-        return Err("raw OEM profile filament_slots must be 4".to_owned());
+    if profile.get("filament_slots").and_then(Value::as_u64) != Some(raw_slots as u64) {
+        return Err(format!(
+            "raw installed OEM profile filament_slots must be {raw_slots}"
+        ));
     }
     if !profile
         .get("filament_profiles")
@@ -316,7 +384,7 @@ pub fn validate_native_bundle(input: &Value) -> Result<Value, String> {
         .get("project_settings")
         .and_then(Value::as_object)
         .ok_or_else(|| "profile project_settings must be an object".to_owned())?;
-    if settings.get("printer_model").and_then(Value::as_str) != Some(model_id) {
+    if settings.get("printer_model").and_then(Value::as_str) != Some(model_id.as_str()) {
         return Err(format!(
             "project_settings printer_model must be {model_id:?}"
         ));
@@ -337,6 +405,9 @@ pub fn validate_native_bundle(input: &Value) -> Result<Value, String> {
     };
     if dimensions.is_empty() || dimensions.len() > 16 {
         return Err("project_settings nozzle_diameter must contain 1..16 entries".into());
+    }
+    if exact_tools.is_some_and(|tools| dimensions.len() != tools) {
+        return Err("Orca physical nozzle array must match verified physical_tools".into());
     }
     let mut physical = None;
     for value in dimensions {
@@ -384,10 +455,10 @@ pub fn validate_native_bundle(input: &Value) -> Result<Value, String> {
         }
     }
 
-    // A raw installed OEM bundle has four declared virtual slots. Source
-    // projects can have more virtual materials than physical tools, without
-    // modifying the actual installed OEM profile or printer configuration.
-    let virtual_slots = filaments(input)?.len().max(4);
+    // The raw OEM physical tool count is immutable. Expand only the in-memory
+    // virtual project slots to hold all source materials, never the real
+    // installed profile or physical nozzle array.
+    let virtual_slots = filaments(input)?.len().max(raw_slots);
     let mut effective = input.clone();
     effective["bundle"]["profile"]["filament_slots"] = json!(virtual_slots);
     let mapped = map_native_material_settings(&effective)?;
@@ -723,6 +794,99 @@ mod tests {
             },
             "filaments": [{"id": 1, "type": "PLA"}, {"id": 2, "type": "PETG"}]
         })
+    }
+
+    fn synthetic_flashforge_orca() -> Value {
+        let mut request = synthetic_bundle();
+        let target = "orca-flashforge-flashforge-adventurer-5m-0-4-30612b8651";
+        request["bundle"]["target"] = json!(target);
+        request["bundle"]["slicer"] = json!("Flash Studio Desktop");
+        request["bundle"]["physical_tools"] = json!(1);
+        request["bundle"]["profile"]["name"] = json!(target);
+        request["bundle"]["profile"]["display_name"] = json!("Flashforge Adventurer 5M");
+        request["bundle"]["profile"]["printer_model_id"] = json!("Flashforge Adventurer 5M");
+        request["bundle"]["profile"]["filament_slots"] = json!(1);
+        request["bundle"]["profile"]["project_settings"]["printer_model"] =
+            json!("Flashforge Adventurer 5M");
+        request["bundle"]["profile"]["project_settings"]["nozzle_diameter"] = json!(["0.4"]);
+        request["requested_nozzle"] = json!("0.4");
+        request
+    }
+
+    #[test]
+    fn verified_flash_studio_orca_preserves_hardware_and_expands_only_virtual_slots() {
+        let mut request = synthetic_flashforge_orca();
+        let validation = validate_native_bundle(&request).unwrap();
+        assert_eq!(
+            validation["machine"]["model_id"],
+            "Flashforge Adventurer 5M"
+        );
+        assert_eq!(validation["machine"]["nozzle_diameter"], 0.4);
+        assert_eq!(validation["virtual_filament_slots"], 2);
+        assert_eq!(request["bundle"]["profile"]["filament_slots"], 1);
+        assert_eq!(
+            request["bundle"]["profile"]["project_settings"]["nozzle_diameter"],
+            json!(["0.4"])
+        );
+
+        request["filaments"] = json!([
+            {"id": 1, "type": "PLA", "color": "#FF0000"},
+            {"id": 2, "type": "PLA", "color": "#00FF00"},
+            {"id": 3, "type": "PLA", "color": "#0000FF"},
+            {"id": 4, "type": "PLA", "color": "#FFFF00"},
+            {"id": 5, "type": "PLA", "color": "#FFFFFF"}
+        ]);
+        assert_eq!(
+            validate_native_bundle(&request).unwrap()["virtual_filament_slots"],
+            5
+        );
+        assert_eq!(request["bundle"]["profile"]["filament_slots"], 1);
+        assert_eq!(
+            request["bundle"]["profile"]["project_settings"]["nozzle_diameter"],
+            json!(["0.4"])
+        );
+    }
+
+    #[test]
+    fn flash_studio_orca_refuses_foreign_vendor_identity_and_unsafe_tools() {
+        let mut cases = Vec::new();
+        let mut input = synthetic_flashforge_orca();
+        input["bundle"]["slicer"] = json!("OrcaSlicer");
+        cases.push(input);
+        let mut input = synthetic_flashforge_orca();
+        input["bundle"]["target"] = json!("orca-anycubic-adventurer-30612b8651");
+        cases.push(input);
+        let mut input = synthetic_flashforge_orca();
+        input["bundle"]["target"] =
+            json!("orca-flashforge-flashforge-adventurer-5m-0-4-NotAHashxx");
+        cases.push(input);
+        let mut input = synthetic_flashforge_orca();
+        input["bundle"]["physical_tools"] = json!(0);
+        cases.push(input);
+        let mut input = synthetic_flashforge_orca();
+        input["bundle"]["physical_tools"] = json!(2);
+        cases.push(input);
+        let mut input = synthetic_flashforge_orca();
+        input["bundle"]["profile"]["project_settings"]["nozzle_diameter"] = json!(["0.4", "0.4"]);
+        cases.push(input);
+        let mut input = synthetic_flashforge_orca();
+        input["bundle"]["profile"]["filament_profiles"]
+            .as_object_mut()
+            .unwrap()
+            .remove("PLA");
+        cases.push(input);
+        let mut input = synthetic_flashforge_orca();
+        input["bundle"]["profile"]["display_name"] = json!("Flashforge Creator 5 Pro");
+        cases.push(input);
+        let mut input = synthetic_flashforge_orca();
+        input["requested_nozzle"] = json!("0.6");
+        cases.push(input);
+        for (index, input) in cases.iter().enumerate() {
+            assert!(
+                validate_native_bundle(input).is_err(),
+                "tampered installed Orca bundle #{index} unexpectedly validated"
+            );
+        }
     }
 
     #[test]

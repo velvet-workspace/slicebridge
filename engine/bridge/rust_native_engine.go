@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/BryanSmee/bl_to_std/pkg/converter"
@@ -38,14 +39,20 @@ func convertWithNativeRust(ctx context.Context, source, destination string, reso
 	if err := validateResolved(resolved); err != nil {
 		return nil, err
 	}
-	// Rust-native accepts independently verified, flattened OEM vendor
-	// bundles. Flash Studio Creator 5 support-flag compatibility is ported
-	// in Rust; installed Orca-fork and builtin-template gaps still refuse
-	// instead of silently using Go's conversion planner.
+	// Native Rust plans only from complete verified installed OEM snapshots.
+	// Installed Flash Studio Flashforge Orca-family profiles may use the
+	// same planner after Rust checks their independent identity/tool guards.
+	// Other Orca forks can require special compatibility transformations not
+	// yet ported to Rust and remain fail-closed; Creator 5 Pro is excluded.
 	if resolved.bundle == nil {
 		return nil, fail("TARGET_PROFILE_REQUIRED", "Rust-native requires a verified installed OEM bundle; builtin template is not accepted")
 	}
-	if resolved.Kind != ProfileInstalledVendor {
+	orcaPilot := resolved.Kind == ProfileInstalledOrca &&
+		resolved.orca != nil &&
+		resolved.orca.Slicer == "Flash Studio Desktop" &&
+		strings.HasPrefix(resolved.ID, "orca-flashforge-") &&
+		!strings.Contains(strings.ToLower(resolved.ExpectedModel), "creator 5")
+	if resolved.Kind != ProfileInstalledVendor && !orcaPilot {
 		return nil, fail("RUST_NATIVE_UNSUPPORTED", "Rust-native OEM compatibility not yet validated for %s", resolved.ID)
 	}
 	if err := resolved.base.Validate(); err != nil {
@@ -85,8 +92,14 @@ func convertWithNativeRust(ctx context.Context, source, destination string, reso
 	// Deliberately omit Go mapping, process-preservation policy and conversion
 	// plan. This request supplies only the independently verified OEM bundle,
 	// literal source declarations and an immutable source settings snapshot.
+	bundle := any(resolved.bundle)
+	if orcaPilot {
+		// Preserve the independently verified physical-tool count from the
+		// installed Orca bundle; do not derive it from source color slots.
+		bundle = resolved.orca
+	}
 	payload, err := json.Marshal(map[string]any{
-		"bundle":                  resolved.bundle,
+		"bundle":                  bundle,
 		"filaments":               inspection.Filaments,
 		"source_settings":         sourceSettings,
 		"requested_nozzle":        resolved.Nozzle,
@@ -123,6 +136,17 @@ func convertWithNativeRust(ctx context.Context, source, destination string, reso
 		return nil, fail("RUST_ENGINE_FAILED", "Rust-native receipt or diagnostic exceeds 64 KiB")
 	}
 	if runErr != nil {
+		// One-shot Rust reports bounded machine-readable validation errors on
+		// stdout even when exiting nonzero. Surface those details through the
+		// existing app failure code rather than hiding the actual OEM/nozzle
+		// mismatch behind an empty stderr. Never reinterpret it as success.
+		var rejection struct {
+			OK    bool   `json:"ok"`
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(stdout.buffer.Bytes(), &rejection) == nil && !rejection.OK && rejection.Error != "" {
+			return nil, fail("RUST_ENGINE_FAILED", "Rust-native conversion refused input: %.512s", rejection.Error)
+		}
 		return nil, fail("RUST_ENGINE_FAILED", "Rust-native conversion refused input: %v (stderr: %.512s)", runErr, stderr.buffer.String())
 	}
 	var receipt struct {

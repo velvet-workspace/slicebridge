@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -30,13 +31,17 @@ func TestRustNativeCrashedWorkerAndInFlightCancelFailClosed(t *testing.T) {
 		workerBinary += ".exe"
 	}
 	const workerProgram = `package main
-import ("os"; "time")
+import ("fmt"; "os"; "time")
 func main() {
 	if path := os.Getenv("SLICEBRIDGE_FAKE_READY"); path != "" {
 		_ = os.WriteFile(path, []byte("started"), 0600)
 	}
 	if os.Getenv("SLICEBRIDGE_FAKE_MODE") == "hang" {
 		time.Sleep(30*time.Second)
+	}
+	if os.Getenv("SLICEBRIDGE_FAKE_MODE") == "diagnostic" {
+		fmt.Println("{\"ok\":false,\"error\":\"controlled Rust-native fixture rejection\"}")
+		os.Exit(1)
 	}
 	os.Exit(42)
 }`
@@ -124,4 +129,12 @@ started:
 		t.Fatalf("crashed Rust worker did not fail closed: %v", err)
 	}
 	assertClean("worker crash")
+
+	t.Setenv("SLICEBRIDGE_FAKE_MODE", "diagnostic")
+	_, err = ConvertTargetContext(context.Background(), src, dst, request)
+	if err == nil || ErrorCode(err) != "RUST_ENGINE_FAILED" ||
+		!strings.Contains(err.Error(), "controlled Rust-native fixture rejection") {
+		t.Fatalf("structured Rust rejection lost its original reason: %v", err)
+	}
+	assertClean("structured Rust diagnostic")
 }
