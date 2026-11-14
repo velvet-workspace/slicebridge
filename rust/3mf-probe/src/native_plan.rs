@@ -103,10 +103,49 @@ fn apply_preserved(
     Ok(())
 }
 
+// Mirror Go preservedProfile's automatic safe process-intent selection for
+// verified source project_settings, without delegating the decision to Go.
+// The result is sorted to keep repeat conversion receipts deterministic.
+fn auto_preserved_names(
+    target_settings: &Map<String, Value>,
+    source_settings: &Map<String, Value>,
+) -> Vec<String> {
+    let mut accepted = Vec::new();
+    for &(key, min, max) in &SAFE_PRINT_PARAMETERS {
+        if !target_settings.contains_key(key) {
+            continue;
+        }
+        let Some(original) = source_settings.get(key).and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(value) = parse_number_setting(original) else {
+            continue;
+        };
+        if value < min || value > max {
+            continue;
+        }
+        if key == "layer_height" || key == "initial_layer_print_height" {
+            let lower = profile_layer_limit(target_settings.get("min_layer_height"));
+            let upper = profile_layer_limit(target_settings.get("max_layer_height"));
+            if lower.is_some_and(|floor| value < floor)
+                || upper.is_some_and(|ceiling| value > ceiling)
+            {
+                continue;
+            }
+        }
+        accepted.push(key.to_owned());
+    }
+    accepted.sort();
+    accepted
+}
+
 fn preserved_names(request: &Value) -> Result<Vec<String>, String> {
     let Some(raw) = request.get("preserved") else {
         return Ok(Vec::new());
     };
+    if raw.is_null() {
+        return Ok(Vec::new());
+    }
     let values = raw
         .as_array()
         .ok_or_else(|| "preserved must be an array of setting names".to_owned())?;
@@ -144,7 +183,9 @@ fn source_supports(settings: &Map<String, Value>) -> bool {
 ///
 /// Request: {"bundle": flattened verified OEM bundle, "filaments": ordered
 /// [{"id","color","type"}], "source_settings": object, "preserved": optional
-/// array of safe print parameter names}. The input is never mutated.
+/// array of safe print parameter names}. Omitted preserved triggers Rust's
+/// automatic safe source-process selection; explicit [] or null disables it.
+/// The input is never mutated.
 ///
 /// Output keys: profile (OEM profile copy with palette-sized filament_slots and
 /// map_native_material_settings project_settings), slots, slot_count, mapping,
@@ -180,10 +221,17 @@ pub fn build_native_conversion_plan(request: &Value) -> Result<Value, String> {
     let mut profile = effective["bundle"]["profile"].clone();
     profile["project_settings"] = mapped["project_settings"].clone();
 
-    let preserved = preserved_names(request)?;
     let settings = profile["project_settings"]
         .as_object_mut()
         .ok_or_else(|| "profile project_settings must be an object".to_owned())?;
+    // Omission delegates *safe source process intent* selection to Rust.
+    // Explicit preserved []/null suppresses automatic selection; an
+    // explicit list is validated rather than quietly accepting unsafe keys.
+    let preserved = if request.get("preserved").is_none() {
+        auto_preserved_names(settings, source_settings)
+    } else {
+        preserved_names(request)?
+    };
     apply_preserved(settings, source_settings, &preserved)?;
 
     Ok(json!({
@@ -261,7 +309,7 @@ mod tests {
             json!({"color": "#123456", "type": "PETG"})
         );
         assert_eq!(plan["supports"], true);
-        assert_eq!(plan["preserved"], json!([]));
+        assert_eq!(plan["preserved"], json!(["layer_height"]));
         let settings = &plan["profile"]["project_settings"];
         assert_eq!(
             settings["filament_type"],
@@ -390,6 +438,54 @@ mod tests {
         request["source_settings"]["layer_height"] = json!("0.5");
         request["bundle"]["profile"]["project_settings"]["max_layer_height"] = json!(["0.25"]);
         assert!(plan_error(&request).contains("layer height limits"));
+    }
+
+    #[test]
+    fn auto_preserves_only_valid_safe_process_intent_in_stable_order() {
+        let mut request = bundle_request();
+        request["bundle"]["profile"]["project_settings"]["wall_loops"] = json!("3");
+        request["bundle"]["profile"]["project_settings"]["brim_width"] = json!("0");
+        request["source_settings"]["brim_width"] = json!("8");
+        request["source_settings"]["wall_loops"] = json!("4");
+        request["source_settings"]["machine_start_gcode"] = json!("INJECTED");
+        request["source_settings"]["nozzle_temperature"] = json!("999");
+        let plan = build_native_conversion_plan(&request).unwrap();
+        assert_eq!(
+            plan["preserved"],
+            json!(["brim_width", "layer_height", "wall_loops"])
+        );
+        assert_eq!(plan["profile"]["project_settings"]["wall_loops"], "4");
+        assert_eq!(plan["profile"]["project_settings"]["brim_width"], "8");
+        assert_eq!(
+            plan["profile"]["project_settings"]["machine_start_gcode"],
+            SECRET_START
+        );
+        assert_eq!(
+            request["bundle"]["profile"]["project_settings"]["wall_loops"],
+            "3"
+        );
+
+        request["source_settings"]["wall_loops"] = json!("200");
+        request["source_settings"]["brim_width"] = json!("NaN");
+        request["source_settings"]["layer_height"] = json!("0.9");
+        let filtered = build_native_conversion_plan(&request).unwrap();
+        assert_eq!(filtered["preserved"], json!([]));
+        assert_eq!(filtered["profile"]["project_settings"]["wall_loops"], "3");
+
+        request["source_settings"]["layer_height"] = json!("0.24");
+        request["bundle"]["profile"]["project_settings"]["max_layer_height"] = json!(["0.2"]);
+        let bounded = build_native_conversion_plan(&request).unwrap();
+        assert_eq!(bounded["preserved"], json!([]));
+    }
+
+    #[test]
+    fn explicit_empty_or_null_preserved_disables_rust_auto_selection() {
+        let mut request = bundle_request();
+        for explicit in [json!([]), Value::Null] {
+            request["preserved"] = explicit;
+            let plan = build_native_conversion_plan(&request).unwrap();
+            assert_eq!(plan["preserved"], json!([]));
+        }
     }
 
     #[test]

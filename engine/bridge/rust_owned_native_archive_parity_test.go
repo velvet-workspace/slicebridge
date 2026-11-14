@@ -16,8 +16,9 @@ import (
 // Opt-in cross-language acceptance of Rust-owned OEM material/slot planning
 // PLUS Rust's full 3MF writer, against the installed-profile Go production
 // result. The test supplies a snapshot only; no slicer GUI/print operations.
-// Preserved process keys are passed explicitly using Go's safe documented
-// source parameter gate while Rust auto-detection remains experimental.
+// Rust independently selects safe source process intent when "preserved"
+// is omitted. It does not invoke Go's buildPlan or preservedProfile for its
+// production-sized plan; Go is used only as the parity baseline.
 func TestRustOwnedNativeArchiveInstalledOEMParity(t *testing.T) {
 	rust := os.Getenv("SLICEBRIDGE_RUST_PROBE")
 	root := os.Getenv("SLICEBRIDGE_INSTALLED_BUNDLE_DIR")
@@ -62,21 +63,13 @@ func TestRustOwnedNativeArchiveInstalledOEMParity(t *testing.T) {
 			if goReceipt["engine"] != "bl2std" {
 				t.Fatalf("Go baseline not Go: %v", goReceipt["engine"])
 			}
-			plan, err := buildPlan(source, rustOutput, func(src NozzleInfo) (*ResolvedTargetProfile, error) {
-				return resolveBuiltinTarget(target, snapshot, "0.4", src.Nozzle)
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, preserved, err := preservedProfile(plan.source, plan.base)
-			if err != nil {
-				t.Fatal(err)
-			}
+			// No Go plan or Go-preserved list is passed to the experimental
+			// Rust-native converter. The request contains only verified
+			// OEM data, source filament identity and source settings.
 			request := map[string]any{
 				"bundle":          bundle,
 				"filaments":       info.Filaments,
 				"source_settings": sourceSettings,
-				"preserved":       preserved,
 			}
 			payload, err := json.Marshal(request)
 			if err != nil {
