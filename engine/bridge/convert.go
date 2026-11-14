@@ -172,7 +172,7 @@ func publishConversion(plan conversionPlan) (map[string]any, error) {
 	if err != nil {
 		return nil, fail("UPSTREAM_CONVERSION_FAILED", "bl2std: %v", err)
 	}
-	removed, err := stripSliceCache(rawPath, cleanPath, preserved)
+	removed, err := stripSliceCacheForQIDI(rawPath, cleanPath, preserved, plan.target == "qidi" && plan.expectedModel == "X-Plus 5")
 	if err != nil {
 		return nil, fail("CACHE_SANITIZE_FAILED", "%v", err)
 	}
