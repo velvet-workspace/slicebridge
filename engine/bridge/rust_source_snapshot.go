@@ -16,8 +16,10 @@ import (
 // This function is used ONLY in the experimental Rust opt-in path.
 //
 // The original file is never opened for writing, and the private source is
-// removed by the caller on success or error. A power loss may leave a private
-// partial file; unattended orphan recovery remains a separate rollout gate.
+// removed by the caller on success or error. A killed process can leave
+// an orphaned snapshot; the next Rust-native conversion in the same output
+// directory reclaims verified dead-owner scratch after a conservative grace
+// period, while unknown files and active workers are never reclaimed.
 func freezeRustSourceForPlan(source, destination string) (string, func(), error) {
 	input, err := os.Open(source)
 	if err != nil {
@@ -36,12 +38,15 @@ func freezeRustSourceForPlan(source, destination string) (string, func(), error)
 	if err != nil || !dirInfo.IsDir() {
 		return "", nil, fmt.Errorf("Rust output directory does not exist: %s", parent)
 	}
-	temp, err := os.CreateTemp(parent, ".bridge-rust-source-*.3mf")
+	temp, err := os.CreateTemp(parent, fmt.Sprintf(".bridge-rust-source-p%d-*.3mf", os.Getpid()))
 	if err != nil {
 		return "", nil, err
 	}
 	path := temp.Name()
-	cleanup := func() { _ = os.Remove(path) }
+	cleanup := func() {
+		_ = os.Remove(path)
+		_ = os.Remove(path + ".owner")
+	}
 	success := false
 	defer func() {
 		_ = temp.Close()
@@ -49,6 +54,9 @@ func freezeRustSourceForPlan(source, destination string) (string, func(), error)
 			cleanup()
 		}
 	}()
+	if err := writeRustSnapshotOwner(path); err != nil {
+		return "", nil, fmt.Errorf("cannot identify private Rust snapshot: %w", err)
+	}
 	// Bound the copy independently of unreliable or stale file metadata.
 	// Hash bytes as they are captured; verify by rereading the original open
 	// descriptor, detecting same-sized in-place edits during the copy.

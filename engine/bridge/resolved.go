@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/BryanSmee/bl_to_std/pkg/converter"
@@ -220,6 +221,11 @@ func convertWithContextEngine(ctx context.Context, source, destination string, r
 		// its captured immutable copy (otherwise equal paths could be masked).
 		if _, _, err := resolvePaths(source, destination); err != nil {
 			return nil, err
+		}
+		if engine == "rust-native" {
+			// Reclaim only old, verifiably orphaned private Rust scratch in
+			// this output directory; never scan other user directories.
+			_, _ = recoverRustNativeScratch(filepath.Dir(destination))
 		}
 		frozen, cleanup, err := freezeRustSourceForPlan(source, destination)
 		if err != nil {

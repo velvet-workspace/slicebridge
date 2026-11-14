@@ -108,7 +108,7 @@ func convertWithNativeRust(ctx context.Context, source, destination string, reso
 	if err != nil || len(payload) > 8<<20 {
 		return nil, fail("RUST_ENGINE_FAILED", "cannot encode bounded Rust-native request: %v", err)
 	}
-	jobDir, err := os.MkdirTemp(outDir, ".bridge-rust-native-job-*")
+	jobDir, err := newRustNativeJob(outDir)
 	if err != nil {
 		return nil, fail("OUTPUT_INVALID", "cannot create private Rust-native job: %v", err)
 	}
@@ -128,7 +128,18 @@ func convertWithNativeRust(ctx context.Context, source, destination string, reso
 	stdout := &cappedRustTranscript{limit: 64 << 10}
 	stderr := &cappedRustTranscript{limit: 64 << 10}
 	command.Stdout, command.Stderr = stdout, stderr
-	runErr := command.Run()
+	if err := rustNativeWorkerSpawnAttempted(jobDir); err != nil {
+		return nil, fail("RUST_ENGINE_FAILED", "cannot stage Rust-native worker startup: %v", err)
+	}
+	runErr := command.Start()
+	if runErr == nil {
+		if markErr := rustNativeWorkerStarted(jobDir, command.Process.Pid); markErr != nil {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+			return nil, fail("RUST_ENGINE_FAILED", "cannot persist Rust-native worker ownership: %v", markErr)
+		}
+		runErr = command.Wait()
+	}
 	if bounded.Err() != nil {
 		return nil, fail("RUST_ENGINE_FAILED", "Rust-native conversion canceled or timed out: %v", bounded.Err())
 	}
