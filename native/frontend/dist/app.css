@@ -1028,3 +1028,16 @@ body[dir="ltr"] .result-path,body[dir="ltr"] .queue-file-details strong{directio
 .topbar-gate { display:inline-flex; position:relative; border-radius:9px; }
 .topbar-gate:focus-visible { outline:2px solid var(--brand); outline-offset:2px; }
 .topbar-gate:focus-visible::after { content:attr(title); position:absolute; top:calc(100% + 7px); inset-inline-end:0; z-index:30; width:max-content; max-width:240px; padding:6px 9px; border-radius:7px; background:var(--ink); color:#fff; font-size:11px; line-height:1.45; white-space:normal; pointer-events:none; }
+
+
+/* Experimental Rust-native selector is available only in developer mode. */
+.rust-native-dev-control{
+  display:inline-flex;align-items:center;gap:6px;
+  font-size:11px;color:var(--ink-muted);white-space:nowrap;
+  border:1px solid var(--stroke);border-radius:8px;padding:7px 9px;background:#fff
+}
+.rust-native-dev-control input{accent-color:var(--brand)}
+.rust-native-dev-control[hidden],#cancelRustConversionBtn[hidden]{display:none!important}
+@media(max-width:700px){
+  .rust-native-dev-control{font-size:10px;padding:5px 6px}
+}

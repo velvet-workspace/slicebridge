@@ -129,7 +129,11 @@ func physicalToolPhrase(count int) string {
 
 // publishConversion merges the resolved profile into the source project,
 // verifies the sanitized output and publishes it without overwriting.
-func publishConversion(plan conversionPlan) (map[string]any, error) {
+func publishConversion(plan conversionPlan, requestedEngine ...string) (map[string]any, error) {
+	engine := os.Getenv("SLICEBRIDGE_CONVERSION_ENGINE")
+	if len(requestedEngine) > 0 {
+		engine = requestedEngine[0]
+	}
 	src, dst := plan.source, plan.destination
 	base, slots, mapping := plan.base, plan.slots, plan.mapping
 	before := plan.before
@@ -168,7 +172,7 @@ func publishConversion(plan conversionPlan) (map[string]any, error) {
 
 	engineName := "bl2std"
 	var removed int
-	if rustEngineSelected() {
+	if engine == "rust" {
 		// Rust exclusively creates the scratch destination. The ordinary Go
 		// path writes into this already-allocated temporary file instead.
 		if err := os.Remove(cleanPath); err != nil {

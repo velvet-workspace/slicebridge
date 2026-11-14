@@ -153,10 +153,23 @@ pub fn convert_native_archive(
     // against its immutable captured ZIP, closing a TOCTOU gap.
     plan["source_filaments"] = request["filaments"].clone();
     let removed = convert_archive_experimental(source, destination, &plan)?;
-    Ok(json!({
+    let mut receipt = json!({
         "ok": true,
         "experimental": true,
         "removed": removed,
         "planner": "rust-native",
-    }))
+    });
+    // Existing CLI/JSONL users retain the compact receipt. The explicit
+    // opt-in desktop host needs the actual Rust-owned mapping and preserved
+    // settings for its existing conversion-report contract.
+    if request
+        .get("include_receipt_details")
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        receipt["slots"] = plan["slots"].clone();
+        receipt["mapping"] = plan["mapping"].clone();
+        receipt["preserved"] = plan["preserved"].clone();
+    }
+    Ok(receipt)
 }

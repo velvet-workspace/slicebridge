@@ -146,7 +146,7 @@
     }
     if (!developerSettled) {
       developerMode = enabled;
-      renderDeveloperMode();
+      publishDeveloperMode();
     }
   }
 

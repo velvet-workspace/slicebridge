@@ -128,6 +128,11 @@
       </div>
     </div>
     <div class="action-buttons">
+      <label id="rustNativeDevControl" class="rust-native-dev-control" hidden title="Development opt-in only; verified installed OEM profiles and local Rust binary are required">
+        <input id="rustNativeOptIn" type="checkbox" autocomplete="off">
+        <span data-i18n="rustNativeExperimental">Rust Native · ניסיוני</span>
+      </label>
+      <button id="cancelRustConversionBtn" class="compact-btn secondary" type="button" data-i18n="cancelRustConversion" hidden>בטל Rust</button>
       <button id="openFolderBtn" class="compact-btn secondary" type="button" disabled data-i18n="openFolder">פתח תיקיית פלט</button>
       <button id="convertBtn" class="compact-btn primary convert-button" type="button" disabled>
         <span aria-hidden="true">➜</span><span data-i18n="convert">המרה</span><span id="convertCount"></span>
