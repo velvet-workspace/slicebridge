@@ -42,7 +42,7 @@ func TestRustInstalledOEMPlanReceiptParity(t *testing.T) {
 			}
 			request := map[string]any{
 				"bundle": bundle, "filaments": insp.Filaments,
-				"source_settings": settings, "preserved": []string{},
+				"source_settings": settings, "preserved": []string{}, "requested_nozzle": "0.4",
 			}
 			reply, runErr := runRustMaterialCommand(t, rust, "--plan-native-conversion", request)
 			if runErr != nil || reply["ok"] != true || reply["experimental"] != true {

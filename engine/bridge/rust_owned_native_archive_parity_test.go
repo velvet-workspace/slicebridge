@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,9 +68,10 @@ func TestRustOwnedNativeArchiveInstalledOEMParity(t *testing.T) {
 			// Rust-native converter. The request contains only verified
 			// OEM data, source filament identity and source settings.
 			request := map[string]any{
-				"bundle":          bundle,
-				"filaments":       info.Filaments,
-				"source_settings": sourceSettings,
+				"bundle":           bundle,
+				"filaments":        info.Filaments,
+				"source_settings":  sourceSettings,
+				"requested_nozzle": "0.4",
 			}
 			payload, err := json.Marshal(request)
 			if err != nil {
@@ -102,6 +104,34 @@ func TestRustOwnedNativeArchiveInstalledOEMParity(t *testing.T) {
 				t.Fatalf("Rust native archive refused verified input: status=%v error=%s", runErr, response.Error)
 			}
 			compareConverted3MFParts(t, goOutput, rustOutput)
+			// The user-selected physical nozzle must not silently be replaced
+			// by a different installed target bundle. Refuse before output.
+			request["requested_nozzle"] = "0.6"
+			badPayload, err := json.Marshal(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			badRequest := filepath.Join(dir, "wrong-physical-nozzle.json")
+			if err := os.WriteFile(badRequest, badPayload, 0600); err != nil {
+				t.Fatal(err)
+			}
+			refusedOutput := filepath.Join(dir, "must-not-create-nozzle.3mf")
+			rejected, status := exec.CommandContext(ctx, rust,
+				"--convert-native-archive", badRequest, source, refusedOutput).Output()
+			if status == nil {
+				t.Fatalf("Rust ignored selected physical nozzle mismatch: %s", rejected)
+			}
+			var refusal map[string]any
+			if err := json.Unmarshal(rejected, &refusal); err != nil {
+				t.Fatalf("invalid Rust refusal receipt: %v %s", err, rejected)
+			}
+			errorText, _ := refusal["error"].(string)
+			if refusal["ok"] != false || !strings.Contains(errorText, "requested physical nozzle") {
+				t.Fatalf("unsafe nozzle refusal missing: %s", rejected)
+			}
+			if _, err := os.Stat(refusedOutput); !os.IsNotExist(err) {
+				t.Fatalf("invalid physical nozzle produced output: %v", err)
+			}
 			after, err := os.ReadFile(source)
 			if err != nil || !bytes.Equal(original, after) {
 				t.Fatal("Rust or Go changed source")

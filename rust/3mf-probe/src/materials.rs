@@ -367,6 +367,23 @@ pub fn validate_native_bundle(input: &Value) -> Result<Value, String> {
         return Err("bundle.nozzle does not match the verified physical nozzle".into());
     }
 
+    // The UI's saved physical nozzle selection is a separate authority
+    // from the installed OEM bundle. If a caller supplies that selection,
+    // reject a mismatched profile rather than silently converting with a
+    // different physical tool size. A legacy source-matched caller may omit
+    // this field; that mode still requires an independently verified bundle.
+    if let Some(selected) = input.get("requested_nozzle") {
+        let selected = selected
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "requested_nozzle must be a nonempty canonical string".to_owned())?;
+        if selected != bundled_nozzle {
+            return Err(format!(
+                "requested physical nozzle {selected:?} does not match installed OEM bundle nozzle {bundled_nozzle:?}"
+            ));
+        }
+    }
+
     // A raw installed OEM bundle has four declared virtual slots. Source
     // projects can have more virtual materials than physical tools, without
     // modifying the actual installed OEM profile or printer configuration.
@@ -807,6 +824,18 @@ mod tests {
             json!(["PLA", "PLA", "PETG", "PLA", "PETG"])
         );
         assert_eq!(req["bundle"]["profile"]["filament_slots"], 4);
+    }
+
+    #[test]
+    fn selected_physical_nozzle_must_match_verified_bundle() {
+        let mut request = synthetic_bundle();
+        request["requested_nozzle"] = json!("0.4");
+        assert!(validate_native_bundle(&request).is_ok());
+        for selected in [json!("0.6"), json!("00.4"), json!(null), json!(0.4)] {
+            request["requested_nozzle"] = selected;
+            let error = validate_native_bundle(&request).unwrap_err();
+            assert!(error.contains("nozzle"), "mismatch accepted: {error}");
+        }
     }
 
     #[test]
