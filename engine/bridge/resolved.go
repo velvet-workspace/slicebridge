@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"os"
 	"strings"
 
 	"github.com/BryanSmee/bl_to_std/pkg/converter"
@@ -194,6 +195,13 @@ func buildPlan(source, destination string, resolve profileResolver) (conversionP
 
 // convertWith runs the one shared path: plan, then publish.
 func convertWith(source, destination string, resolve profileResolver) (map[string]any, error) {
+	switch os.Getenv("SLICEBRIDGE_CONVERSION_ENGINE") {
+	case "", "go", "rust":
+		// Go is the installed default. Rust requires an explicit developer
+		// opt-in and an independently verified executable path.
+	default:
+		return nil, fail("ENGINE_INVALID", "unknown experimental conversion engine")
+	}
 	plan, err := buildPlan(source, destination, resolve)
 	if err != nil {
 		return nil, err

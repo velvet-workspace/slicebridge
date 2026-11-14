@@ -145,8 +145,8 @@ func TestQIDIFlashforgeMixedFiveCenteredRustParity(t *testing.T) {
 					t.Fatalf("target-specific native importer metadata mismatch for %s: got=%q want=%q", output, got, wantApplication)
 				}
 			}
-			if got := report["native_slicer_material_review_required"]; got != false {
-				t.Fatalf("successful automatic material import must not request a special QIDI warning: %v", got)
+			if _, special := report["native_slicer_material_review_required"]; special {
+				t.Fatal("successful import must not add an importer-specific UI review field")
 			}
 			// Independent Go and Rust package settings and the original source
 			// each preserve all five explicit source material identities.

@@ -71,8 +71,8 @@ func TestQIDIOnePhysicalToolKeepsSourceFilamentsVirtual(t *testing.T) {
 			if got := result["tool_usage_verification_required"]; got != (sourceCount > 1) {
 				t.Fatalf("multicolor native tool-use review missing: %v", got)
 			}
-			if got := result["native_slicer_material_review_required"]; got != false {
-				t.Fatalf("automatic QIDI importer compatibility must not raise a special warning: %v", got)
+			if _, special := result["native_slicer_material_review_required"]; special {
+				t.Fatal("automatic QIDI compatibility must not add a special UI warning field")
 			}
 			if got := project3MFApplication(t, target); got != qidiStudioApplication {
 				t.Fatalf("QIDI conversion did not set expected importer metadata: %q", got)

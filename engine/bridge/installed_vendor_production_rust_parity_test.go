@@ -136,9 +136,9 @@ func TestRustInstalledOEMProductionPlanParity(t *testing.T) {
 					t.Fatalf("QIDI native GUI import warning mismatch for %s/%s: got=%t want=%t; warnings=%v",
 						target, sourceKind, importWarningFound, expected, warnings)
 				}
-				if got, want := result["native_slicer_material_review_required"], false; got != want {
-					t.Fatalf("native importer review flag mismatch for %s/%s: got=%v want=%v",
-						target, sourceKind, got, want)
+				if _, special := result["native_slicer_material_review_required"]; special {
+					t.Fatalf("production result must not reintroduce a special importer review flag for %s/%s",
+						target, sourceKind)
 				}
 
 				if target == "qidi" {

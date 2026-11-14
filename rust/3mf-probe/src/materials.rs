@@ -121,6 +121,14 @@ pub fn map_native_material_settings(input: &Value) -> Result<Value, String> {
         .get("target")
         .and_then(Value::as_str)
         .unwrap_or("unknown");
+    // Production Go only substitutes the validated installed-name mapping
+    // for QIDI's exact X-Plus 5 profile. Other slicers own their preset IDs
+    // through their actual material leaf values and may reject missing IDs.
+    let qidi_name_mapping = target == "qidi"
+        && profile
+            .get("printer_model_id")
+            .and_then(Value::as_str)
+            == Some("X-Plus 5");
 
     let input_filaments = filaments(input)?;
     if input_filaments.len() > slots {
@@ -167,7 +175,7 @@ pub fn map_native_material_settings(input: &Value) -> Result<Value, String> {
         // per material type. Some installed vendor filament JSON snapshots
         // omit filament_settings_id or store an empty placeholder. The
         // profile mapping, not a guessed PLA default, owns this value.
-        if key == "filament_settings_id" {
+        if qidi_name_mapping && key == "filament_settings_id" {
             continue;
         }
         if HARDWARE_OWNED_KEYS.contains(&key) {
@@ -194,15 +202,17 @@ pub fn map_native_material_settings(input: &Value) -> Result<Value, String> {
             settings.insert(key.to_owned(), Value::Array(values));
         }
     }
-    settings.insert(
-        "filament_settings_id".to_owned(),
-        Value::Array(
-            native_profile_ids
-                .into_iter()
-                .map(|name| Value::String(name.to_owned()))
-                .collect(),
-        ),
-    );
+    if qidi_name_mapping {
+        settings.insert(
+            "filament_settings_id".to_owned(),
+            Value::Array(
+                native_profile_ids
+                    .into_iter()
+                    .map(|name| Value::String(name.to_owned()))
+                    .collect(),
+            ),
+        );
+    }
     // Match Go: filament_type always comes from the source's ordered slots.
     settings.insert(
         "filament_type".to_owned(),
@@ -307,11 +317,12 @@ mod tests {
     }
 
     #[test]
-    fn native_filament_profile_id_comes_from_verified_map_when_preset_omits_id() {
+    fn qidi_native_filament_profile_id_comes_from_verified_map_when_preset_omits_id() {
         let mut req = json!({
             "bundle": {
-                "target": "u1",
+                "target": "qidi",
                 "profile": {
+                    "printer_model_id": "X-Plus 5",
                     "filament_slots": 4,
                     "filament_profiles": {"PLA": "Verified U1 PLA", "PETG": "Verified U1 PETG"},
                     "project_settings": {"nozzle_diameter": ["0.4", "0.4", "0.4", "0.4"]}
