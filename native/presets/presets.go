@@ -2,6 +2,7 @@
 package presets
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -152,6 +153,13 @@ func kind(file string) string {
 	}
 	return ""
 }
+
+// Installed Orca-family vendor JSON may contain an exact leading UTF-8 BOM.
+// Only that signature is removed; malformed, UTF-16 and partial BOMs fail.
+func unmarshalVendorPresetJSON(data []byte, target *map[string]any) error {
+	return json.Unmarshal(bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF}), target)
+}
+
 func readCatalog(root string, spec Spec) (catalog, error) {
 	out := catalog{}
 	dirs := []string{filepath.Join(root, spec.Vendor)}
@@ -178,7 +186,7 @@ func readCatalog(root string, spec Spec) (catalog, error) {
 				return err
 			}
 			var settings map[string]any
-			if err = json.Unmarshal(data, &settings); err != nil {
+			if err = unmarshalVendorPresetJSON(data, &settings); err != nil {
 				return fmt.Errorf("vendor JSON %s: %w", file, err)
 			}
 			if len(settings) == 0 {
