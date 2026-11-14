@@ -132,8 +132,16 @@ func physicalToolPhrase(count int) string {
 // QIDIStudio can replace the printer/materials of an imported non-QIDI 3MF
 // with local presets, so ZIP parity alone must not imply GUI material parity.
 func vendorNativeImportWarnings(target string, slotCount int) []string {
-	if target != "qidi" || slotCount <= 1 {
+	if target != "qidi" || slotCount < 1 {
 		return nil
+	}
+	// A single-spool project still needs a native importer/material review:
+	// QIDIStudio can replace imported non-native material settings even when
+	// there is no material changer and the 3MF palette has only one slot.
+	if slotCount == 1 {
+		return []string{
+			"QIDI X-Plus 5 has one physical print tool. QIDIStudio may replace printer and material settings when importing a 3MF it does not recognize as a native QIDIStudio project, including single-material projects. Verify the actual selected printer/nozzle, loaded physical filament, local material preset, temperature and flow settings before slicing or printing. A geometry-only import does not verify material compatibility; the bridge does not claim native QIDI GUI material acceptance.",
+		}
 	}
 	return []string{fmt.Sprintf(
 		"QIDI X-Plus 5 has one physical print tool; multiple virtual filament slots do not provide automatic material switching. Without a verified QIDI BOX/filament changer, do not attempt a multi-material print. QIDIStudio may replace printer and material settings when importing a 3MF that it does not recognize as a native QIDIStudio project. This file contains %d separate virtual material slots, but the installed GUI may instead show one local filament preset. Verify that all %d material profiles, types and colours actually appear in QIDIStudio before slicing or printing; if not, treat the import as geometry-only. The bridge does not claim native QIDI multi-material GUI acceptance.",
@@ -244,25 +252,26 @@ func publishConversion(plan conversionPlan) (map[string]any, error) {
 			"The converted 3MF plate count could not be determined from its native project metadata. Per-plate prime tower coordinates therefore cannot be audited; inspect each plate and tower clearance in the native slicer before printing.")
 	}
 	return map[string]any{
-		"ok":                                    true,
-		"target":                                plan.target,
-		"output":                                dst,
-		"engine":                                "bl2std",
-		"source_nozzle":                         plan.sourceNozzle.Nozzle,
-		"source_nozzle_source":                  plan.sourceNozzle.Source,
-		"source_nozzle_assumed":                 plan.sourceNozzle.Assumed,
-		"target_nozzle":                         plan.targetNozzle,
-		"nozzle_remapped":                       plan.sourceNozzle.Nozzle != plan.targetNozzle,
-		"nozzle_selected_by_user":               plan.requestedNozzle != "",
-		"target_nozzle_origin":                  string(plan.nozzleOrigin),
-		"profile_kind":                          string(plan.profileKind),
-		"source_filament_slots":                 len(plan.filaments),
-		"target_filament_slots_used":            len(slots),
-		"virtual_filament_slots":                len(slots),
-		"physical_toolheads":                    plan.physicalTools,
-		"user_slot_mapping_required":            len(slots) > plan.physicalTools,
-		"tool_usage_verification_required":      len(slots) > 1,
-		"prime_tower_clearance_review_required": primeTowerReview,
+		"ok":                                     true,
+		"target":                                 plan.target,
+		"output":                                 dst,
+		"engine":                                 "bl2std",
+		"source_nozzle":                          plan.sourceNozzle.Nozzle,
+		"source_nozzle_source":                   plan.sourceNozzle.Source,
+		"source_nozzle_assumed":                  plan.sourceNozzle.Assumed,
+		"target_nozzle":                          plan.targetNozzle,
+		"nozzle_remapped":                        plan.sourceNozzle.Nozzle != plan.targetNozzle,
+		"nozzle_selected_by_user":                plan.requestedNozzle != "",
+		"target_nozzle_origin":                   string(plan.nozzleOrigin),
+		"profile_kind":                           string(plan.profileKind),
+		"source_filament_slots":                  len(plan.filaments),
+		"target_filament_slots_used":             len(slots),
+		"virtual_filament_slots":                 len(slots),
+		"physical_toolheads":                     plan.physicalTools,
+		"user_slot_mapping_required":             len(slots) > plan.physicalTools,
+		"tool_usage_verification_required":       len(slots) > 1,
+		"native_slicer_material_review_required": plan.target == "qidi",
+		"prime_tower_clearance_review_required":  primeTowerReview,
 		"prime_tower_plate_coordinate_review_required": primeTowerReview && towerPositions.incomplete(),
 		"prime_tower_plate_position_audit_status":      towerPositions.status(primeTowerReview),
 		"prime_tower_plates":                           towerPositions.plates,

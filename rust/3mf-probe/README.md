@@ -654,15 +654,20 @@ not proof of the exact QIDIStudio 02.07.02.73 decision path; actual
 QIDI material-box configuration and native-project provenance were
 not verified. No user profile or installed slicer files were modified.
 
-The Go production conversion now warns explicitly on QIDI multi-slot
-outputs that a native GUI may substitute a single local filament,
-and that **all** imported color/material slots must be visually
-confirmed before slicing or printing. A unit regression and the
-installed-OEM Go/Rust parity gate assert that this warning is
-present only for QIDI multi-slot conversion. This makes the known
-native limitation visible without falsely changing material
-identities, inventing a QIDIStudio provenance marker, or claiming
-that the Rust converter fixed a vendor import rule.
+The Go production conversion now emits a native QIDI importer warning
+for **every** QIDI source, including a single-filament 3MF. A single
+physical spool still requires confirming the active local material
+preset, physical filament, nozzle, temperature and flow: QIDIStudio
+may substitute a saved local preset even when the converted archive
+contains exactly one correct OEM material entry. With multiple source
+materials, the warning additionally explains that the archived slots
+are virtual, the owner's printer lacks a QIDI BOX, and the native
+GUI may show only one local filament. The returned
+`native_slicer_material_review_required` field is true for QIDI
+regardless of source count; it does not authorize printing. Regression
+tests preserve the target's hardware settings and fail-closed behavior
+without inventing a QIDIStudio provenance marker or asserting an
+unverified native importer fix.
 
 The owner subsequently confirmed the X-Plus 5 **has no QIDI BOX** and
 can feed **only one physical filament at a time**. This materially
@@ -684,10 +689,13 @@ small in-memory-only correction is verified against Go/Rust full ZIP
 parity with the installed read-only OEM QIDI profile.
 
 The isolated `TestQIDIOnePhysicalToolKeepsSourceFilamentsVirtual`
-verifies that a one-color source reports one physical print tool,
-one active virtual source filament and no extra slot-mapping
-requirement; a five-color source still preserves all five virtual
-identities but now requests explicit owner slot-mapping review. The
+now covers **one through six** original source material slots: it
+reports one physical print tool, emits exactly the original count
+and order in the virtual archive palette (no default filler slots),
+and requires manual source-to-physical mapping only for multi-slot
+projects. Every QIDI case requires native material verification,
+including the single-spool import. Neither the installed vendor
+presets nor the owner's active slicer session are edited. The
 installed OEM Go/Rust archive parity gate additionally verifies
 `physical_toolheads=1` for QIDI and includes a **centered
 one-material** pinned 3MF test source, whose mesh is preserved but

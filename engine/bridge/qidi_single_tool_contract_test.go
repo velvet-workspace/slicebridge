@@ -16,7 +16,8 @@ import (
 // (which is not present on the owner's printer) must not be confused with
 // multiple physical nozzles. No user files, slicers or printers are touched.
 func TestQIDIOnePhysicalToolKeepsSourceFilamentsVirtual(t *testing.T) {
-	for _, sourceCount := range []int{1, 5} {
+	expectedColors := append(append([]any(nil), fixtureColors...), "#00FFFF")
+	for _, sourceCount := range []int{1, 2, 3, 4, 5, 6} {
 		t.Run(fmt.Sprintf("source-%d", sourceCount), func(t *testing.T) {
 			dir := t.TempDir()
 			source := filepath.Join(dir, "source.3mf")
@@ -69,6 +70,9 @@ func TestQIDIOnePhysicalToolKeepsSourceFilamentsVirtual(t *testing.T) {
 			if got := result["tool_usage_verification_required"]; got != (sourceCount > 1) {
 				t.Fatalf("multicolor native tool-use review missing: %v", got)
 			}
+			if got := result["native_slicer_material_review_required"]; got != true {
+				t.Fatalf("single-tool QIDI requires material verification even for one slot: %v", got)
+			}
 			slotMap, ok := result["source_to_target_slot_map"].(map[int]int)
 			if !ok || len(slotMap) != sourceCount {
 				t.Fatalf("virtual slots were collapsed: %+v", result)
@@ -97,7 +101,7 @@ func TestQIDIOnePhysicalToolKeepsSourceFilamentsVirtual(t *testing.T) {
 				}
 			}
 			for i := 0; i < sourceCount; i++ {
-				if colors[i] != fixtureColors[i] {
+				if colors[i] != expectedColors[i] {
 					t.Fatalf("source color slot %d changed: %v", i+1, colors)
 				}
 			}

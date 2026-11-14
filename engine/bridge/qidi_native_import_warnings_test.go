@@ -5,6 +5,26 @@ import (
 	"testing"
 )
 
+func TestQIDISingleFilamentNativeImportWarning(t *testing.T) {
+	warnings := vendorNativeImportWarnings("qidi", 1)
+	if len(warnings) != 1 {
+		t.Fatalf("single-spool QIDI import must still require native material review: %v", warnings)
+	}
+	for _, required := range []string{
+		"one physical print tool", "including single-material projects",
+		"loaded physical filament", "local material preset",
+		"temperature and flow", "geometry-only",
+		"does not claim native QIDI GUI material acceptance",
+	} {
+		if !strings.Contains(warnings[0], required) {
+			t.Fatalf("single-spool warning omitted %q: %s", required, warnings[0])
+		}
+	}
+	if strings.Contains(warnings[0], "QIDI BOX") {
+		t.Fatalf("single-filament import must not suggest a missing multi-material feeder: %s", warnings[0])
+	}
+}
+
 func TestQIDINativeMultiMaterialImportWarning(t *testing.T) {
 	warnings := vendorNativeImportWarnings("qidi", 5)
 	if len(warnings) != 1 {
@@ -26,7 +46,6 @@ func TestQIDINativeMultiMaterialImportWarning(t *testing.T) {
 		target string
 		slots  int
 	}{
-		{"qidi", 1},
 		{"u1", 5},
 		{"c5", 5},
 		{"qidi", 0},
