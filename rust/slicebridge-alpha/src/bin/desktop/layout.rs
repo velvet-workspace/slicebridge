@@ -340,19 +340,23 @@ pub(super) fn render_window(
                 .py_2()
                 .border_b_1()
                 .border_color(rgb(0xEDF1EF))
-                .child(
+                .child({
+                    // Mirrors app.js renderQueue: only an exact high-confidence MakerWorld origin reads as MW.
+                    let verified = view.makerworld_verified(path);
                     div()
                         .w(px(34.))
                         .h(px(34.))
                         .rounded_md()
-                        .bg(rgb(0xEBF4EE))
+                        .bg(rgb(if verified { 0xDFF6EE } else { 0xEBF4EE }))
+                        .border_1()
+                        .border_color(rgb(if verified { 0xA9E5D0 } else { 0xEBF4EE }))
                         .flex()
                         .items_center()
                         .justify_center()
                         .text_xs()
-                        .text_color(rgb(BRAND))
-                        .child("3MF"),
-                )
+                        .text_color(rgb(if verified { INK } else { BRAND }))
+                        .child(if verified { "MW" } else { "3MF" })
+                })
                 .child(
                     div()
                         .flex_1()

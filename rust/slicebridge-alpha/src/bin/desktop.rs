@@ -5,7 +5,7 @@ use gpui_kit::*;
 use serde_json::{json, Value};
 use slicebridge_alpha::{protocol, Registry};
 use std::collections::hash_map::DefaultHasher;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -53,6 +53,61 @@ fn file_button_id(prefix: &str, path: &str) -> String {
     let mut hasher = DefaultHasher::new();
     path.hash(&mut hasher);
     format!("{prefix}-{:016x}", hasher.finish())
+}
+
+// Same cap the Registry enforces for `makerworld.origins`.
+const MAKERWORLD_ORIGIN_LIMIT: usize = 200;
+
+// Mirrors app.js renderQueue: only an exact high-confidence MakerWorld origin earns the MW badge.
+// CDN, unknown, medium-confidence and malformed evidence all stay generic.
+fn is_verified_makerworld(origin: &Value) -> bool {
+    origin["kind"] == "makerworld" && origin["confidence"] == "high"
+}
+
+// Drops cached verdicts for paths no longer queued, then returns only the queued paths still
+// unknown. A removed or cleared file never keeps its badge, and a restaged path is inspected again.
+fn origin_lookup_plan(display: &[String], cache: &mut BTreeMap<String, bool>) -> Vec<String> {
+    cache.retain(|path, _| display.contains(path));
+    let mut seen = BTreeSet::new();
+    display
+        .iter()
+        .filter(|path| !cache.contains_key(path.as_str()) && seen.insert(path.as_str()))
+        .cloned()
+        .collect()
+}
+
+// Caches only the badge decision for each requested path. A path the Registry omits, or any
+// failed call, is recorded as not verified: nothing is inferred from the file name or folder.
+fn record_origin_reply(cache: &mut BTreeMap<String, bool>, paths: &[String], reply: &Value) {
+    for path in paths {
+        let verified = reply["ok"] == true && is_verified_makerworld(&reply["data"][path.as_str()]);
+        cache.insert(path.clone(), verified);
+    }
+}
+
+// OS metadata reads may finish after a source was removed and re-added under
+// the same path. Accept only matching current request IDs to prevent a stale
+// background result from lending a new file a MakerWorld badge.
+fn apply_origin_reply(
+    cache: &mut BTreeMap<String, bool>,
+    pending: &mut BTreeMap<String, u64>,
+    current_paths: &[String],
+    requested: &[String],
+    token: u64,
+    reply: &Value,
+) -> usize {
+    let mut eligible = Vec::new();
+    for path in requested {
+        if pending.get(path) != Some(&token) {
+            continue;
+        }
+        pending.remove(path);
+        if current_paths.contains(path) {
+            eligible.push(path.clone());
+        }
+    }
+    record_origin_reply(cache, &eligible, reply);
+    eligible.len()
 }
 
 fn output_folder(status: &Value) -> Option<PathBuf> {
@@ -106,6 +161,10 @@ struct SliceBridgeWindow {
     destination_source: Option<String>,
     // Set by `batch.remove` so a removed source is not shown again while the Registry still reports it.
     suppressed_source: Option<String>,
+    // Per queued path: true only for an exact high-confidence MakerWorld origin. Filled outside render.
+    makerworld_origins: BTreeMap<String, bool>,
+    makerworld_pending: BTreeMap<String, u64>,
+    makerworld_token: u64,
     locale: Locale,
     printers_open: bool,
     printers_first_run: bool,
@@ -249,6 +308,9 @@ impl SliceBridgeWindow {
             destination: None,
             destination_source: None,
             suppressed_source: None,
+            makerworld_origins: BTreeMap::new(),
+            makerworld_pending: BTreeMap::new(),
+            makerworld_token: 0,
             locale,
             printers_open: false,
             printers_first_run: prefs["data"]["onboardingPending"] == true,
@@ -293,6 +355,8 @@ impl SliceBridgeWindow {
                     let current = view.commands.snapshot();
                     if current != previous {
                         previous = current;
+                        // Queue changes from CLI or MCP also reach the badges here, never from render.
+                        view.sync_makerworld_origins(cx);
                         cx.notify();
                     }
                 });
@@ -308,6 +372,12 @@ impl SliceBridgeWindow {
         let source_before = self.commands.snapshot()["source"].clone();
         let result = self.commands.execute(name, &args);
         if name == "source.select" && result["ok"] == true {
+            // Explicit re-selection may point to a replaced 3MF at the same
+            // path: never inherit provenance from an old copy.
+            if let Some(path) = args["path"].as_str() {
+                self.makerworld_origins.remove(path);
+                self.makerworld_pending.remove(path);
+            }
             self.destination = None;
             self.destination_source = None;
             self.suppressed_source = None;
@@ -341,7 +411,62 @@ impl SliceBridgeWindow {
         } else {
             format!("Error: {}", result["error"].as_str().unwrap_or("unknown"))
         };
+        self.sync_makerworld_origins(cx);
         cx.notify();
+    }
+
+    // Unlike a synchronous Registry call on the GPUI thread, this preserves
+    // Go's best-effort *asynchronous* provenance check. A macOS mdls lookup can
+    // take up to 1.5s per file; never freeze the main window for a large queue.
+    // Paths and request IDs are all local, bounded, and never contain URLs.
+    fn sync_makerworld_origins(&mut self, cx: &mut Context<Self>) {
+        let snap = self.commands.snapshot();
+        let display = queue_display_paths(&snap, self.suppressed_source.as_deref());
+        let unknown = origin_lookup_plan(&display, &mut self.makerworld_origins);
+        self.makerworld_pending
+            .retain(|path, _| display.contains(path));
+        let to_query: Vec<String> = unknown
+            .into_iter()
+            .filter(|path| !self.makerworld_pending.contains_key(path))
+            .collect();
+        for chunk in to_query.chunks(MAKERWORLD_ORIGIN_LIMIT) {
+            let paths = chunk.to_vec();
+            self.makerworld_token = self.makerworld_token.wrapping_add(1);
+            let token = self.makerworld_token;
+            for path in &paths {
+                self.makerworld_pending.insert(path.clone(), token);
+            }
+            let registry = self.commands.clone();
+            cx.spawn(async move |this, cx| {
+                let for_query = paths.clone();
+                let reply = cx
+                    .background_executor()
+                    .spawn(async move {
+                        registry.execute("makerworld.origins", &json!({"paths":for_query}))
+                    })
+                    .await;
+                let _ = this.update(cx, |view, cx| {
+                    let snapshot = view.commands.snapshot();
+                    let display = queue_display_paths(&snapshot, view.suppressed_source.as_deref());
+                    if apply_origin_reply(
+                        &mut view.makerworld_origins,
+                        &mut view.makerworld_pending,
+                        &display,
+                        &paths,
+                        token,
+                        &reply,
+                    ) > 0
+                    {
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        }
+    }
+
+    fn makerworld_verified(&self, path: &str) -> bool {
+        self.makerworld_origins.get(path).copied().unwrap_or(false)
     }
 
     fn open_about(&mut self, cx: &mut Context<Self>) {
@@ -465,6 +590,10 @@ impl SliceBridgeWindow {
 
     fn queue_add(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
         let snap = self.commands.snapshot();
+        let selected: Vec<String> = paths
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
         let mut existing: Vec<PathBuf> =
             queue_display_paths(&snap, self.suppressed_source.as_deref())
                 .into_iter()
@@ -482,6 +611,11 @@ impl SliceBridgeWindow {
                     .execute("batch.stage", &json!({"paths":encoded}));
                 if reply["ok"] == true {
                     self.suppressed_source = None;
+                    // Newly selected paths are inspected again; an older file with the same name never lends its badge.
+                    for path in &selected {
+                        self.makerworld_origins.remove(path);
+                        self.makerworld_pending.remove(path);
+                    }
                     if snap["source"].is_null() {
                         self.run(
                             "source.select",
@@ -505,6 +639,7 @@ impl SliceBridgeWindow {
                 self.last_message = error;
             }
         }
+        self.sync_makerworld_origins(cx);
         cx.notify();
     }
 
@@ -1067,5 +1202,154 @@ mod queue_remove_tests {
             &json!({"phase":"completed","batch":{"phase":"completed"}})
         ));
         assert!(!snapshot_running(&json!({"batch":null})));
+    }
+}
+
+#[cfg(test)]
+mod makerworld_badge_tests {
+    use super::{
+        apply_origin_reply, is_verified_makerworld, origin_lookup_plan, record_origin_reply,
+        MAKERWORLD_ORIGIN_LIMIT,
+    };
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    fn owned(paths: &[&str]) -> Vec<String> {
+        paths.iter().map(|path| (*path).to_owned()).collect()
+    }
+
+    #[test]
+    fn badge_requires_exact_makerworld_kind_and_high_confidence() {
+        assert!(is_verified_makerworld(
+            &json!({"kind":"makerworld","confidence":"high","originUrl":"https://makerworld.com/m/1"})
+        ));
+        assert!(!is_verified_makerworld(
+            &json!({"kind":"makerworld","confidence":"medium"})
+        ));
+        // A CDN host is never shown as MakerWorld, even if its confidence is claimed to be high.
+        assert!(!is_verified_makerworld(
+            &json!({"kind":"bambu_cdn","confidence":"medium"})
+        ));
+        assert!(!is_verified_makerworld(
+            &json!({"kind":"bambu_cdn","confidence":"high"})
+        ));
+        assert!(!is_verified_makerworld(
+            &json!({"kind":"MakerWorld","confidence":"high"})
+        ));
+        assert!(!is_verified_makerworld(
+            &json!({"kind":"makerworld","confidence":true})
+        ));
+        assert!(!is_verified_makerworld(&json!({"kind":"makerworld"})));
+        assert!(!is_verified_makerworld(
+            &json!({"kind":"unknown","confidence":"high"})
+        ));
+        assert!(!is_verified_makerworld(&serde_json::Value::Null));
+    }
+
+    #[test]
+    fn origin_lookup_requests_only_new_queue_paths() {
+        let mut cache = BTreeMap::new();
+        assert_eq!(
+            origin_lookup_plan(&owned(&["a.3mf"]), &mut cache),
+            owned(&["a.3mf"])
+        );
+        cache.insert("a.3mf".to_owned(), true);
+        // Cached paths are not sent again on later snapshots or renders; only the new one is.
+        assert_eq!(
+            origin_lookup_plan(&owned(&["a.3mf", "b.3mf"]), &mut cache),
+            owned(&["b.3mf"])
+        );
+        cache.insert("b.3mf".to_owned(), false);
+        assert!(origin_lookup_plan(&owned(&["a.3mf", "b.3mf"]), &mut cache).is_empty());
+    }
+
+    #[test]
+    fn removed_or_cleared_paths_lose_cached_provenance() {
+        let mut cache = BTreeMap::from([("a.3mf".to_owned(), true), ("b.3mf".to_owned(), true)]);
+        assert!(origin_lookup_plan(&owned(&["b.3mf"]), &mut cache).is_empty());
+        assert!(!cache.contains_key("a.3mf"));
+        assert_eq!(cache.get("b.3mf"), Some(&true));
+        origin_lookup_plan(&[], &mut cache);
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn restaged_path_is_inspected_again_after_removal() {
+        let mut cache = BTreeMap::from([("a.3mf".to_owned(), true)]);
+        origin_lookup_plan(&[], &mut cache);
+        // The same path back in the queue may be a replaced file, so it is inspected again.
+        assert_eq!(
+            origin_lookup_plan(&owned(&["a.3mf"]), &mut cache),
+            owned(&["a.3mf"])
+        );
+    }
+
+    #[test]
+    fn failed_or_partial_reply_never_fabricates_provenance() {
+        let paths = owned(&["a.3mf", "b.3mf", "c.3mf"]);
+        let mut cache = BTreeMap::new();
+        record_origin_reply(
+            &mut cache,
+            &paths,
+            &json!({"ok":true,"data":{
+                "a.3mf":{"kind":"makerworld","confidence":"high","originUrl":"https://makerworld.com/m/1"},
+                "b.3mf":{"kind":"bambu_cdn","confidence":"medium"},
+                "z.3mf":{"kind":"makerworld","confidence":"high"}
+            }}),
+        );
+        assert_eq!(cache.get("a.3mf"), Some(&true));
+        assert_eq!(cache.get("b.3mf"), Some(&false));
+        // Omitted by the Registry means no provenance evidence, so no badge.
+        assert_eq!(cache.get("c.3mf"), Some(&false));
+        // A reply for a path that was not requested is ignored.
+        assert!(!cache.contains_key("z.3mf"));
+        record_origin_reply(
+            &mut cache,
+            &paths,
+            &json!({"ok":false,"error":"too many paths"}),
+        );
+        assert!(paths.iter().all(|path| cache.get(path) == Some(&false)));
+    }
+
+    #[test]
+    fn stale_background_results_cannot_restore_removed_or_replaced_badges() {
+        let mut cache = BTreeMap::new();
+        let path = owned(&["m.3mf"]);
+        let mut inflight = BTreeMap::from([("m.3mf".to_owned(), 1_u64)]);
+        let original = json!({"ok":true,"data":{"m.3mf":{
+            "kind":"makerworld","confidence":"high"
+        }}});
+        // User removed the file after request 1; its reply must be discarded.
+        assert_eq!(
+            apply_origin_reply(&mut cache, &mut inflight, &[], &path, 1, &original),
+            0
+        );
+        assert!(cache.is_empty());
+        assert!(inflight.is_empty());
+
+        // The same path is re-staged, now with request 2. The previous
+        // signed-origin result cannot lend this newly selected file a badge.
+        inflight.insert("m.3mf".to_owned(), 2);
+        assert_eq!(
+            apply_origin_reply(&mut cache, &mut inflight, &path, &path, 1, &original),
+            0
+        );
+        assert!(cache.is_empty());
+        assert_eq!(inflight.get("m.3mf"), Some(&2));
+
+        let new_origin = json!({"ok":true,"data":{"m.3mf":{
+            "kind":"bambu_cdn","confidence":"medium"
+        }}});
+        assert_eq!(
+            apply_origin_reply(&mut cache, &mut inflight, &path, &path, 2, &new_origin),
+            1
+        );
+        assert_eq!(cache.get("m.3mf"), Some(&false));
+        assert!(inflight.is_empty());
+    }
+
+    #[test]
+    fn origin_batches_match_the_registry_cap() {
+        assert_eq!(MAKERWORLD_ORIGIN_LIMIT, 200);
     }
 }
