@@ -1,0 +1,61 @@
+name: GPUI Rust 1:1 compatibility (QA only)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/rust-gpui-agent-alpha-20261115
+    paths:
+      - 'rust/slicebridge-alpha/**'
+      - 'rust/3mf-probe/**'
+      - 'native/frontend/dist/brand-icon.png'
+      - 'native/frontend/dist/slicebridge-banner.png'
+      - '.github/workflows/gpui-parity.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    name: Rust GPUI QA (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: rust/slicebridge-alpha
+        shell: bash
+    steps:
+      - name: Checkout source (does not touch installed stable application)
+        uses: actions/checkout@v7
+        with:
+          submodules: true
+      - name: Use stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup default stable
+      - name: Verify format, Rust tests and native GPUI build
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked --features desktop --lib --bin slicebridge-desktop
+          cargo build --locked --features desktop --bin slicebridge-desktop
+      - name: Retain isolated Windows QA executable, not a release
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: slicebridge-gpui-qa-windows
+          path: rust/slicebridge-alpha/target/debug/slicebridge-desktop.exe
+          retention-days: 3
+          if-no-files-found: error
+      - name: Retain isolated macOS QA executable, not a release
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: slicebridge-gpui-qa-macos
+          path: rust/slicebridge-alpha/target/debug/slicebridge-desktop
+          retention-days: 3
+          if-no-files-found: error
