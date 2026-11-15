@@ -7,8 +7,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-const MAX_SOURCE_FILES: usize = 200;
-
 fn output_folder(status: &Value) -> Option<PathBuf> {
     let batch_output = status["batch"]["items"]
         .as_array()
@@ -30,70 +28,9 @@ fn output_folder(status: &Value) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-fn collect_source_files(inputs: Vec<PathBuf>) -> Result<Vec<PathBuf>, String> {
-    let mut files = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
-    let mut pending: Vec<PathBuf> = inputs.into_iter().rev().collect();
-    while let Some(path) = pending.pop() {
-        let metadata = std::fs::symlink_metadata(&path)
-            .map_err(|error| format!("{}: {error}", path.display()))?;
-        if metadata.file_type().is_symlink() {
-            continue;
-        }
-        if metadata.is_dir() {
-            let mut children = std::fs::read_dir(&path)
-                .map_err(|error| format!("{}: {error}", path.display()))?
-                .map(|entry| entry.map(|item| item.path()).map_err(|e| e.to_string()))
-                .collect::<Result<Vec<_>, _>>()?;
-            children.sort();
-            pending.extend(children.into_iter().rev());
-            continue;
-        }
-        if !metadata.is_file()
-            || !path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("3mf"))
-        {
-            continue;
-        }
-        let canonical = path.canonicalize().map_err(|error| error.to_string())?;
-        if seen.insert(canonical) {
-            files.push(path);
-            if files.len() > MAX_SOURCE_FILES {
-                return Err(format!(
-                    "You can queue a maximum of {MAX_SOURCE_FILES} 3MF files"
-                ));
-            }
-        }
-    }
-    Ok(files)
-}
-
-#[cfg(test)]
-mod source_file_tests {
-    use super::collect_source_files;
-
-    #[test]
-    fn folder_sources_are_recursive_filtered_and_deduplicated() {
-        static ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "slicebridge-queue-{}-{}",
-            std::process::id(),
-            ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(dir.join("nested")).unwrap();
-        let first = dir.join("first.3MF");
-        let second = dir.join("nested").join("second.3mf");
-        std::fs::write(&first, b"fixture").unwrap();
-        std::fs::write(&second, b"fixture").unwrap();
-        std::fs::write(dir.join("notes.txt"), b"skip").unwrap();
-        let items = collect_source_files(vec![dir.clone(), first.clone()]).unwrap();
-        assert_eq!(items.len(), 2);
-        assert_eq!(items, vec![first, second]);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-}
+#[path = "desktop/source_queue.rs"]
+mod source_queue;
+use source_queue::collect_source_files;
 
 #[path = "desktop/i18n.rs"]
 mod desktop_i18n;
