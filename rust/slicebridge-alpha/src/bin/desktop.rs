@@ -3,7 +3,7 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::*;
 use serde_json::{json, Value};
 use slicebridge_alpha::{protocol, Registry};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const TEXT: &str = "en"; // Localization slot: UI text is English-first.
@@ -12,6 +12,8 @@ struct SliceBridgeWindow {
     commands: Registry,
     last_message: String,
     destination: Option<String>,
+    batch_sources: Vec<PathBuf>,
+    batch_directory: Option<PathBuf>,
 }
 
 impl SliceBridgeWindow {
@@ -22,6 +24,8 @@ impl SliceBridgeWindow {
                 "No UI action yet. Agent / CLI / MCP changes appear in the project fields above."
                     .into(),
             destination: None,
+            batch_sources: Vec::new(),
+            batch_directory: None,
         }
     }
 
@@ -77,6 +81,77 @@ impl SliceBridgeWindow {
             }
         })
         .detach();
+    }
+
+    fn choose_batch_sources(&mut self, cx: &mut Context<Self>) {
+        let picker = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Choose up to 32 3MF files for a batch".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = picker.await {
+                let _ = this.update(cx, |view, cx| {
+                    let sources = paths
+                        .into_iter()
+                        .filter(|p| p.extension().and_then(|e| e.to_str())
+                            .is_some_and(|e| e.eq_ignore_ascii_case("3mf")))
+                        .collect::<Vec<_>>();
+                    if sources.is_empty() || sources.len() > 32 {
+                        view.last_message = "Choose between one and 32 .3mf sources.".into();
+                        cx.notify();
+                        return;
+                    }
+                    view.batch_sources = sources;
+                    view.last_message = format!(
+                        "{} batch sources staged. Select a verified OEM printer/nozzle before starting.",
+                        view.batch_sources.len()
+                    );
+                    cx.notify();
+                });
+            }
+        }).detach();
+    }
+
+    fn choose_batch_directory(&mut self, cx: &mut Context<Self>) {
+        let picker = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Select existing folder for converted batch outputs".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = picker.await {
+                if let Some(path) = paths.first() {
+                    let _ = this.update(cx, |view, cx| {
+                        view.batch_directory = Some(path.clone());
+                        view.last_message = format!("Batch outputs: {}", path.display());
+                        cx.notify();
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn start_batch(&mut self, cx: &mut Context<Self>) {
+        if self.batch_sources.is_empty() {
+            self.last_message = "Choose batch 3MF sources first.".into();
+            cx.notify();
+            return;
+        }
+        let Some(dir) = self.batch_directory.as_ref() else {
+            self.last_message = "Choose the batch output folder first.".into();
+            cx.notify();
+            return;
+        };
+        let paths = self
+            .batch_sources
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        self.run("batch.start", json!({"paths":paths,"output_dir":dir}), cx);
     }
 
     fn choose_destination(&mut self, cx: &mut Context<Self>) {
@@ -216,6 +291,18 @@ impl Render for SliceBridgeWindow {
             .map(|v| v.to_string())
             .unwrap_or_else(|| "-".into());
         let output = self.destination.clone().unwrap_or("Not chosen".into());
+        let batch = &status["batch"];
+        let batch_phase = batch["phase"].as_str().unwrap_or("idle");
+        let batch_total = batch["total"].as_u64().unwrap_or(0);
+        let batch_completed = batch["completed"].as_u64().unwrap_or(0);
+        let batch_summary =
+            format!("Batch: {batch_phase} · {batch_completed}/{batch_total} files completed");
+        let batch_dir = self
+            .batch_directory
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "No output folder chosen".into());
+        let batch_source_count = self.batch_sources.len();
         let columns = [
             ("3MF source", source),
             ("OEM printer", printer),
@@ -316,6 +403,20 @@ impl Render for SliceBridgeWindow {
                     .child(Button::new("refresh").label("Refresh status")
                         .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))))
             )
+            .child(div().text_lg().child("Batch 3MF conversion · sequential, non-overwriting"))
+            .child(
+                div().flex().flex_row().gap_2()
+                    .child(Button::new("batch-sources").label("Choose batch 3MF...")
+                        .on_click(cx.listener(|this, _, _, cx| this.choose_batch_sources(cx))))
+                    .child(Button::new("batch-folder").label("Output folder...")
+                        .on_click(cx.listener(|this, _, _, cx| this.choose_batch_directory(cx))))
+                    .child(Button::new("batch-start").primary().label("Start batch")
+                        .on_click(cx.listener(|this, _, _, cx| this.start_batch(cx))))
+                    .child(Button::new("batch-cancel").label("Cancel batch")
+                        .on_click(cx.listener(|this, _, _, cx| this.run("batch.cancel", json!({}), cx))))
+            )
+            .child(div().child(format!("{batch_source_count} selected sources · {batch_dir}")))
+            .child(div().child(batch_summary))
             .child(div().text_lg().child("Last UI action"))
             .child(div().p_2().child(self.last_message.clone()))
             .child(div().child("Local attach: 127.0.0.1:48637  •  MCP: slicebridge-alpha --mcp"))

@@ -10,6 +10,10 @@ G-code, initiate slicing, or contact a printer.
   cycle through installed PLA/PETG material presets, choose destination,
   convert, cancel, read status and open converted output in an OEM slicer.
 - One Rust Registry drives the GUI, JSONL CLI, MCP stdio and local attach.
+- Native GUI batch picker selects 1-32 3MF files and an existing output folder.
+  The same agent/MCP Registry performs sequential, cancellable batch jobs,
+  verifies each input against installed OEM settings and tracks per-file
+  phases/receipts. Destinations are deterministic and never overwritten.
 - OEM discovery resolves installed vendor machine/process/material inheritance
   on disk, read-only, including leading UTF-8 BOM where present.
 - Windows OEM scope: Snapmaker U1 (Snapmaker Orca) and QIDI X-Plus 5
@@ -62,6 +66,24 @@ conversion.start is asynchronous. Wait for status completed before opening.
 conversion.cancel can cancel a running Rust worker. bundle.load remains for
 QA of a manually prepared and verified OEM snapshot.
 
+Batch using the same *selected installed OEM printer/nozzle* (preselect a
+3MF source and use profiles.select first):
+
+    {"command":"batch.start","args":{"paths":["C:\\scratch\\one.3mf","C:\\scratch\\two.3mf"],"output_dir":"C:\\scratch\\converted"}}
+    {"command":"batch.status","args":{}}
+    {"command":"batch.cancel","args":{}}
+
+batch.start returns immediately; batch.status reports the phase, completed
+and total counts, active index and every file's source/output/receipt.
+At most 32 files; source filenames must be distinct at the output filename
+level, files must be nonempty valid 3MF archives, and the output directory
+must already exist. It writes <stem>-slicebridge-<target>-<nozzle>.3mf;
+the nozzle decimal is expressed as an underscore (0_4 for 0.4 mm).
+If a file fails, the batch stops and previous successful outputs remain.
+Cancel stops the active worker and skips future files. No output file is
+overwritten, including on a restarted batch. Slicing and printing remain
+out of scope.
+
 ## Verification and gaps
 
 Windows QA on installed OEM resources and permitted 3MF fixtures passed
@@ -80,11 +102,22 @@ Real UI warnings still apply: QIDI warned about mixing PLA with PETG;
 one tiny synthetic U1 mesh lay beyond the printable bed. These are
 import-only receipts, NEVER physical print-readiness approval.
 
+Windows batch QA passed 2/2 installed U1 OEM files, 3/3 installed
+QIDI OEM files (including 80K triangles), and a 4/4 batch with 240K
+and 960K triangle synthetic stress inputs (all original SHA unchanged).
+Separate streamed XML geometry verification compared source/output vertex
+coordinates and triangle vertex indices exactly on both large fixtures.
+The 960K-triangle batch stress case took roughly two minutes on the QA
+workstation; timing is not a performance guarantee. Tested refusal to
+overwrite an existing output, source selection while active and live
+batch cancellation. The running native GPUI window showed an agent-triggered
+completed 2/2 batch without manual UI clicks.
+
 Still incomplete: broader vendor models and Orca forks, deep slicer UI
-acceptance at the newly added 0.2/0.6/0.8 mm nozzle variants, advanced
-tables and docking, batch/drag-drop, progress percentages, localization
-and Linux platform testing. A previously verified 0.4mm build ran on
-macOS; this new 8-nozzle commit needs macOS check and smoke.
+acceptance at 0.2/0.8 mm, advanced tables and docking, actual drag-and-drop,
+precise per-mesh progress percentages, localization, Linux, and printed-part
+qualification. macOS requires this branch's next independent build/GUI QA
+after the latest batch work.
 
 Do not merge main, replace stable installation, slice, generate G-code or
 control printers without applicable user authorization.

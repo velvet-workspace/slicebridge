@@ -1,5 +1,6 @@
 //! One Rust command surface for the desktop and agent transports.
 //! The proven 3MF implementation remains in slicebridge-3mf-probe.
+pub mod batch;
 pub mod oem;
 pub mod protocol;
 use serde_json::{json, Value};
@@ -31,6 +32,17 @@ struct Session {
     phase: String,
     last_result: Option<Value>,
     cancel: Option<Arc<AtomicBool>>,
+    batch: Option<Value>,
+    batch_cancel: Option<Arc<AtomicBool>>,
+}
+
+fn busy(state: &Session) -> bool {
+    state.phase == "running"
+        || state
+            .batch
+            .as_ref()
+            .and_then(|batch| batch["phase"].as_str())
+            == Some("running")
 }
 
 #[derive(Clone, Default)]
@@ -40,6 +52,18 @@ pub struct Registry {
 
 pub const COMMANDS: &[(&str, &str)] = &[
     ("commands.list", "Discover typed Rust application commands"),
+    (
+        "batch.start",
+        "Convert up to 32 verified 3MF sources sequentially using the selected OEM",
+    ),
+    (
+        "batch.status",
+        "Read live batch progress and per-file receipts",
+    ),
+    (
+        "batch.cancel",
+        "Cancel pending batch work and stop current Rust conversion worker",
+    ),
     (
         "app.status",
         "Read source, OEM selection, conversion job and result",
@@ -71,7 +95,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "material.select",
-        "Record a slot's verified OEM material selection",
+        "Select a verified installed OEM preset for one material type",
     ),
     (
         "conversion.start",
@@ -140,6 +164,7 @@ impl Registry {
             "output": state.output.as_ref().map(|p| p.to_string_lossy().to_string()),
             "phase": if state.phase.is_empty() { "idle" } else { &state.phase },
             "result": state.last_result,
+            "batch": state.batch,
         })
     }
 
@@ -157,6 +182,15 @@ impl Registry {
                 .map(|(name, description)| json!({"name": name, "description": description}))
                 .collect::<Vec<_>>()})),
             "app.status" | "conversion.status" => Ok(self.snapshot()),
+            "batch.start" => self.batch_start(params),
+            "batch.status" => {
+                let state = self.state.lock().map_err(|e| e.to_string())?;
+                Ok(state
+                    .batch
+                    .clone()
+                    .unwrap_or_else(|| json!({"phase":"idle","total":0,"completed":0,"items":[]})))
+            }
+            "batch.cancel" => self.batch_cancel(),
             "source.inspect" | "source.select" => {
                 let path = user_path(params, "path")?;
                 let facts = inspect_package(&path)?;
@@ -169,7 +203,7 @@ impl Registry {
                 });
                 if command == "source.select" {
                     let mut state = self.state.lock().map_err(|e| e.to_string())?;
-                    if state.phase == "running" {
+                    if busy(&state) {
                         return Err("cannot change source during conversion".into());
                     }
                     state.source = Some(path);
@@ -197,7 +231,7 @@ impl Registry {
                     .to_string();
                 let source = {
                     let state = self.state.lock().map_err(|e| e.to_string())?;
-                    if state.phase == "running" {
+                    if busy(&state) {
                         return Err("cannot select OEM while converting".into());
                     }
                     state
@@ -218,7 +252,7 @@ impl Registry {
                     .filter_map(|(k, v)| v.as_str().map(|name| (k.clone(), name.to_string())))
                     .collect();
                 let mut state = self.state.lock().map_err(|e| e.to_string())?;
-                if state.phase == "running" || state.source.as_ref() != Some(&source) {
+                if busy(&state) || state.source.as_ref() != Some(&source) {
                     return Err("source or job changed while verifying installed profile".into());
                 }
                 state.bundle_path = None;
@@ -269,7 +303,7 @@ impl Registry {
                     .unwrap_or("Verified OEM profile")
                     .to_string();
                 let mut state = self.state.lock().map_err(|e| e.to_string())?;
-                if state.phase == "running" {
+                if busy(&state) {
                     return Err("cannot change OEM bundle during conversion".into());
                 }
                 if state.source.as_ref() != Some(&source) {
@@ -305,7 +339,7 @@ impl Registry {
                 let preset = arg(params, "preset")?.to_string();
                 let (target, nozzle, source, mut overrides) = {
                     let state = self.state.lock().map_err(|e| e.to_string())?;
-                    if state.phase == "running" {
+                    if busy(&state) {
                         return Err("cannot change materials while converting".into());
                     }
                     if !state.installed_oem {
@@ -327,7 +361,7 @@ impl Registry {
                 let bundle = oem::resolve(&target, &nozzle, &overrides)?;
                 let verified = validate_native_autonomous_input(&bundle, &source)?;
                 let mut state = self.state.lock().map_err(|e| e.to_string())?;
-                if state.phase == "running"
+                if busy(&state)
                     || state.source.as_ref() != Some(&source)
                     || state.target.as_deref() != Some(&target)
                     || state.nozzle.as_deref() != Some(&nozzle)
@@ -414,7 +448,7 @@ impl Registry {
             ));
         }
         let mut state = self.state.lock().map_err(|e| e.to_string())?;
-        if state.phase == "running" {
+        if busy(&state) {
             return Err("conversion is already running".into());
         }
         let source = state.source.clone().ok_or("select a source 3MF first")?;

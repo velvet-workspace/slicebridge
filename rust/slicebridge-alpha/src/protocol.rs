@@ -13,6 +13,7 @@ fn schema(name: &str) -> Value {
         "profiles.materials" => vec!["material"],
         "material.select" => vec!["material", "preset"],
         "conversion.start" => vec!["output"],
+        "batch.start" => vec!["paths", "output_dir"],
         "slicer.open" => vec!["executable"],
         _ => vec![],
     };
@@ -26,7 +27,9 @@ fn schema(name: &str) -> Value {
         "nozzle":{"type":"string","enum":["0.2","0.4","0.6","0.8"]},
         "material":{"type":"string","enum":["PLA","PETG","ABS","ASA","TPU"]},
         "preset":{"type":"string"},
-        "slot":{"type":"integer","minimum":1,"maximum":64}
+        "slot":{"type":"integer","minimum":1,"maximum":64},
+        "paths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":32},
+        "output_dir":{"type":"string"}
     },"required":required,"additionalProperties":false})
 }
 
