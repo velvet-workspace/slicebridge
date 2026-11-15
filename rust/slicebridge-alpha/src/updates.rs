@@ -185,24 +185,7 @@ pub fn evaluate_releases(
     Ok(reply)
 }
 
-#[cfg(target_os = "macos")]
-fn curl_path() -> PathBuf {
-    PathBuf::from("/usr/bin/curl")
-}
-#[cfg(windows)]
-fn curl_path() -> PathBuf {
-    std::env::var_os("WINDIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
-        .join("System32")
-        .join("curl.exe")
-}
-#[cfg(not(any(target_os = "macos", windows)))]
-fn curl_path() -> PathBuf {
-    PathBuf::from("/usr/bin/curl")
-}
-
-/// Supervise the OS HTTP client and authenticated fallback with a real
+/// Supervise the optional authenticated GitHub CLI fallback with a real
 /// wall-clock deadline and a hard pipe read cap; no child process may block
 /// the caller indefinitely or allocate an unbounded remote JSON payload.
 fn bounded_output(
@@ -275,53 +258,35 @@ fn bounded_output(
     }
 }
 
-/// Source-locked HTTP request. curl is part of supported desktop OSes; arguments
-/// do not invoke a shell. Only the fixed official HTTPS API endpoint is used.
-/// --max-time and --max-filesize bound time and response; no fallback to an
-/// arbitrary URL or download from the JSON payload.
+/// Native Rust TLS transport: no system curl, shell, or secondary runtime.
+/// HTTPS endpoint is hardcoded; rustls validates certificate roots.
+/// A global 12s budget includes headers/body and redirects are disabled to
+/// prevent the API from pointing us to an untrusted third-party hostname.
 fn fetch_public_releases() -> Result<(u16, Vec<u8>), String> {
-    let mut command = Command::new(curl_path());
-    command.args([
-        "--silent",
-        "--show-error",
-        "--max-time",
-        "12",
-        "--max-filesize",
-        "2097152",
-        "--retry",
-        "0",
-        "--proto",
-        "=https",
-        "--proto-redir",
-        "=https",
-        "--header",
-        "Accept: application/vnd.github+json",
-        "--header",
-        "X-GitHub-Api-Version: 2022-11-28",
-        "--user-agent",
-        "SliceBridge/0.4.0-beta.6.dev.3",
-        "--write-out",
-        "\n%{http_code}",
-        "--url",
-        API_URL,
-    ]);
-    let (status, raw) = bounded_output(&mut command, API_MAX_BYTES + 32, Duration::from_secs(13))?;
-    if !status.success() {
-        return Err("GitHub Releases HTTPS request failed or exceeded limits".into());
-    }
-    let split = raw
-        .iter()
-        .rposition(|b| *b == b'\n')
-        .ok_or("GitHub Releases HTTP status missing")?;
-    let body = &raw[..split];
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(12)))
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .build()
+        .new_agent();
+    let mut response = agent
+        .get(API_URL)
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .header("User-Agent", "SliceBridge/0.4.0-beta.6.dev.3")
+        .call()
+        .map_err(|_| "GitHub Releases HTTPS request failed")?;
+    let status = response.status().as_u16();
+    let body = response
+        .body_mut()
+        .with_config()
+        .limit((API_MAX_BYTES + 1) as u64)
+        .read_to_vec()
+        .map_err(|_| "reading GitHub Releases response failed")?;
     if body.len() > API_MAX_BYTES {
         return Err("GitHub response is unexpectedly large".into());
     }
-    let code = std::str::from_utf8(&raw[split + 1..])
-        .map_err(|_| "invalid GitHub HTTP status")?
-        .parse::<u16>()
-        .map_err(|_| "invalid GitHub HTTP status")?;
-    Ok((code, body.to_vec()))
+    Ok((status, body))
 }
 
 /// Optional authenticated fallback for the same hardcoded GitHub endpoint.
