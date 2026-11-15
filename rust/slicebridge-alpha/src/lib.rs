@@ -7,6 +7,9 @@ pub mod my_printers;
 pub mod oem;
 pub mod printer_settings;
 pub mod protocol;
+mod prusa;
+mod prusa_condition;
+mod prusa_ini;
 pub mod updates;
 use serde_json::{json, Value};
 use slicebridge_3mf_probe::{
