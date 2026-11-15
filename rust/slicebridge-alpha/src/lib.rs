@@ -1,6 +1,7 @@
 //! One Rust command surface for the desktop and agent transports.
 //! The proven 3MF implementation remains in slicebridge-3mf-probe.
 pub mod batch;
+pub mod my_printers;
 pub mod oem;
 pub mod protocol;
 use serde_json::{json, Value};
@@ -56,6 +57,18 @@ pub struct Registry {
 
 pub const COMMANDS: &[(&str, &str)] = &[
     ("commands.list", "Discover typed Rust application commands"),
+    (
+        "printers.catalog",
+        "Read exact 603-model offline stable My Printers catalogue",
+    ),
+    (
+        "printers.get",
+        "Read saved My Printers inventory without modifying stable Wails settings",
+    ),
+    (
+        "printers.save",
+        "Validate and save up to 32 printer memberships in isolated GPUI alpha settings",
+    ),
     (
         "projects.list",
         "List recently opened 3MF projects in this session",
@@ -220,6 +233,35 @@ impl Registry {
                 .map(|(name, description)| json!({"name": name, "description": description}))
                 .collect::<Vec<_>>()})),
             "app.status" | "conversion.status" => Ok(self.snapshot()),
+            "printers.catalog" => my_printers::catalog_snapshot(),
+            "printers.get" => my_printers::read(
+                &my_printers::experimental_path()?,
+                &my_printers::available_installed_ids(),
+            ),
+            "printers.save" => {
+                let ids = params
+                    .get("ids")
+                    .and_then(Value::as_array)
+                    .ok_or("missing printer ID list")?
+                    .iter()
+                    .map(|id| {
+                        id.as_str()
+                            .map(str::to_owned)
+                            .ok_or_else(|| "invalid printer ID".to_string())
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let state = self.state.lock().map_err(|err| err.to_string())?;
+                if busy(&state) {
+                    return Err("cannot change saved printers during conversion".into());
+                }
+                // Serialize writes through this shared Registry to avoid lost
+                // updates across GUI, CLI and local attach calls.
+                my_printers::save(
+                    &my_printers::experimental_path()?,
+                    &ids,
+                    &my_printers::available_installed_ids(),
+                )
+            }
             "projects.list" => {
                 let state = self.state.lock().map_err(|e| e.to_string())?;
                 Ok(json!({"paths":state.recent_projects,
