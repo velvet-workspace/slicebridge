@@ -18,6 +18,8 @@ pub(super) fn selected_ready_legacy_rows(
 ) -> Vec<(&'static str, &'static str)> {
     [
         ("u1", "snapmaker-u1", "Snapmaker U1"),
+        ("c5", "flashforge-creator-5", "Flashforge Creator 5"),
+        ("cc2", "elegoo-centauri-carbon-2", "ELEGOO CC2"),
         ("qidi", "qidi-x-plus-5", "QIDI Plus5"),
     ]
     .into_iter()
@@ -719,6 +721,31 @@ mod tests {
             &std::collections::BTreeSet::new()
         )
         .is_empty());
+        // Newly ported built-ins are selectable ONLY when the exact OEM
+        // machine/process/material chain is independently resolved.
+        let all_ready = std::collections::BTreeSet::from([
+            "u1".to_owned(),
+            "c5".to_owned(),
+            "cc2".to_owned(),
+            "qidi".to_owned(),
+        ]);
+        assert_eq!(
+            super::selected_ready_legacy_rows(
+                &[
+                    "snapmaker-u1".to_owned(),
+                    "flashforge-creator-5".to_owned(),
+                    "elegoo-centauri-carbon-2".to_owned(),
+                    "qidi-x-plus-5".to_owned()
+                ],
+                &all_ready
+            ),
+            vec![
+                ("u1", "Snapmaker U1"),
+                ("c5", "Flashforge Creator 5"),
+                ("cc2", "ELEGOO CC2"),
+                ("qidi", "QIDI Plus5")
+            ]
+        );
     }
 
     #[test]

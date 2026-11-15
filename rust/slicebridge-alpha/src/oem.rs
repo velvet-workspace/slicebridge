@@ -1,4 +1,4 @@
-//! Rust-native, read-only resolution of installed Snapmaker/QIDI OEM presets.
+//! Rust-native, read-only resolution of installed U1 / Creator 5 / CC2 / QIDI OEM presets.
 //! Exact vendor leafs and their inheritance supply the conversion engine;
 //! no profile payload is synthesized or written back to slicer installations.
 use serde_json::{json, Map, Value};
@@ -19,7 +19,103 @@ struct Target {
     exe: &'static str,
     slicer: &'static str,
 }
-const TARGETS: [Target; 8] = [
+const TARGETS: [Target; 16] = [
+    Target {
+        id: "c5",
+        nozzle: "0.25",
+        model: "Flashforge Creator 5",
+        name: "Flashforge Creator 5 0.25 nozzle",
+        machine: "Flashforge Creator 5 0.25 nozzle",
+        process: "0.12mm Standard @FF C5 0.25 nozzle",
+        vendor: "Flashforge",
+        app: "Flashforge/Flash Studio Desktop",
+        exe: "flash studio.exe",
+        slicer: "Flash Studio Desktop",
+    },
+    Target {
+        id: "c5",
+        nozzle: "0.4",
+        model: "Flashforge Creator 5",
+        name: "Flashforge Creator 5 0.4 nozzle",
+        machine: "Flashforge Creator 5 0.4 nozzle",
+        process: "0.20mm Standard @FF C5",
+        vendor: "Flashforge",
+        app: "Flashforge/Flash Studio Desktop",
+        exe: "flash studio.exe",
+        slicer: "Flash Studio Desktop",
+    },
+    Target {
+        id: "c5",
+        nozzle: "0.6",
+        model: "Flashforge Creator 5",
+        name: "Flashforge Creator 5 0.6 nozzle",
+        machine: "Flashforge Creator 5 0.6 nozzle",
+        process: "0.30mm Standard @FF C5 0.6 nozzle",
+        vendor: "Flashforge",
+        app: "Flashforge/Flash Studio Desktop",
+        exe: "flash studio.exe",
+        slicer: "Flash Studio Desktop",
+    },
+    Target {
+        id: "c5",
+        nozzle: "0.8",
+        model: "Flashforge Creator 5",
+        name: "Flashforge Creator 5 0.8 nozzle",
+        machine: "Flashforge Creator 5 0.8 nozzle",
+        process: "0.32mm Standard @FF C5 0.8 nozzle",
+        vendor: "Flashforge",
+        app: "Flashforge/Flash Studio Desktop",
+        exe: "flash studio.exe",
+        slicer: "Flash Studio Desktop",
+    },
+    Target {
+        id: "cc2",
+        nozzle: "0.2",
+        model: "Elegoo Centauri Carbon 2",
+        name: "Elegoo Centauri Carbon 2 0.2 nozzle",
+        machine: "Elegoo Centauri Carbon 2 0.2 nozzle",
+        process: "0.10mm Standard @Elegoo CC2 0.2 nozzle",
+        vendor: "Elegoo",
+        app: "ElegooSlicer",
+        exe: "elegoo-slicer.exe",
+        slicer: "ElegooSlicer",
+    },
+    Target {
+        id: "cc2",
+        nozzle: "0.4",
+        model: "Elegoo Centauri Carbon 2",
+        name: "Elegoo Centauri Carbon 2 0.4 nozzle",
+        machine: "Elegoo Centauri Carbon 2 0.4 nozzle",
+        process: "0.20mm Standard @Elegoo CC2 0.4 nozzle",
+        vendor: "Elegoo",
+        app: "ElegooSlicer",
+        exe: "elegoo-slicer.exe",
+        slicer: "ElegooSlicer",
+    },
+    Target {
+        id: "cc2",
+        nozzle: "0.6",
+        model: "Elegoo Centauri Carbon 2",
+        name: "Elegoo Centauri Carbon 2 0.6 nozzle",
+        machine: "Elegoo Centauri Carbon 2 0.6 nozzle",
+        process: "0.30mm Standard @Elegoo CC2 0.6 nozzle",
+        vendor: "Elegoo",
+        app: "ElegooSlicer",
+        exe: "elegoo-slicer.exe",
+        slicer: "ElegooSlicer",
+    },
+    Target {
+        id: "cc2",
+        nozzle: "0.8",
+        model: "Elegoo Centauri Carbon 2",
+        name: "Elegoo Centauri Carbon 2 0.8 nozzle",
+        machine: "Elegoo Centauri Carbon 2 0.8 nozzle",
+        process: "0.40mm Standard @Elegoo CC2 0.8 nozzle",
+        vendor: "Elegoo",
+        app: "ElegooSlicer",
+        exe: "elegoo-slicer.exe",
+        slicer: "ElegooSlicer",
+    },
     Target {
         id: "u1",
         nozzle: "0.2",
@@ -125,7 +221,7 @@ fn spec(target: &str, nozzle: &str) -> Result<Target, String> {
         .find(|item| item.id == target && item.nozzle == nozzle)
         .ok_or_else(|| {
             format!(
-                "only installed U1/QIDI 0.2/0.4/0.6/0.8mm OEM targets are implemented (got {target}/{nozzle})"
+                "unsupported installed OEM target/nozzle {target}/{nozzle}; supported: U1, Creator5, CC2, QIDI with exact physical variants"
             )
         })
 }
@@ -150,6 +246,9 @@ fn locations(item: Target) -> Vec<Location> {
         if bases.is_empty() {
             bases.push(PathBuf::from(r"C:\Program Files"));
         }
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            bases.push(PathBuf::from(local).join("Programs"));
+        }
         for base in bases {
             let app = base.join(item.app);
             result.push(Location {
@@ -159,17 +258,23 @@ fn locations(item: Target) -> Vec<Location> {
         }
     } else if cfg!(target_os = "macos") {
         let applications = [PathBuf::from("/Applications"), dirs_user_applications()];
-        let app = if item.id == "u1" {
-            "Snapmaker Orca.app"
-        } else {
-            "QIDIStudio.app"
+        let apps: &[&str] = match item.id {
+            "u1" => &["Snapmaker Orca.app"],
+            "c5" => &["Flash Studio.app", "Flash Studio Desktop.app"],
+            "cc2" => &["ElegooSlicer.app"],
+            "qidi" => &["QIDIStudio.app", "OrcaSlicer.app"],
+            _ => &[],
         };
+        // Go checks each alternate install name within each trusted base.
+        // These are profile reads only; no launcher/process is started.
         for base in applications {
-            let bundle = base.join(app);
-            result.push(Location {
-                executable: bundle.clone(),
-                root: bundle.join("Contents").join("Resources").join("profiles"),
-            });
+            for app in apps {
+                let bundle = base.join(app);
+                result.push(Location {
+                    executable: bundle.clone(),
+                    root: bundle.join("Contents").join("Resources").join("profiles"),
+                });
+            }
         }
     }
     result
@@ -186,16 +291,37 @@ fn dirs_user_applications() -> PathBuf {
     PathBuf::new()
 }
 
-fn installed(item: Target) -> Result<Location, String> {
-    locations(item)
-        .into_iter()
-        .find(|loc| loc.executable.exists() && loc.root.join(item.vendor).is_dir())
-        .ok_or_else(|| {
-            format!(
-                "installed {} executable and OEM profiles not found",
-                item.slicer
-            )
-        })
+// Go "auto" attempts the next trusted OEM location if an earlier
+// installation is incomplete. Presence of an app is not proof of valid
+// machine/process/PLA inheritance. Never fall back to generated profiles.
+fn resolved_location(
+    item: Target,
+    overrides: &BTreeMap<String, String>,
+) -> Result<(Location, Value), String> {
+    let mut failures = Vec::new();
+    for location in locations(item) {
+        if !location.executable.exists() || !location.root.join(item.vendor).is_dir() {
+            continue;
+        }
+        match load_index(&location.root, item.vendor)
+            .and_then(|index| resolve_with_index(item, &index, &location.root, overrides))
+        {
+            Ok(bundle) => return Ok((location, bundle)),
+            Err(error) => failures.push(error),
+        }
+    }
+    if failures.is_empty() {
+        Err(format!(
+            "installed {} executable and OEM profiles not found",
+            item.slicer
+        ))
+    } else {
+        Err(format!(
+            "no complete installed {} source profile: {}",
+            item.slicer,
+            failures.join("; ")
+        ))
+    }
 }
 
 #[derive(Clone)]
@@ -270,30 +396,41 @@ fn insert_index(index: &mut Index, kind: &str, file: PathBuf) -> Result<(), Stri
 fn load_index(root: &Path, vendor: &str) -> Result<Index, String> {
     let mut index = Index::new();
     for kind in ["machine", "process", "filament"] {
-        let dir = root.join(vendor).join(kind);
-        if !dir.is_dir() {
+        let vendor_dir = root.join(vendor).join(kind);
+        if !vendor_dir.is_dir() {
             return Err(format!("installed OEM {kind} directory absent"));
         }
-        let mut pending = vec![dir];
+        // Go presets.readCatalog includes Flashforge's installed
+        // OrcaFilamentLibrary, which owns inherited Generic @System leaves.
+        // No generated or cross-vendor profile is ever fabricated.
+        let mut directories = vec![vendor_dir];
+        if vendor == "Flashforge" {
+            let library_dir = root.join("OrcaFilamentLibrary").join(kind);
+            if library_dir.is_dir() {
+                directories.push(library_dir);
+            }
+        }
         let mut count = 0;
-        while let Some(folder) = pending.pop() {
-            for entry in fs::read_dir(folder).map_err(|e| e.to_string())? {
-                let entry = entry.map_err(|e| e.to_string())?;
-                let ftype = entry.file_type().map_err(|e| e.to_string())?;
-                // No need to follow symlinked installation children.
-                if ftype.is_symlink() {
-                    continue;
-                }
-                if ftype.is_dir() {
-                    pending.push(entry.path());
-                    continue;
-                }
-                if ftype.is_file() {
-                    count += 1;
-                    if count > 2000 {
-                        return Err("too many installed OEM files".into());
+        for dir in directories {
+            let mut pending = vec![dir];
+            while let Some(folder) = pending.pop() {
+                for entry in fs::read_dir(folder).map_err(|e| e.to_string())? {
+                    let entry = entry.map_err(|e| e.to_string())?;
+                    let ftype = entry.file_type().map_err(|e| e.to_string())?;
+                    if ftype.is_symlink() {
+                        continue;
                     }
-                    insert_index(&mut index, kind, entry.path())?;
+                    if ftype.is_dir() {
+                        pending.push(entry.path());
+                        continue;
+                    }
+                    if ftype.is_file() {
+                        count += 1;
+                        if count > 2000 {
+                            return Err("too many installed OEM files".into());
+                        }
+                        insert_index(&mut index, kind, entry.path())?;
+                    }
                 }
             }
         }
@@ -363,15 +500,19 @@ fn material_type(settings: &Map<String, Value>) -> Option<&str> {
     settings.get("filament_type")?.as_array()?.first()?.as_str()
 }
 fn material_allowed(target: Target, machine: &str, name: &str, raw: &Preset) -> bool {
-    let marker = if target.id == "u1" {
-        "@U1"
-    } else {
-        "@Qidi X-Plus 5"
+    let marker = match target.id {
+        "u1" => "@U1",
+        "c5" => "@FF C5",
+        "cc2" => "@ECC2",
+        "qidi" => "@Qidi X-Plus 5",
+        _ => return false,
     };
     let qualified_leaf = target.id == "u1"
         && target.nozzle == "0.4"
         && (name == "Generic PLA High Speed" || name == "Generic PETG");
-    if !name.contains(marker) && !qualified_leaf {
+    if (!name.contains(marker) && !qualified_leaf)
+        || (target.id == "c5" && name.contains("@FF C5P"))
+    {
         return false;
     }
     for n in ["0.2", "0.25", "0.4", "0.6", "0.8"] {
@@ -415,6 +556,16 @@ fn preferred(target: Target, kind: &str) -> Option<String> {
         ("u1", "PLA") if target.nozzle == "0.4" => Some("Generic PLA High Speed".into()),
         ("u1", "PETG") if target.nozzle == "0.4" => Some("Generic PETG".into()),
         ("u1", type_name) => Some(format!("Generic {type_name} @U1 {} nozzle", target.nozzle)),
+        ("c5", kind @ ("PLA" | "PETG" | "ABS" | "ASA")) => {
+            let suffix = if target.nozzle == "0.25" {
+                " 0.25 nozzle"
+            } else {
+                ""
+            };
+            Some(format!("Flashforge {kind} Basic @FF C5{suffix}"))
+        }
+        ("cc2", "TPU") => Some("Elegoo TPU 95A @ECC2".into()),
+        ("cc2", kind) => Some(format!("Elegoo {kind} @ECC2")),
         ("qidi", type_name) => Some(format!(
             "Generic {type_name} @Qidi X-Plus 5 {} nozzle",
             target.nozzle
@@ -523,25 +674,24 @@ pub fn resolve(
     nozzle: &str,
     overrides: &BTreeMap<String, String>,
 ) -> Result<Value, String> {
-    let s = spec(target, nozzle)?;
-    let loc = installed(s)?;
-    let index = load_index(&loc.root, s.vendor)?;
-    resolve_with_index(s, &index, &loc.root, overrides)
+    let item = spec(target, nozzle)?;
+    let (_, bundle) = resolved_location(item, overrides)?;
+    Ok(bundle)
 }
 pub fn installed_executable(target: &str, nozzle: &str) -> Result<PathBuf, String> {
-    let target = spec(target, nozzle)?;
-    let location = installed(target)?;
+    let item = spec(target, nozzle)?;
+    let (location, _) = resolved_location(item, &BTreeMap::new())?;
     Ok(location.executable)
 }
 
 pub fn choices(target: &str, nozzle: &str, kind: &str) -> Result<Vec<String>, String> {
-    let spec = spec(target, nozzle)?;
+    let item = spec(target, nozzle)?;
     if !["PLA", "PETG", "ABS", "ASA", "TPU"].contains(&kind) {
         return Err("material type unsupported".into());
     }
-    let loc = installed(spec)?;
-    let index = load_index(&loc.root, spec.vendor)?;
-    Ok(material_choices(&index, spec, kind))
+    let (location, _) = resolved_location(item, &BTreeMap::new())?;
+    let index = load_index(&location.root, item.vendor)?;
+    Ok(material_choices(&index, item, kind))
 }
 pub fn discover() -> Value {
     let mut rows = Vec::new();
@@ -560,7 +710,7 @@ pub fn discover() -> Value {
         };
         rows.push(record);
     }
-    json!({"profiles":rows,"source":"read-only installed OEM resources","scope":"u1/qidi 0.2/0.4/0.6/0.8mm"})
+    json!({"profiles":rows,"source":"read-only installed OEM resources","scope":"u1/c5/cc2/qidi exact physical nozzle variants"})
 }
 
 #[cfg(test)]
@@ -578,21 +728,184 @@ mod tests {
         path
     }
     #[test]
-    fn all_eight_nozzle_presets_have_exact_vendor_processes() {
-        assert_eq!(TARGETS.len(), 8);
-        for id in ["u1", "qidi"] {
-            for nozzle in ["0.2", "0.4", "0.6", "0.8"] {
+    fn all_sixteen_nozzle_presets_have_exact_vendor_processes() {
+        assert_eq!(TARGETS.len(), 16);
+        for (id, nozzles) in [
+            ("u1", ["0.2", "0.4", "0.6", "0.8"]),
+            ("c5", ["0.25", "0.4", "0.6", "0.8"]),
+            ("cc2", ["0.2", "0.4", "0.6", "0.8"]),
+            ("qidi", ["0.2", "0.4", "0.6", "0.8"]),
+        ] {
+            for nozzle in nozzles {
                 let target = spec(id, nozzle).unwrap();
                 assert_eq!(target.nozzle, nozzle);
                 assert!(target.machine.contains(nozzle));
-                assert!(target.process.contains(nozzle) || (id == "qidi" && nozzle == "0.4"));
+                assert!(
+                    target.process.contains(nozzle)
+                        || ((id == "qidi" || id == "c5") && nozzle == "0.4")
+                );
                 assert!(preferred(target, "PLA").is_some());
                 assert!(preferred(target, "PETG").is_some());
             }
         }
+        assert_eq!(
+            spec("c5", "0.25").unwrap().machine,
+            "Flashforge Creator 5 0.25 nozzle"
+        );
+        assert_eq!(
+            spec("c5", "0.8").unwrap().process,
+            "0.32mm Standard @FF C5 0.8 nozzle"
+        );
+        assert_eq!(
+            spec("cc2", "0.4").unwrap().model,
+            "Elegoo Centauri Carbon 2"
+        );
+        assert_eq!(
+            preferred(spec("cc2", "0.4").unwrap(), "TPU").unwrap(),
+            "Elegoo TPU 95A @ECC2"
+        );
+        assert!(preferred(spec("c5", "0.4").unwrap(), "TPU").is_none());
         assert!(spec("u1", "0.25").is_err());
+        assert!(spec("c5", "0.2").is_err());
         assert!(spec("other", "0.4").is_err());
     }
+    // Only synthetic OEM JSON lives in the temporary test directory.
+    // The real Flash Studio and ElegooSlicer profiles are read-only.
+    fn make_profile(root: &Path, vendor: &str, kind: &str, file: &str, value: Value) {
+        let dir = root.join(vendor).join(kind);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(file), serde_json::to_vec(&value).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn creator5_resolves_exact_installed_machine_and_inherited_filament_library() {
+        let root = temp_dir();
+        let s = spec("c5", "0.4").unwrap();
+        make_profile(
+            &root,
+            "Flashforge",
+            "machine",
+            &format!("{}.json", s.machine),
+            json!({"name":s.machine, "printer_model":s.model,
+                "nozzle_diameter":["0.4","0.4","0.4","0.4"]}),
+        );
+        make_profile(
+            &root,
+            "Flashforge",
+            "process",
+            &format!("{}.json", s.process),
+            json!({"name":s.process,"layer_height":"0.2",
+                "compatible_printers":[s.machine]}),
+        );
+        make_profile(
+            &root,
+            "OrcaFilamentLibrary",
+            "filament",
+            "Generic PLA @System.json",
+            json!({"name":"Generic PLA @System","filament_type":["PLA"]}),
+        );
+        make_profile(
+            &root,
+            "Flashforge",
+            "filament",
+            "Flashforge PLA Basic @FF C5.json",
+            json!({"name":"Flashforge PLA Basic @FF C5",
+                "inherits":"Generic PLA @System",
+                "compatible_printers":[s.machine]}),
+        );
+        let index = load_index(&root, "Flashforge").unwrap();
+        let bundle = resolve_with_index(s, &index, &root, &BTreeMap::new()).unwrap();
+        assert_eq!(bundle["target"], "c5");
+        assert_eq!(
+            bundle["profile"]["project_settings"]["printer_model"],
+            "Flashforge Creator 5"
+        );
+        assert_eq!(
+            bundle["profile"]["filament_profiles"]["PLA"],
+            "Flashforge PLA Basic @FF C5"
+        );
+        assert_eq!(
+            bundle["material_settings"]["PLA"]["filament_type"],
+            json!(["PLA"])
+        );
+        let spoofed_pro = Preset {
+            file: "untrusted-pro.json".into(),
+            stem: "Flashforge PLA Basic @FF C5P".into(),
+            settings: serde_json::from_value(json!({
+                "compatible_printers":[s.machine],"filament_type":["PLA"]
+            }))
+            .unwrap(),
+        };
+        assert!(!material_allowed(
+            s,
+            s.machine,
+            &spoofed_pro.stem,
+            &spoofed_pro
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cc2_resolves_exact_vendor_filament_and_refuses_wrong_identity() {
+        let root = temp_dir();
+        let s = spec("cc2", "0.4").unwrap();
+        make_profile(
+            &root,
+            "Elegoo",
+            "machine",
+            &format!("{}.json", s.machine),
+            json!({"name":s.machine,"printer_model":s.model,"nozzle_diameter":["0.4"]}),
+        );
+        make_profile(
+            &root,
+            "Elegoo",
+            "process",
+            &format!("{}.json", s.process),
+            json!({"name":s.process,"compatible_printers":[s.machine]}),
+        );
+        make_profile(
+            &root,
+            "Elegoo",
+            "filament",
+            "Elegoo PLA @base.json",
+            json!({"name":"Elegoo PLA @base","filament_type":["PLA"]}),
+        );
+        make_profile(
+            &root,
+            "Elegoo",
+            "filament",
+            "Elegoo PLA @ECC2.json",
+            json!({"name":"Elegoo PLA @ECC2","inherits":"Elegoo PLA @base",
+                "compatible_printers":[s.machine]}),
+        );
+        let index = load_index(&root, "Elegoo").unwrap();
+        let bundle = resolve_with_index(s, &index, &root, &BTreeMap::new()).unwrap();
+        assert_eq!(bundle["target"], "cc2");
+        assert_eq!(
+            bundle["profile"]["filament_profiles"]["PLA"],
+            "Elegoo PLA @ECC2"
+        );
+        assert_eq!(
+            bundle["profile"]["project_settings"]["printer_settings_id"],
+            s.machine
+        );
+        make_profile(
+            &root,
+            "Elegoo",
+            "machine",
+            &format!("{}.json", s.machine),
+            json!({"name":s.machine,"printer_model":"DIFFERENT MODEL",
+                "nozzle_diameter":["0.4"]}),
+        );
+        let broken_index = load_index(&root, "Elegoo").unwrap();
+        assert!(
+            resolve_with_index(s, &broken_index, &root, &BTreeMap::new())
+                .unwrap_err()
+                .contains("identity")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn vendor_04_petg_leaf_is_not_reused_for_other_nozzles() {
         let settings: Map<String, Value> = serde_json::from_value(json!({
