@@ -953,8 +953,8 @@ pub(super) fn render_window(
     root
 }
 
-// Mirrors index.html #aboutDialog and about.js: same copy, sections and order, with
-// developer mode shown read-only and links disabled until those native paths are ported.
+// Mirrors index.html #aboutDialog and about.js: same copy, sections and order. Developer mode
+// toggles natively, and the source/releases links open the pinned GitHub URLs on click.
 fn render_about(view: &SliceBridgeWindow, cx: &mut Context<SliceBridgeWindow>) -> impl IntoElement {
     let locale = view.locale;
     let rtl = locale.rtl();
@@ -1161,16 +1161,16 @@ fn render_about(view: &SliceBridgeWindow, cx: &mut Context<SliceBridgeWindow>) -
         .gap_2()
         .child(
             Button::new("about-source")
-                .disabled(true)
-                .label(label(locale, "aboutSource")),
+                .label(label(locale, "aboutSource"))
+                .on_click(cx.listener(|this, _, _, cx| this.open_about_link("source", cx))),
         )
         .child(
             Button::new("about-releases")
-                .disabled(true)
-                .label(label(locale, "aboutReleases")),
+                .label(label(locale, "aboutReleases"))
+                .on_click(cx.listener(|this, _, _, cx| this.open_about_link("releases", cx))),
         );
 
-    let body = div()
+    let mut body = div()
         .id("about-scroll")
         .flex_1()
         .min_h(px(0.))
@@ -1183,19 +1183,21 @@ fn render_about(view: &SliceBridgeWindow, cx: &mut Context<SliceBridgeWindow>) -
         .child(version_card)
         .child(developer_card)
         .child(license_card)
-        .child(links)
-        .child(
+        .child(links);
+    if view.about_link_error {
+        body = body.child(
             div()
                 .text_xs()
-                .text_color(rgb(MUTED))
-                .child(label(locale, "aboutLinksUnavailable")),
-        )
-        .child(
-            div()
-                .text_xs()
-                .text_color(rgb(MUTED))
-                .child(label(locale, "aboutOffline")),
+                .text_color(rgb(RED))
+                .child(label(locale, "aboutLinkError")),
         );
+    }
+    let body = body.child(
+        div()
+            .text_xs()
+            .text_color(rgb(MUTED))
+            .child(label(locale, "aboutOffline")),
+    );
 
     let footer = line(rtl)
         .justify_end()

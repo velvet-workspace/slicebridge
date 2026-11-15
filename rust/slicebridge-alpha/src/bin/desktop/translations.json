@@ -134,7 +134,7 @@
     "aboutHideDocument": "הסתר מסמך",
     "aboutSource": "קוד המקור",
     "aboutReleases": "גרסאות להורדה",
-    "aboutLinksUnavailable": "פתיחת קישורים עדיין אינה זמינה בגרסה הזו.",
+    "aboutLinkError": "לא ניתן לפתוח את הקישור.",
     "aboutOffline": "פרטי הרישוי והקרדיטים זמינים גם ללא חיבור לאינטרנט. בדיקת עדכונים וקישורים ל־GitHub דורשים חיבור.",
     "aboutClose": "סגירה"
   },
@@ -273,7 +273,7 @@
     "aboutHideDocument": "Hide document",
     "aboutSource": "View source",
     "aboutReleases": "Download builds",
-    "aboutLinksUnavailable": "Opening links is not available in this build yet.",
+    "aboutLinkError": "Could not open the link.",
     "aboutOffline": "License and credit information works offline. Update checks and GitHub links need internet.",
     "aboutClose": "Close"
   }

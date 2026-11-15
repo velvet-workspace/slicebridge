@@ -132,6 +132,7 @@ struct SliceBridgeWindow {
     about_open: bool,
     about_developer_mode: bool,
     about_developer_error: bool,
+    about_link_error: bool,
     about_document: Option<AboutDocument>,
 }
 
@@ -163,6 +164,34 @@ impl AboutDocument {
 // Mirrors about.js: developer mode reads as On only for an explicit native `true`; anything else is Off.
 fn developer_mode_enabled(reply: &Value) -> bool {
     reply["ok"] == true && reply["data"]["developerMode"] == true
+}
+
+// Mirrors native/about.go aboutPageURL: the only About URLs, fixed in code. The GPUI alpha build
+// has no buildCommit stamp, so "source" is the base repository, never a /tree/ link.
+fn about_page_url(kind: &str) -> Option<&'static str> {
+    match kind {
+        "source" => Some("https://github.com/nocturney/slicebridge"),
+        "releases" => Some("https://github.com/nocturney/slicebridge/releases"),
+        _ => None,
+    }
+}
+
+// Shell-free launcher for one allowlisted URL, passed as a single argument. Callers pass only
+// values returned by `about_page_url`.
+fn about_open_command(url: &'static str) -> Command {
+    if cfg!(windows) {
+        let mut command = Command::new("rundll32.exe");
+        command.arg("url.dll,FileProtocolHandler").arg(url);
+        command
+    } else if cfg!(target_os = "macos") {
+        let mut command = Command::new("/usr/bin/open");
+        command.arg(url);
+        command
+    } else {
+        let mut command = Command::new("xdg-open");
+        command.arg(url);
+        command
+    }
 }
 
 impl SliceBridgeWindow {
@@ -246,6 +275,7 @@ impl SliceBridgeWindow {
             about_open: false,
             about_developer_mode: false,
             about_developer_error: false,
+            about_link_error: false,
             about_document: None,
         }
     }
@@ -319,8 +349,33 @@ impl SliceBridgeWindow {
         let reply = self.commands.execute("settings.get", &json!({}));
         self.about_developer_mode = developer_mode_enabled(&reply);
         self.about_developer_error = reply["ok"] != true;
+        self.about_link_error = false;
         self.about_document = None;
         self.about_open = true;
+        cx.notify();
+    }
+
+    // Launch only on a real click. The launcher's exit status is awaited off the UI thread, so a
+    // spawn failure or a non-zero launcher exit shows the link error instead of a false success.
+    fn open_about_link(&mut self, kind: &'static str, cx: &mut Context<Self>) {
+        let Some(url) = about_page_url(kind) else {
+            self.about_link_error = true;
+            cx.notify();
+            return;
+        };
+        self.about_link_error = false;
+        let mut command = about_open_command(url);
+        cx.spawn(async move |this, cx| {
+            let opened = cx
+                .background_executor()
+                .spawn(async move { command.status().is_ok_and(|status| status.success()) })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                view.about_link_error = !opened;
+                cx.notify();
+            });
+        })
+        .detach();
         cx.notify();
     }
 
@@ -342,6 +397,7 @@ impl SliceBridgeWindow {
 
     fn close_about(&mut self, cx: &mut Context<Self>) {
         self.about_open = false;
+        self.about_link_error = false;
         self.about_document = None;
         cx.notify();
     }
@@ -816,7 +872,10 @@ mod layout_helper_tests {
 #[cfg(test)]
 mod about_tests {
     use super::desktop_i18n::Locale;
-    use super::{developer_mode_enabled, AboutDocument, ABOUT_INSTALLED_VERSION};
+    use super::{
+        about_open_command, about_page_url, developer_mode_enabled, AboutDocument,
+        ABOUT_INSTALLED_VERSION,
+    };
     use serde_json::json;
 
     const ABOUT_KEYS: &[&str] = &[
@@ -841,7 +900,7 @@ mod about_tests {
         "aboutHideDocument",
         "aboutSource",
         "aboutReleases",
-        "aboutLinksUnavailable",
+        "aboutLinkError",
         "aboutOffline",
         "aboutClose",
     ];
@@ -877,6 +936,56 @@ mod about_tests {
             .contains("GNU GENERAL PUBLIC LICENSE"));
         assert!(AboutDocument::Credits.text().contains("bl2std"));
         assert!(AboutDocument::Credits.text().contains("Wails"));
+    }
+
+    #[test]
+    fn about_links_resolve_only_to_the_pinned_repository_endpoints() {
+        assert_eq!(
+            about_page_url("source"),
+            Some("https://github.com/nocturney/slicebridge")
+        );
+        assert_eq!(
+            about_page_url("releases"),
+            Some("https://github.com/nocturney/slicebridge/releases")
+        );
+    }
+
+    #[test]
+    fn about_links_reject_any_kind_outside_the_allowlist() {
+        for invalid in [
+            "",
+            "Source",
+            "RELEASES",
+            "release",
+            " source",
+            "source/../releases",
+            "https://github.com/nocturney/slicebridge",
+            "file:///etc/passwd",
+            "--help",
+        ] {
+            assert_eq!(about_page_url(invalid), None, "{invalid:?}");
+        }
+    }
+
+    #[test]
+    fn about_open_command_passes_only_the_pinned_url_as_one_argument() {
+        let url = "https://github.com/nocturney/slicebridge/releases";
+        let command = about_open_command(url);
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let program = command.get_program().to_string_lossy().into_owned();
+        if cfg!(windows) {
+            assert_eq!(program, "rundll32.exe");
+            assert_eq!(args, ["url.dll,FileProtocolHandler", url]);
+        } else if cfg!(target_os = "macos") {
+            assert_eq!(program, "/usr/bin/open");
+            assert_eq!(args, [url]);
+        } else {
+            assert_eq!(program, "xdg-open");
+            assert_eq!(args, [url]);
+        }
     }
 
     #[test]
