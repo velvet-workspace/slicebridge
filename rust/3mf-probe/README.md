@@ -39,9 +39,11 @@ copying those changes into Rust would lose source color fidelity.
 Treat the QIDI X-Plus 5 five-virtual-material GUI import as **not fully
 accepted**: verify material name, color, temperature and external-spool/tool
 assignment in QIDIStudio before slicing. It has **one physical tool** in the
-verified profile, not five feeders. The Rust-native app now emits a targeted
-warning for this observed pattern; the installed Go app and source 3MF files
-were not changed. No slicing, G-code or physical print was performed.
+verified profile, not five feeders. The Rust-native app now emits a targeted warning **and exposes a visible,
+localized (Hebrew/English) material review notice in the Wails conversion
+result** for this observed pattern. Other targets are unaffected; the
+installed Go app and source 3MF files were not changed. No slicing, G-code
+or physical print was performed.
 
 ### Historical implementation notes
 

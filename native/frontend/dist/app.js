@@ -66,6 +66,7 @@ const translations = {
     updateError:'בדיקת עדכונים נכשלה',openRelease:'פתיחת Release',
     openReleases:'צפייה בגרסאות',openPreviewBuilds:'צפייה בבניות Beta',
     rustNativeExperimental:'Rust Native · ניסיוני',cancelRustConversion:'בטל Rust',
+    qidiPETGImportReview:'QIDIStudio עשוי לטעון את חומר PETG בערוץ 5 כ־PLA Rapido. יש לבחור Generic PETG לערוץ 5 ולבדוק שוב את הצבע, הטמפרטורה ושיוך סליל החומר לפני ביצוע Slice. בחירת הפרופיל עשויה לשנות את צבע הערוץ; חמישה ערוצים וירטואליים אינם חמישה ראשי הדפסה.',
     prusaProjectName:'פרויקט PrusaSlicer',prusaProjectSummary:'כללי · בחירת מדפסת ב־PrusaSlicer',
     prusaGenericReview:'פרויקט PrusaSlicer כללי: יש לבחור את המדפסת המדויקת ב־PrusaSlicer ולבדוק את כל ערוצי החומר לפני חיתוך והדפסה.'
   },
@@ -132,6 +133,7 @@ const translations = {
     updateError:'Update check failed',openRelease:'Open release',
     openReleases:'View releases',openPreviewBuilds:'View beta builds',
     rustNativeExperimental:'Rust Native · experimental',cancelRustConversion:'Cancel Rust',
+    qidiPETGImportReview:'QIDIStudio may import the fifth PETG filament as PLA Rapido. Select Generic PETG for slot 5, then verify its color, temperature and physical spool assignment before slicing. Changing the preset may change its displayed color. Five virtual material slots do not mean five physical toolheads.',
     prusaProjectName:'PrusaSlicer project',prusaProjectSummary:'Generic · choose printer in PrusaSlicer',
     prusaGenericReview:'Generic PrusaSlicer project: choose the exact printer in PrusaSlicer and review every material slot before slicing or printing.'
   }
@@ -551,6 +553,10 @@ function resultLine(parent,result,source){
     result.ok?t('summarySuccess'):t('summaryFailure'));
   top.append(content,status);row.append(top);
   if(result.ok){
+    const report=result.report||{};
+    if(report.qidi_fifth_petg_preset_review_required){
+      row.append(node('div','warning-line material-mapping-warning',t('qidiPETGImportReview')));
+    }
     const actions=node('div','result-actions');
     actions.append(btn(t('openSlicer')+' ↗','open-slicer',async ()=>{
       if(busy)return;
@@ -560,7 +566,6 @@ function resultLine(parent,result,source){
     const details=node('details','report-details');
     const heading=node('summary','',t('details'));
     const grid=node('div','detail-grid');
-    const report=result.report||{};
     addMetric(grid,t('source')+' '+t('nozzle'),(source.nozzle||'?')+' mm');
     addMetric(grid,t('target')+' '+t('nozzle'),(report.target_nozzle||'?')+' mm');
     addMetric(grid,t('materialSlots'),(report.source_filament_slots??(source.filaments||[]).length)+' → '+(report.target_filament_slots||'?'));
