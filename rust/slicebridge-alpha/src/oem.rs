@@ -193,11 +193,11 @@ fn spec(target: &str, nozzle: &str) -> Result<Target, String> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Location {
-    id: &'static str,
-    name: &'static str,
-    root: PathBuf,
-    executable: PathBuf,
+pub(crate) struct Location {
+    pub(crate) id: &'static str,
+    pub(crate) name: &'static str,
+    pub(crate) root: PathBuf,
+    pub(crate) executable: PathBuf,
 }
 
 type AppInstall = (&'static str, &'static str, &'static str, &'static str);
@@ -355,6 +355,11 @@ fn candidate_executable(location: &Location) -> Option<PathBuf> {
     None
 }
 
+// Dynamic Orca-family machines must not duplicate a built-in engine's model.
+pub(crate) fn is_builtin_model(model: &str) -> bool {
+    TARGETS.iter().any(|item| item.model == model)
+}
+
 // Go "auto" attempts the next trusted OEM location if an earlier
 // installation is incomplete. Presence of an app is not proof of valid
 // machine/process/PLA inheritance. Never fall back to generated profiles.
@@ -424,12 +429,12 @@ fn resolve_from_locations(
 }
 
 #[derive(Clone)]
-struct Preset {
-    file: PathBuf,
-    stem: String,
-    settings: Map<String, Value>,
+pub(crate) struct Preset {
+    pub(crate) file: PathBuf,
+    pub(crate) stem: String,
+    pub(crate) settings: Map<String, Value>,
 }
-type Index = BTreeMap<String, Vec<Preset>>;
+pub(crate) type Index = BTreeMap<String, Vec<Preset>>;
 const OMIT: [&str; 12] = [
     "type",
     "name",
@@ -539,7 +544,13 @@ fn load_index(root: &Path, vendor: &str) -> Result<Index, String> {
     }
     Ok(index)
 }
-fn raw_preset<'a>(index: &'a Index, kind: &str, name: &str) -> Result<&'a Preset, String> {
+// Shared with the dynamic Orca-family resolver (orca_profiles.rs). Selects the
+// file whose stem equals `name`, else the first entry in index order.
+pub(crate) fn raw_preset<'a>(
+    index: &'a Index,
+    kind: &str,
+    name: &str,
+) -> Result<&'a Preset, String> {
     let list = index
         .get(&format!("{kind}:{name}"))
         .ok_or_else(|| format!("installed {kind} preset {name:?} missing"))?;
@@ -548,7 +559,7 @@ fn raw_preset<'a>(index: &'a Index, kind: &str, name: &str) -> Result<&'a Preset
         .find(|entry| entry.stem == name)
         .unwrap_or(&list[0]))
 }
-fn flatten(index: &Index, kind: &str, name: &str) -> Result<Map<String, Value>, String> {
+pub(crate) fn flatten(index: &Index, kind: &str, name: &str) -> Result<Map<String, Value>, String> {
     flatten_step(index, kind, name, &mut BTreeSet::new())
 }
 fn flatten_step(

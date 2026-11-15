@@ -5,6 +5,7 @@ pub mod browser_setup;
 pub mod makerworld;
 pub mod my_printers;
 pub mod oem;
+mod orca_profiles;
 pub mod printer_settings;
 pub mod protocol;
 mod prusa;
