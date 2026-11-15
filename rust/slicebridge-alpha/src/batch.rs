@@ -146,6 +146,18 @@ fn next_original_output_with<F>(
 where
     F: FnMut(&Path) -> Result<bool, String>,
 {
+    for attempt in 1..=100 {
+        let candidate = original_output_name(source, target, attempt)?;
+        if reserved.contains(&output_key(&candidate)) || exists(&candidate)? {
+            continue;
+        }
+        return Ok(candidate);
+    }
+    Err("OUTPUT_COLLISIONS: Too many same-name outputs".into())
+}
+
+// Exact Go native/batch.go filename template, including the 1..=100 limit.
+fn original_output_name(source: &Path, target: &str, attempt: usize) -> Result<PathBuf, String> {
     let prefix = original_prefix(target)?;
     let name = source
         .file_name()
@@ -160,19 +172,70 @@ where
         .and_then(|part| part.to_str())
         .ok_or("source extension is not UTF-8")?;
     let directory = source.parent().ok_or("source has no parent directory")?;
+    let filename = if attempt == 1 {
+        format!("{prefix}-{name}")
+    } else {
+        format!("{prefix}-{stem}-{attempt}.{extension}")
+    };
+    Ok(directory.join(filename))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum OutputAttemptError {
+    // A different process created the candidate after the existence check.
+    // This is the ONLY retryable conversion failure in original Go.
+    Exists,
+    Other(String),
+}
+
+// Read-only-testable Go writeConversion retry logic. The callback may be a
+// mocked collision/receipt in tests; the real conversion call lives solely in
+// execute_prepared, not in the tests.
+fn write_first_available_with<F, E>(
+    source: &Path,
+    target: &str,
+    mut exists: E,
+    mut convert: F,
+) -> Result<(PathBuf, Value), String>
+where
+    E: FnMut(&Path) -> Result<bool, String>,
+    F: FnMut(&Path) -> Result<Value, OutputAttemptError>,
+{
     for attempt in 1..=100 {
-        let filename = if attempt == 1 {
-            format!("{prefix}-{name}")
-        } else {
-            format!("{prefix}-{stem}-{attempt}.{extension}")
-        };
-        let candidate = directory.join(filename);
-        if reserved.contains(&output_key(&candidate)) || exists(&candidate)? {
+        let candidate = original_output_name(source, target, attempt)?;
+        if exists(&candidate)? {
             continue;
         }
-        return Ok(candidate);
+        match convert(&candidate) {
+            Ok(receipt) => return Ok((candidate, receipt)),
+            Err(OutputAttemptError::Exists) => continue,
+            Err(OutputAttemptError::Other(error)) => return Err(error),
+        }
     }
     Err("OUTPUT_COLLISIONS: Too many same-name outputs".into())
+}
+
+// The Rust worker carries string errors in a JSON envelope. Match only the
+// known no-overwrite failures AND confirm that the output now exists; unrelated
+// worker/permissions/material errors must not become filename retries.
+fn is_worker_output_exists(receipt: &Value, candidate_exists: bool) -> bool {
+    let Some(error) = receipt["engine"]["error"].as_str() else {
+        return false;
+    };
+    let atomic_publish_collision = error
+        .strip_prefix("destination not created (no overwrite): ")
+        .is_some_and(|detail| {
+            let detail = detail.to_ascii_lowercase();
+            detail.contains("file exists")
+                || detail.contains("already exists")
+                || detail.contains("os error 17")
+                || detail.contains("os error 80")
+                || detail.contains("os error 183")
+        });
+    candidate_exists
+        && (error == "destination already exists; refusing overwrite"
+            || error == "destination already exists; refusing to overwrite"
+            || atomic_publish_collision)
 }
 
 fn output_exists(path: &Path) -> Result<bool, String> {
@@ -398,6 +461,9 @@ fn update(shared: &Arc<Mutex<Session>>, index: usize, phase: &str, detail: Optio
             };
             batch["items"][index]["phase"] = json!(phase);
             if let Some(detail) = detail {
+                if phase == "completed" && detail["output"].as_str().is_some() {
+                    batch["items"][index]["output"] = detail["output"].clone();
+                }
                 batch["items"][index]["receipt"] = detail;
             }
             if phase == "completed" || phase == "failed" {
@@ -480,48 +546,82 @@ fn execute_prepared(
         let mut session = worker.state.lock().map_err(|e| e.to_string())?;
         session.bundle = Some(bundle.as_ref().clone());
     }
-    let start = worker.execute(
-        "conversion.start",
-        &json!({"output":item.output,"engine":engine}),
-    );
-    if start["ok"] != true {
-        return Err(format!("worker failed to start: {}", start["error"]));
-    }
-    loop {
+    let target = bundle["target"]
+        .as_str()
+        .ok_or("resolved OEM is missing its printer target")?;
+    // Go repeats the name lookup when a second writer wins the race. Our
+    // worker still owns atomic, no-overwrite publication of the 3MF.
+    let (_, receipt) = write_first_available_with(&item.source, target, output_exists, |output| {
         if cancel.load(Ordering::SeqCst) {
-            worker.execute("conversion.cancel", &json!({}));
+            return Err(OutputAttemptError::Other(
+                "batch cancelled before worker start".into(),
+            ));
         }
-        let status = worker.snapshot();
-        match status["phase"].as_str().unwrap_or("unknown") {
-            "running" => thread::sleep(Duration::from_millis(80)),
-            "completed" => {
-                let converted = status["output"]
-                    .as_str()
-                    .ok_or("conversion completed without output file")?;
-                if converted != item.output.to_string_lossy() {
-                    return Err("batch worker output path differs from planned path".into());
-                }
-                if !item.output.is_file() {
-                    return Err("batch worker output file missing".into());
-                }
-                return Ok(json!({
-                    "validation": validation,
-                    "source_nozzle":ready.source_nozzle,
-                    "source_nozzle_assumed":ready.source_nozzle_assumed,
-                    "target_nozzle":item.nozzle,
-                    "conversion":status["result"],
-                    "bytes":fs::metadata(&item.output).map_err(|e|e.to_string())?.len()
-                }));
+        let start = worker.execute(
+            "conversion.start",
+            &json!({"output":output,"engine":engine}),
+        );
+        if start["ok"] != true {
+            let error = start["error"].as_str().unwrap_or("unknown");
+            if error == "destination exists; will not overwrite" && output.exists() {
+                return Err(OutputAttemptError::Exists);
             }
-            "failed" | "cancelled" => {
-                return Err(format!(
-                    "conversion {}: {}",
-                    status["phase"], status["result"]
-                ));
-            }
-            phase => return Err(format!("unexpected conversion phase: {phase}")),
+            return Err(OutputAttemptError::Other(format!(
+                "worker failed to start: {error}"
+            )));
         }
-    }
+        loop {
+            if cancel.load(Ordering::SeqCst) {
+                worker.execute("conversion.cancel", &json!({}));
+            }
+            let status = worker.snapshot();
+            match status["phase"].as_str().unwrap_or("unknown") {
+                "running" => thread::sleep(Duration::from_millis(80)),
+                "completed" => {
+                    let converted = status["output"].as_str().ok_or_else(|| {
+                        OutputAttemptError::Other("conversion completed without output file".into())
+                    })?;
+                    if converted != output.to_string_lossy() {
+                        return Err(OutputAttemptError::Other(
+                            "batch worker output path differs from planned path".into(),
+                        ));
+                    }
+                    if !output.is_file() {
+                        return Err(OutputAttemptError::Other(
+                            "batch worker output file missing".into(),
+                        ));
+                    }
+                    let size = fs::metadata(output)
+                        .map_err(|e| OutputAttemptError::Other(e.to_string()))?
+                        .len();
+                    return Ok(json!({
+                        "validation": validation,
+                        "source_nozzle":ready.source_nozzle,
+                        "source_nozzle_assumed":ready.source_nozzle_assumed,
+                        "target_nozzle":item.nozzle,
+                        "conversion":status["result"],
+                        "output":output,
+                        "bytes":size
+                    }));
+                }
+                "failed" if is_worker_output_exists(&status["result"], output.exists()) => {
+                    return Err(OutputAttemptError::Exists);
+                }
+                "failed" | "cancelled" => {
+                    return Err(OutputAttemptError::Other(format!(
+                        "conversion {}: {}",
+                        status["phase"], status["result"]
+                    )));
+                }
+                phase => {
+                    return Err(OutputAttemptError::Other(format!(
+                        "unexpected conversion phase: {phase}"
+                    )))
+                }
+            }
+        }
+    })?;
+    Ok(receipt)
 }
 
 // The injectable executor lets QA prove mixed failure/success progress without
@@ -618,6 +718,10 @@ fn mark_multi_target(
         if let Some(batch) = session.batch.as_mut() {
             let target = batch["items"][file_index]["targets"][target_index]["target"].clone();
             batch["items"][file_index]["targets"][target_index]["phase"] = json!(phase);
+            if phase == "completed" && receipt["output"].as_str().is_some() {
+                batch["items"][file_index]["targets"][target_index]["output"] =
+                    receipt["output"].clone();
+            }
             batch["items"][file_index]["targets"][target_index]["receipt"] = receipt.clone();
             if phase == "completed" || phase == "failed" {
                 let counter = if phase == "completed" {
@@ -1552,6 +1656,208 @@ mod tests {
                     .is_some_and(|error| error.contains("unavailable"))));
         assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn original_output_name_follows_main_for_all_builtin_printers() {
+        let src = Path::new("/read-only/models/complex.name.3MF");
+        for (target, prefix) in [
+            ("u1", "U1"),
+            ("c5", "Creator5"),
+            ("cc2", "CentauriCarbon2"),
+            ("qidi", "XPlus5"),
+        ] {
+            assert_eq!(
+                original_output_name(src, target, 1).unwrap(),
+                Path::new("/read-only/models").join(format!("{prefix}-complex.name.3MF"))
+            );
+            assert_eq!(
+                original_output_name(src, target, 2).unwrap(),
+                Path::new("/read-only/models").join(format!("{prefix}-complex.name-2.3MF"))
+            );
+            assert_eq!(
+                original_output_name(src, target, 100).unwrap(),
+                Path::new("/read-only/models").join(format!("{prefix}-complex.name-100.3MF"))
+            );
+        }
+        assert!(original_output_name(src, "not-ported", 1).is_err());
+    }
+
+    #[test]
+    fn output_name_retries_only_actual_collision_even_after_preflight() {
+        let src = Path::new("/read-only/design.3mf");
+        // Initial existence probe says 'free'; competing writer takes it
+        // between the probe and converter. The fake converter writes nothing.
+        let mut invoked = Vec::new();
+        let (out, data) = write_first_available_with(
+            src,
+            "qidi",
+            |_| Ok(false),
+            |path| {
+                invoked.push(path.to_path_buf());
+                if invoked.len() == 1 {
+                    Err(OutputAttemptError::Exists)
+                } else {
+                    Ok(json!({"mock":true, "output":path}))
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            invoked,
+            [
+                PathBuf::from("/read-only/XPlus5-design.3mf"),
+                PathBuf::from("/read-only/XPlus5-design-2.3mf"),
+            ]
+        );
+        assert_eq!(out, invoked[1]);
+        assert_eq!(data["output"], out.to_string_lossy().as_ref());
+
+        // The first candidate is already present; a race takes the second.
+        let mut calls = Vec::new();
+        let (out, _) = write_first_available_with(
+            src,
+            "u1",
+            |candidate| Ok(candidate.file_name().unwrap() == "U1-design.3mf"),
+            |candidate| {
+                calls.push(candidate.to_path_buf());
+                if calls.len() == 1 {
+                    Err(OutputAttemptError::Exists)
+                } else {
+                    Ok(json!({"mock":true}))
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            calls,
+            [
+                PathBuf::from("/read-only/U1-design-2.3mf"),
+                PathBuf::from("/read-only/U1-design-3.3mf"),
+            ]
+        );
+        assert_eq!(out, calls[1]);
+    }
+
+    #[test]
+    fn collision_exhaustion_and_noncollision_errors_do_not_start_more_work() {
+        let source = Path::new("/read-only/fixture.3mf");
+        let mut retries = 0;
+        let err = write_first_available_with(
+            source,
+            "u1",
+            |_| Ok(false),
+            |_| {
+                retries += 1;
+                Err(OutputAttemptError::Exists)
+            },
+        )
+        .unwrap_err();
+        assert_eq!(retries, 100);
+        assert_eq!(err, "OUTPUT_COLLISIONS: Too many same-name outputs");
+
+        let mut calls = 0;
+        let err = write_first_available_with(
+            source,
+            "u1",
+            |_| Ok(false),
+            |_| {
+                calls += 1;
+                Err(OutputAttemptError::Other(
+                    "PROFILE_INVALID: bad material".into(),
+                ))
+            },
+        )
+        .unwrap_err();
+        assert_eq!(calls, 1);
+        assert_eq!(err, "PROFILE_INVALID: bad material");
+
+        let mut attempts = 0;
+        let err = write_first_available_with(
+            source,
+            "u1",
+            |_| Err("OUTPUT_INVALID: access denied".into()),
+            |_| {
+                attempts += 1;
+                Ok(json!({"mock":true}))
+            },
+        )
+        .unwrap_err();
+        assert_eq!(attempts, 0);
+        assert_eq!(err, "OUTPUT_INVALID: access denied");
+    }
+
+    #[test]
+    fn rust_worker_collision_recognition_requires_known_error_and_existing_path() {
+        let cases = [
+            "destination already exists; refusing overwrite",
+            "destination already exists; refusing to overwrite",
+            "destination not created (no overwrite): File exists (os error 17)",
+        ];
+        for error in cases {
+            let receipt = json!({"engine":{"ok":false,"error":error}});
+            assert!(is_worker_output_exists(&receipt, true));
+            assert!(!is_worker_output_exists(&receipt, false));
+        }
+        assert!(!is_worker_output_exists(
+            &json!({"engine":{"error":"permission denied"}}),
+            true
+        ));
+        assert!(!is_worker_output_exists(
+            &json!({"engine":{"error":"destination not created (no overwrite): Permission denied (os error 13)"}}),
+            true
+        ));
+        assert!(!is_worker_output_exists(
+            &json!({"engine":{"error":"failed to open source"}}),
+            true
+        ));
+        assert!(!is_worker_output_exists(
+            &json!({"error":"destination already exists; refusing overwrite"}),
+            true
+        ));
+    }
+
+    #[test]
+    fn batch_receipt_uses_actual_chosen_output_after_late_name_collision() {
+        let shared = Arc::new(Mutex::new(Session::default()));
+        shared.lock().unwrap().batch = Some(json!({
+            "phase":"running", "total":1, "completed":0, "successes":0,
+            "failures":0, "items":[{"phase":"queued", "output":"old-path.3mf", "receipt":null}]
+        }));
+        update(
+            &shared,
+            0,
+            "completed",
+            Some(json!({
+                "output":"/read-only/U1-new-path-2.3mf","mock":true
+            })),
+        );
+        let state = shared.lock().unwrap();
+        assert_eq!(
+            state.batch.as_ref().unwrap()["items"][0]["output"],
+            "/read-only/U1-new-path-2.3mf"
+        );
+        drop(state);
+        let shared = Arc::new(Mutex::new(Session::default()));
+        shared.lock().unwrap().batch = Some(json!({
+            "phase":"running", "successes":0,"failures":0,
+            "items":[{"targets":[{"target":"u1","phase":"queued",
+                "output":"old-path.3mf","receipt":null}],"results":[],"failures":[]}]
+        }));
+        mark_multi_target(
+            &shared,
+            0,
+            0,
+            "completed",
+            json!({
+                "output":"/read-only/U1-new-path-2.3mf","mock":true
+            }),
+        );
+        let state = shared.lock().unwrap();
+        assert_eq!(
+            state.batch.as_ref().unwrap()["items"][0]["targets"][0]["output"],
+            "/read-only/U1-new-path-2.3mf"
+        );
     }
 
     #[test]
