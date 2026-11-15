@@ -19,12 +19,24 @@ struct Target {
     exe: &'static str,
     slicer: &'static str,
 }
-const TARGETS: [Target; 2] = [
+const TARGETS: [Target; 8] = [
     Target {
         id: "u1",
+        nozzle: "0.2",
+        model: "Snapmaker U1",
+        name: "Snapmaker U1 (0.2 nozzle)",
+        machine: "Snapmaker U1 (0.2 nozzle)",
+        process: "0.12mm Standard @Snapmaker U1 (0.2 nozzle)",
+        vendor: "Snapmaker",
+        app: "Snapmaker_Orca",
+        exe: "snapmaker-orca.exe",
+        slicer: "Snapmaker Orca",
+    },
+    Target {
+        id: "u1",
+        nozzle: "0.4",
         model: "Snapmaker U1",
         name: "Snapmaker U1 (0.4 nozzle)",
-        nozzle: "0.4",
         machine: "Snapmaker U1 (0.4 nozzle)",
         process: "0.20mm Standard @Snapmaker U1 (0.4 nozzle)",
         vendor: "Snapmaker",
@@ -33,12 +45,72 @@ const TARGETS: [Target; 2] = [
         slicer: "Snapmaker Orca",
     },
     Target {
+        id: "u1",
+        nozzle: "0.6",
+        model: "Snapmaker U1",
+        name: "Snapmaker U1 (0.6 nozzle)",
+        machine: "Snapmaker U1 (0.6 nozzle)",
+        process: "0.30mm Standard @Snapmaker U1 (0.6 nozzle)",
+        vendor: "Snapmaker",
+        app: "Snapmaker_Orca",
+        exe: "snapmaker-orca.exe",
+        slicer: "Snapmaker Orca",
+    },
+    Target {
+        id: "u1",
+        nozzle: "0.8",
+        model: "Snapmaker U1",
+        name: "Snapmaker U1 (0.8 nozzle)",
+        machine: "Snapmaker U1 (0.8 nozzle)",
+        process: "0.40mm Standard @Snapmaker U1 (0.8 nozzle)",
+        vendor: "Snapmaker",
+        app: "Snapmaker_Orca",
+        exe: "snapmaker-orca.exe",
+        slicer: "Snapmaker Orca",
+    },
+    Target {
         id: "qidi",
+        nozzle: "0.2",
+        model: "X-Plus 5",
+        name: "X-Plus 5 0.2 nozzle",
+        machine: "X-Plus 5 0.2 nozzle",
+        process: "0.10mm Standard @X-Plus 5 0.2 nozzle",
+        vendor: "X 5 Series",
+        app: "QIDIStudio",
+        exe: "qidi-studio.exe",
+        slicer: "QIDIStudio",
+    },
+    Target {
+        id: "qidi",
+        nozzle: "0.4",
         model: "X-Plus 5",
         name: "X-Plus 5 0.4 nozzle",
-        nozzle: "0.4",
         machine: "X-Plus 5 0.4 nozzle",
         process: "0.20mm Standard @X-Plus 5",
+        vendor: "X 5 Series",
+        app: "QIDIStudio",
+        exe: "qidi-studio.exe",
+        slicer: "QIDIStudio",
+    },
+    Target {
+        id: "qidi",
+        nozzle: "0.6",
+        model: "X-Plus 5",
+        name: "X-Plus 5 0.6 nozzle",
+        machine: "X-Plus 5 0.6 nozzle",
+        process: "0.30mm Standard @X-Plus 5 0.6 nozzle",
+        vendor: "X 5 Series",
+        app: "QIDIStudio",
+        exe: "qidi-studio.exe",
+        slicer: "QIDIStudio",
+    },
+    Target {
+        id: "qidi",
+        nozzle: "0.8",
+        model: "X-Plus 5",
+        name: "X-Plus 5 0.8 nozzle",
+        machine: "X-Plus 5 0.8 nozzle",
+        process: "0.40mm Standard @X-Plus 5 0.8 nozzle",
         vendor: "X 5 Series",
         app: "QIDIStudio",
         exe: "qidi-studio.exe",
@@ -53,7 +125,7 @@ fn spec(target: &str, nozzle: &str) -> Result<Target, String> {
         .find(|item| item.id == target && item.nozzle == nozzle)
         .ok_or_else(|| {
             format!(
-                "only installed u1/qidi 0.4mm OEM targets are implemented (got {target}/{nozzle})"
+                "only installed U1/QIDI 0.2/0.4/0.6/0.8mm OEM targets are implemented (got {target}/{nozzle})"
             )
         })
 }
@@ -296,8 +368,9 @@ fn material_allowed(target: Target, machine: &str, name: &str, raw: &Preset) -> 
     } else {
         "@Qidi X-Plus 5"
     };
-    let qualified_leaf =
-        target.id == "u1" && (name == "Generic PLA High Speed" || name == "Generic PETG");
+    let qualified_leaf = target.id == "u1"
+        && target.nozzle == "0.4"
+        && (name == "Generic PLA High Speed" || name == "Generic PETG");
     if !name.contains(marker) && !qualified_leaf {
         return false;
     }
@@ -339,9 +412,13 @@ fn material_choices(index: &Index, target: Target, kind: &str) -> Vec<String> {
 }
 fn preferred(target: Target, kind: &str) -> Option<String> {
     match (target.id, kind) {
-        ("u1", "PLA") => Some("Generic PLA High Speed".into()),
-        ("u1", "PETG") => Some("Generic PETG".into()),
-        ("qidi", type_name) => Some(format!("Generic {type_name} @Qidi X-Plus 5 0.4 nozzle")),
+        ("u1", "PLA") if target.nozzle == "0.4" => Some("Generic PLA High Speed".into()),
+        ("u1", "PETG") if target.nozzle == "0.4" => Some("Generic PETG".into()),
+        ("u1", type_name) => Some(format!("Generic {type_name} @U1 {} nozzle", target.nozzle)),
+        ("qidi", type_name) => Some(format!(
+            "Generic {type_name} @Qidi X-Plus 5 {} nozzle",
+            target.nozzle
+        )),
         _ => None,
     }
 }
@@ -483,7 +560,7 @@ pub fn discover() -> Value {
         };
         rows.push(record);
     }
-    json!({"profiles":rows,"source":"read-only installed OEM resources","scope":"u1/qidi 0.4mm"})
+    json!({"profiles":rows,"source":"read-only installed OEM resources","scope":"u1/qidi 0.2/0.4/0.6/0.8mm"})
 }
 
 #[cfg(test)]
@@ -499,6 +576,47 @@ mod tests {
         ));
         fs::create_dir_all(&path).unwrap();
         path
+    }
+    #[test]
+    fn all_eight_nozzle_presets_have_exact_vendor_processes() {
+        assert_eq!(TARGETS.len(), 8);
+        for id in ["u1", "qidi"] {
+            for nozzle in ["0.2", "0.4", "0.6", "0.8"] {
+                let target = spec(id, nozzle).unwrap();
+                assert_eq!(target.nozzle, nozzle);
+                assert!(target.machine.contains(nozzle));
+                assert!(target.process.contains(nozzle) || (id == "qidi" && nozzle == "0.4"));
+                assert!(preferred(target, "PLA").is_some());
+                assert!(preferred(target, "PETG").is_some());
+            }
+        }
+        assert!(spec("u1", "0.25").is_err());
+        assert!(spec("other", "0.4").is_err());
+    }
+    #[test]
+    fn vendor_04_petg_leaf_is_not_reused_for_other_nozzles() {
+        let settings: Map<String, Value> = serde_json::from_value(json!({
+            "compatible_printers":["Snapmaker U1 (0.4 nozzle)"],
+            "filament_type":["PETG"]
+        }))
+        .unwrap();
+        let leaf = Preset {
+            file: "leaf.json".into(),
+            stem: "Generic PETG".into(),
+            settings,
+        };
+        assert!(material_allowed(
+            spec("u1", "0.4").unwrap(),
+            "Snapmaker U1 (0.4 nozzle)",
+            "Generic PETG",
+            &leaf
+        ));
+        assert!(!material_allowed(
+            spec("u1", "0.6").unwrap(),
+            "Snapmaker U1 (0.6 nozzle)",
+            "Generic PETG",
+            &leaf
+        ));
     }
     #[test]
     fn vendor_bom_and_inheritance_merge_without_metadata() {
@@ -554,9 +672,9 @@ mod tests {
             fs::write(&path, data).unwrap();
             insert_index(&mut ix, "filament", path).unwrap();
         }
-        let choices = material_choices(&ix, TARGETS[1], "PLA");
+        let choices = material_choices(&ix, spec("qidi", "0.4").unwrap(), "PLA");
         assert_eq!(choices, vec!["Generic PLA @Qidi X-Plus 5 0.4 nozzle"]);
-        assert!(material_choices(&ix, TARGETS[1], "PETG").is_empty());
+        assert!(material_choices(&ix, spec("qidi", "0.4").unwrap(), "PETG").is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 }

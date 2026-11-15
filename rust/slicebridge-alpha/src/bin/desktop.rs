@@ -4,6 +4,7 @@ use gpui_kit::*;
 use serde_json::{json, Value};
 use slicebridge_alpha::{protocol, Registry};
 use std::path::Path;
+use std::time::Duration;
 
 const TEXT: &str = "en"; // Localization slot: UI text is English-first.
 
@@ -17,9 +18,35 @@ impl SliceBridgeWindow {
     fn new(registry: Registry) -> Self {
         Self {
             commands: registry,
-            last_message: "Ready — choose a source and a verified OEM bundle.".into(),
+            last_message:
+                "No UI action yet. Agent / CLI / MCP changes appear in the project fields above."
+                    .into(),
             destination: None,
         }
+    }
+
+    // Repaint when CLI, MCP or attach changes the same Registry outside GPUI.
+    // This is UI-only: no conversion polling command, slicer or printer action.
+    fn start_live_refresh(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let mut previous = Value::Null;
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(500))
+                    .await;
+                let updated = this.update(cx, |view, cx| {
+                    let current = view.commands.snapshot();
+                    if current != previous {
+                        previous = current;
+                        cx.notify();
+                    }
+                });
+                if updated.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     fn run(&mut self, name: &str, args: Value, cx: &mut Context<Self>) {
@@ -116,10 +143,10 @@ impl SliceBridgeWindow {
         cx.notify();
     }
 
-    fn select_oem(&mut self, target: &'static str, cx: &mut Context<Self>) {
+    fn select_oem(&mut self, target: &'static str, nozzle: &'static str, cx: &mut Context<Self>) {
         self.run(
             "profiles.select",
-            json!({"target":target,"nozzle":"0.4"}),
+            json!({"target":target,"nozzle":nozzle}),
             cx,
         );
     }
@@ -198,6 +225,10 @@ impl Render for SliceBridgeWindow {
                 status["target"].as_str().unwrap_or("None").into(),
             ),
             (
+                "Nozzle diameter",
+                status["nozzle"].as_str().unwrap_or("None").into(),
+            ),
+            (
                 "PLA OEM preset",
                 status["materials"]["PLA"].as_str().unwrap_or("None").into(),
             ),
@@ -213,20 +244,20 @@ impl Render for SliceBridgeWindow {
             ("Save target", output),
             ("Job state", phase),
         ];
-        let mut table = div().flex().flex_col().gap_1().p_3();
+        let mut table = div().flex().flex_col().gap_0().p_1();
         for (label, value) in columns {
             table = table.child(
                 div()
                     .flex()
                     .flex_row()
-                    .gap_4()
-                    .p_2()
+                    .gap_3()
+                    .p_1()
                     .child(div().w_32().child(label))
                     .child(div().flex_1().child(value)),
             );
         }
 
-        div().flex().flex_col().gap_4().p_6()
+        div().flex().flex_col().gap_2().p_4()
             .child(div().text_2xl().child("SliceBridge  /  Rust Native Alpha"))
             .child(div().child("GPUI + GPUI Kit  |  Agent-first command registry  |  English"))
             .child(
@@ -235,12 +266,32 @@ impl Render for SliceBridgeWindow {
                         .on_click(cx.listener(|this, _, _, cx| this.choose_file("source.select", cx))))
                     .child(Button::new("discover-oem").label("Scan installed OEM")
                         .on_click(cx.listener(|this, _, _, cx| this.run("profiles.discover", json!({}), cx))))
-                    .child(Button::new("select-u1").label("Snapmaker U1 · 0.4")
-                        .on_click(cx.listener(|this, _, _, cx| this.select_oem("u1", cx))))
-                    .child(Button::new("select-qidi").label("QIDI X-Plus 5 · 0.4")
-                        .on_click(cx.listener(|this, _, _, cx| this.select_oem("qidi", cx))))
                     .child(Button::new("choose-target").label("Save as...")
                         .on_click(cx.listener(|this, _, _, cx| this.choose_destination(cx))))
+            )
+            .child(div().text_lg().child("Snapmaker U1 — installed nozzle presets"))
+            .child(
+                div().flex().flex_row().gap_2()
+                    .child(Button::new("u1-02").label("0.2 mm")
+                        .on_click(cx.listener(|this, _, _, cx| this.select_oem("u1", "0.2", cx))))
+                    .child(Button::new("u1-04").label("0.4 mm")
+                        .on_click(cx.listener(|this, _, _, cx| this.select_oem("u1", "0.4", cx))))
+                    .child(Button::new("u1-06").label("0.6 mm")
+                        .on_click(cx.listener(|this, _, _, cx| this.select_oem("u1", "0.6", cx))))
+                    .child(Button::new("u1-08").label("0.8 mm")
+                        .on_click(cx.listener(|this, _, _, cx| this.select_oem("u1", "0.8", cx))))
+            )
+            .child(div().text_lg().child("QIDI X-Plus 5 — installed nozzle presets"))
+            .child(
+                div().flex().flex_row().gap_2()
+                    .child(Button::new("qidi-02").label("0.2 mm")
+                        .on_click(cx.listener(|this, _, _, cx| this.select_oem("qidi", "0.2", cx))))
+                    .child(Button::new("qidi-04").label("0.4 mm")
+                        .on_click(cx.listener(|this, _, _, cx| this.select_oem("qidi", "0.4", cx))))
+                    .child(Button::new("qidi-06").label("0.6 mm")
+                        .on_click(cx.listener(|this, _, _, cx| this.select_oem("qidi", "0.6", cx))))
+                    .child(Button::new("qidi-08").label("0.8 mm")
+                        .on_click(cx.listener(|this, _, _, cx| this.select_oem("qidi", "0.8", cx))))
             )
             .child(div().text_lg().child("Project / Printer / Materials"))
             .child(table)
@@ -265,7 +316,7 @@ impl Render for SliceBridgeWindow {
                     .child(Button::new("refresh").label("Refresh status")
                         .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))))
             )
-            .child(div().text_lg().child("Status / Agent log"))
+            .child(div().text_lg().child("Last UI action"))
             .child(div().p_2().child(self.last_message.clone()))
             .child(div().child("Local attach: 127.0.0.1:48637  •  MCP: slicebridge-alpha --mcp"))
             .child(div().child(format!("Locale: {TEXT}")))
@@ -282,7 +333,11 @@ fn main() {
         gpui_kit::init(cx);
         let commands = registry.clone();
         gpui_kit::open_window(WindowOptions::default(), cx, move |_, cx| {
-            cx.new(|_| SliceBridgeWindow::new(commands))
+            cx.new(|cx| {
+                let mut view = SliceBridgeWindow::new(commands);
+                view.start_live_refresh(cx);
+                view
+            })
         })
         .expect("SliceBridge GPUI window failed to open");
     });

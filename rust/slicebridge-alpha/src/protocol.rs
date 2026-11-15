@@ -23,7 +23,7 @@ fn schema(name: &str) -> Value {
         "executable":{"type":"string"},
         "name":{"type":"string"},
         "target":{"type":"string","enum":["u1","qidi"]},
-        "nozzle":{"type":"string","enum":["0.4"]},
+        "nozzle":{"type":"string","enum":["0.2","0.4","0.6","0.8"]},
         "material":{"type":"string","enum":["PLA","PETG","ABS","ASA","TPU"]},
         "preset":{"type":"string"},
         "slot":{"type":"integer","minimum":1,"maximum":64}

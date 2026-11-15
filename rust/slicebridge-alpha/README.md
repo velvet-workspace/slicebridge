@@ -12,8 +12,10 @@ G-code, initiate slicing, or contact a printer.
 - One Rust Registry drives the GUI, JSONL CLI, MCP stdio and local attach.
 - OEM discovery resolves installed vendor machine/process/material inheritance
   on disk, read-only, including leading UTF-8 BOM where present.
-- Windows OEM scope: Snapmaker U1 0.4mm / Snapmaker Orca, and QIDI X-Plus 5
-  0.4mm / QIDIStudio. No cross-vendor assumption or generated profile leaf.
+- Windows OEM scope: Snapmaker U1 (Snapmaker Orca) and QIDI X-Plus 5
+  (QIDIStudio), each with independently resolved and verified 0.2, 0.4,
+  0.6 and 0.8 mm installed OEM machine, process and material profiles.
+  No cross-vendor assumption or generated profile leaf.
 - profiles.select validates the installed OEM resolution against the selected
   3MF source through the existing Rust-native source-owned conversion planner.
 - profiles.materials lists real matching presets. material.select re-resolves
@@ -62,18 +64,27 @@ QA of a manually prepared and verified OEM snapshot.
 
 ## Verification and gaps
 
-Windows QA on installed OEM resources and permitted 3MF fixtures passed four
-one-color/five-color conversions across both targets, preserving source SHA
-and geometry and removing stale slice caches. For a QIDI 4xPLA + 1xPETG
-source, changing from Generic PETG to installed Bambu PETG changed the
-fifth OEM filament preset ID in the output without changing the source;
-both presets specified 250 C, so temperature did NOT change.
+Windows QA on installed OEM resources and permitted 3MF fixtures passed
+16/16 Rust conversions: U1 + QIDI, four physical nozzle variants each,
+single-color and mixed 4xPLA+1xPETG cases. Every case checked profile
+nozzle and printer identity, fifth PETG binding, geometry, removed slice
+cache and unchanged source SHA.
 
-Still incomplete: more nozzles/models/Orca forks, actual slicer import and UI
-material verification for this new app, advanced tables and docking,
-batch/drag-drop, accurate percentages, localization and Linux testing.
-The earlier GPUI shell built and ran on macOS; this new installed-OEM
-extension requires an independent macOS build/runtime test.
+In addition to archive inspection, verified native QIDIStudio and Snapmaker
+Orca GUI import on installed applications for the 0.4 mm results:
+QIDIStudio displayed X-Plus 5 with four Generic PLA slots and fifth
+Bambu PETG; Snapmaker Orca displayed U1 with four Generic PLA High Speed
+slots and fifth Generic PETG after "Open as project". Source SHA remained
+unchanged. Native import did not create G-code or issue slice/print commands.
+Real UI warnings still apply: QIDI warned about mixing PLA with PETG;
+one tiny synthetic U1 mesh lay beyond the printable bed. These are
+import-only receipts, NEVER physical print-readiness approval.
+
+Still incomplete: broader vendor models and Orca forks, deep slicer UI
+acceptance at the newly added 0.2/0.6/0.8 mm nozzle variants, advanced
+tables and docking, batch/drag-drop, progress percentages, localization
+and Linux platform testing. A previously verified 0.4mm build ran on
+macOS; this new 8-nozzle commit needs macOS check and smoke.
 
 Do not merge main, replace stable installation, slice, generate G-code or
 control printers without applicable user authorization.
