@@ -1,0 +1,24 @@
+[package]
+name = "slicebridge-alpha"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "SliceBridge Rust-native agent-first desktop alpha"
+
+[features]
+default = []
+desktop = ["dep:gpui-kit"]
+
+[dependencies]
+slicebridge-3mf-probe = { path = "../3mf-probe" }
+serde_json = "=1.0.154"
+gpui-kit = { version = "=0.9.1", optional = true }
+
+[[bin]]
+name = "slicebridge-alpha"
+path = "src/main.rs"
+
+[[bin]]
+name = "slicebridge-desktop"
+path = "src/bin/desktop.rs"
+required-features = ["desktop"]

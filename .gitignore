@@ -17,3 +17,7 @@ catalog/package-smoke/
 
 # Derived Graphify index (never commit generated graphs)
 graphify-out/
+
+# Rust alpha local scratch build outputs (not release artifacts)
+/target/
+/target-core/

@@ -252,6 +252,21 @@ fn source_owned_native_request(bundle: &Value, source: &Path) -> Result<Value, S
     }))
 }
 
+/// Validate a previously resolved OEM bundle against the original source 3MF.
+/// This performs the same source-owned palette discovery and complete Rust
+/// conversion planning as autonomous conversion, without writing an output.
+pub fn validate_native_autonomous_input(bundle: &Value, source: &Path) -> Result<Value, String> {
+    inspect_package(source)?;
+    let request = source_owned_native_request(bundle, source)?;
+    let plan = build_native_conversion_plan(&request)?;
+    Ok(json!({
+        "target": bundle["target"],
+        "printer": bundle["profile"]["display_name"],
+        "slot_count": plan["slot_count"],
+        "validated_source": true
+    }))
+}
+
 /// Full native 3MF conversion with source-driven material discovery in Rust.
 /// The caller must provide a complete, already-resolved installed OEM bundle
 /// (not a source filament map, Go plan, guessed nozzle, or startup script).
