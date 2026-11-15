@@ -84,6 +84,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "Read validated stable printer settings or defaults without modifying installed settings",
     ),
     (
+        "settings.developer.set",
+        "Persist verified Developer Mode flag only in isolated GPUI alpha settings",
+    ),
+    (
         "settings.options",
         "List source-locked nozzle, installed slicer and verified material choices",
     ),
@@ -265,6 +269,15 @@ impl Registry {
             "app.status" | "conversion.status" => Ok(self.snapshot()),
             "printers.catalog" => my_printers::catalog_snapshot(),
             "settings.get" => printer_settings::current(),
+            "settings.developer.set" => {
+                let enabled = params
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .ok_or("Developer Mode must be a boolean")?;
+                let _guard = self.state.lock().map_err(|e| e.to_string())?;
+                let verified = printer_settings::set_developer_mode(enabled)?;
+                Ok(json!({"enabled":verified["developerMode"]}))
+            }
             "settings.options" => {
                 let target = params
                     .get("target")
@@ -828,6 +841,17 @@ mod tests {
             result["data"]["commands"].as_array().unwrap().len(),
             COMMANDS.len()
         );
+    }
+
+    #[test]
+    fn developer_mode_set_requires_boolean_before_any_settings_write() {
+        let registry = Registry::new();
+        for params in [json!({}), json!({"enabled":"true"}), json!({"enabled":1})] {
+            let result = registry.execute("settings.developer.set", &params);
+            assert_eq!(result["ok"], false);
+            assert!(result["error"].as_str().unwrap_or("").contains("boolean"));
+        }
+        assert_eq!(registry.snapshot()["phase"], "idle");
     }
 
     #[test]

@@ -83,6 +83,7 @@ struct SliceBridgeWindow {
     settings_error: String,
     about_open: bool,
     about_developer_mode: bool,
+    about_developer_error: bool,
     about_document: Option<AboutDocument>,
 }
 
@@ -195,6 +196,7 @@ impl SliceBridgeWindow {
             settings_error: String::new(),
             about_open: false,
             about_developer_mode: false,
+            about_developer_error: false,
             about_document: None,
         }
     }
@@ -254,8 +256,25 @@ impl SliceBridgeWindow {
         // Read the preference on each open: CLI or MCP may have changed it while the window was running.
         let reply = self.commands.execute("settings.get", &json!({}));
         self.about_developer_mode = developer_mode_enabled(&reply);
+        self.about_developer_error = reply["ok"] != true;
         self.about_document = None;
         self.about_open = true;
+        cx.notify();
+    }
+
+    fn toggle_about_developer_mode(&mut self, cx: &mut Context<Self>) {
+        let requested = !self.about_developer_mode;
+        let reply = self
+            .commands
+            .execute("settings.developer.set", &json!({"enabled":requested}));
+        if reply["ok"] == true && reply["data"]["enabled"] == requested {
+            self.about_developer_mode = requested;
+            self.about_developer_error = false;
+        } else {
+            // As in stable Go, an error never reports Developer Mode enabled.
+            self.about_developer_mode = false;
+            self.about_developer_error = true;
+        }
         cx.notify();
     }
 
@@ -764,7 +783,7 @@ mod about_tests {
         "aboutDevButton",
         "aboutDevOn",
         "aboutDevOff",
-        "aboutDevUnavailable",
+        "aboutDevError",
         "aboutLicense",
         "aboutLicenseSummary",
         "aboutCredits",

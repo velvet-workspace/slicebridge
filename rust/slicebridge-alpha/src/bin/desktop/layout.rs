@@ -1014,47 +1014,46 @@ fn render_about(view: &SliceBridgeWindow, cx: &mut Context<SliceBridgeWindow>) -
         )
         .child(div().text_sm().text_color(rgb(MUTED)).child(version));
 
-    let developer_card = panel()
-        .p_4()
-        .flex()
-        .flex_col()
-        .gap_2()
-        .child(
-            line(rtl)
-                .items_center()
-                .justify_between()
-                .gap_3()
-                .child(
-                    align_text(div().flex().flex_col().gap_1(), rtl)
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(rgb(INK))
-                                .child(label(locale, "aboutDevTitle")),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(rgb(MUTED))
-                                .child(label(locale, "aboutDevWarning")),
-                        ),
-                )
-                .child(
-                    Button::new("about-developer-toggle")
-                        .disabled(true)
-                        .label(format!(
-                            "{} · {}",
-                            label(locale, "aboutDevButton"),
-                            developer_state
-                        )),
-                ),
-        )
-        .child(
+    let mut developer_card = panel().p_4().flex().flex_col().gap_2().child(
+        line(rtl)
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .child(
+                align_text(div().flex().flex_col().gap_1(), rtl)
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(INK))
+                            .child(label(locale, "aboutDevTitle")),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(MUTED))
+                            .child(label(locale, "aboutDevWarning")),
+                    ),
+            )
+            .child(
+                Button::new("about-developer-toggle")
+                    .label(format!(
+                        "{} · {}",
+                        label(locale, "aboutDevButton"),
+                        developer_state
+                    ))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.toggle_about_developer_mode(cx);
+                    })),
+            ),
+    );
+    if view.about_developer_error {
+        developer_card = developer_card.child(
             div()
                 .text_xs()
-                .text_color(rgb(MUTED))
-                .child(label(locale, "aboutDevUnavailable")),
+                .text_color(rgb(RED))
+                .child(label(locale, "aboutDevError")),
         );
+    }
 
     let mut license_card = panel()
         .p_4()

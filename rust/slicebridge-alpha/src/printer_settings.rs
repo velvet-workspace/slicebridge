@@ -267,6 +267,16 @@ fn save_in_context(
     // A malformed baseline must never be silently reset or overwritten.
     let mut state = read_from_paths(alpha, fallbacks)?;
     state["printers"][target] = normalized;
+    persist_settings_in_context(alpha, fallbacks, &state)
+}
+
+// Shared atomic, readback-verified write for printer preferences and Developer
+// Mode. Both operations target only GPUI-Alpha/settings.json, never stable Go.
+fn persist_settings_in_context(
+    alpha: &Path,
+    fallbacks: &[PathBuf],
+    state: &Value,
+) -> Result<Value, String> {
     let serialized = serde_json::to_vec_pretty(&state)
         .map_err(|err| format!("encode printer settings: {err}"))?;
     if serialized.len() as u64 > MAX_BYTES {
@@ -309,6 +319,26 @@ fn save_in_context(
     result?;
     // Re-read actual disk state, rather than claiming a save based on a write call alone.
     read_from_paths(alpha, fallbacks)
+}
+
+fn set_developer_mode_in_context(
+    alpha: &Path,
+    fallbacks: &[PathBuf],
+    enabled: bool,
+) -> Result<Value, String> {
+    // Mirrors native/preferences.go::SetDeveloperMode: read/validate first,
+    // refuse corrupt settings, persist the boolean and verify by readback.
+    let mut state = read_from_paths(alpha, fallbacks)?;
+    state["developerMode"] = json!(enabled);
+    let persisted = persist_settings_in_context(alpha, fallbacks, &state)?;
+    if persisted["developerMode"] != enabled {
+        return Err("Developer Mode persistence was not verified".into());
+    }
+    Ok(persisted)
+}
+
+pub fn set_developer_mode(enabled: bool) -> Result<Value, String> {
+    set_developer_mode_in_context(&experiment_path()?, &stable_paths()?, enabled)
 }
 
 static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -747,6 +777,45 @@ mod tests {
         );
         saved["printers"]["qidi"]["slicer"] = json!("invented");
         assert!(profile_choice_for_source(&saved, "qidi", "auto", "0.4").is_err());
+    }
+
+    #[test]
+    fn developer_mode_writes_only_alpha_and_reads_back_without_resetting_preferences() {
+        let root = std::env::temp_dir().join(format!("sb-dev-mode-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let stable = root.join("stable/settings.json");
+        let alpha = root.join("alpha/settings.json");
+        fs::create_dir_all(stable.parent().unwrap()).unwrap();
+        let stable_raw = br#"{"version":1,"printers":{"qidi":{"nozzle":"0.6","slicer":"auto","filaments":{}}},"window":{"width":1500,"height":960},"developerMode":false}"#;
+        fs::write(&stable, stable_raw).unwrap();
+        let fallbacks = [stable.clone()];
+
+        let enabled = set_developer_mode_in_context(&alpha, &fallbacks, true).unwrap();
+        assert_eq!(enabled["developerMode"], true);
+        assert_eq!(enabled["printers"]["qidi"]["nozzle"], "0.6");
+        assert_eq!(enabled["window"], json!({"width":1500,"height":960}));
+        assert_eq!(fs::read(&stable).unwrap(), stable_raw);
+        assert!(alpha.is_file());
+        assert_eq!(read_one(&alpha).unwrap().unwrap()["developerMode"], true);
+
+        let disabled = set_developer_mode_in_context(&alpha, &fallbacks, false).unwrap();
+        assert_eq!(disabled["developerMode"], false);
+        assert_eq!(fs::read(&stable).unwrap(), stable_raw);
+        assert_eq!(read_one(&alpha).unwrap().unwrap()["developerMode"], false);
+
+        let invalid = b"{damaged alpha settings".to_vec();
+        fs::write(&alpha, &invalid).unwrap();
+        assert!(set_developer_mode_in_context(&alpha, &fallbacks, true).is_err());
+        assert_eq!(fs::read(&alpha).unwrap(), invalid);
+        assert_eq!(fs::read(&stable).unwrap(), stable_raw);
+
+        fs::remove_file(&alpha).unwrap();
+        let corrupt_stable = b"{damaged stable settings".to_vec();
+        fs::write(&stable, &corrupt_stable).unwrap();
+        assert!(set_developer_mode_in_context(&alpha, &fallbacks, true).is_err());
+        assert!(!alpha.exists());
+        assert_eq!(fs::read(&stable).unwrap(), corrupt_stable);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
