@@ -32,6 +32,65 @@ struct PreparedItem {
     resolved: Result<Arc<Value>, String>,
 }
 
+#[derive(Clone, Debug)]
+struct PreparedTarget {
+    target: String,
+    ready: PreparedItem,
+}
+
+#[derive(Clone, Debug)]
+struct PreparedSource {
+    source: PathBuf,
+    targets: Vec<PreparedTarget>,
+}
+
+// Stable native/batch.go validates 1..32 unique printer target IDs.
+// Saved My Printers catalogue membership is separate from conversion support.
+fn validate_multi_targets(targets: &[String], saved_ids: &[String]) -> Result<(), String> {
+    if targets.is_empty() || targets.len() > 32 {
+        return Err("select between 1 and 32 printers".into());
+    }
+    let mut seen = BTreeSet::new();
+    for target in targets {
+        let catalogue_id = match target.as_str() {
+            "u1" => "snapmaker-u1",
+            "c5" => "flashforge-creator-5",
+            "cc2" => "elegoo-centauri-carbon-2",
+            "qidi" => "qidi-x-plus-5",
+            _ => return Err(format!("unported printer target {target:?}")),
+        };
+        if !seen.insert(target) {
+            return Err(format!("invalid or repeated target {target:?}"));
+        }
+        if !saved_ids.iter().any(|id| id == catalogue_id) {
+            return Err(format!("target {target:?} is not selected in My Printers"));
+        }
+    }
+    Ok(())
+}
+
+fn parse_targets(params: &Value) -> Result<Option<Vec<String>>, String> {
+    let Some(value) = params.get("targets") else {
+        return Ok(None);
+    };
+    let items = value.as_array().ok_or("targets must be an array")?;
+    if items.is_empty() || items.len() > 32 {
+        return Err("select between 1 and 32 printers".into());
+    }
+    let mut targets = Vec::with_capacity(items.len());
+    for value in items {
+        let target = value
+            .as_str()
+            .filter(|s| !s.trim().is_empty())
+            .ok_or("targets must be nonempty printer IDs")?;
+        if targets.iter().any(|existing| existing == target) {
+            return Err(format!("invalid or repeated target {target:?}"));
+        }
+        targets.push(target.to_owned());
+    }
+    Ok(Some(targets))
+}
+
 fn parse_sources(params: &Value) -> Result<Vec<PathBuf>, String> {
     let values = params
         .get("paths")
@@ -287,6 +346,48 @@ where
         .collect())
 }
 
+// Group the existing per-target OEM planning by source in original Go order.
+// One bad target does not invalidate another target for the same source.
+// No conversion worker is instantiated here.
+fn prepare_multi_batch<F>(
+    paths: &[PathBuf],
+    targets: &[String],
+    settings: &Value,
+    mut resolver: F,
+) -> Result<Vec<PreparedSource>, String>
+where
+    F: FnMut(&str, &str, &BTreeMap<String, String>) -> Result<Value, String>,
+{
+    if targets.is_empty() || targets.len() > 32 {
+        return Err("select between 1 and 32 printers".into());
+    }
+    let mut seen = BTreeSet::new();
+    for target in targets {
+        if !seen.insert(target) {
+            return Err(format!("invalid or repeated target {target:?}"));
+        }
+    }
+    let mut sources = paths
+        .iter()
+        .map(|source| PreparedSource {
+            source: source.clone(),
+            targets: Vec::with_capacity(targets.len()),
+        })
+        .collect::<Vec<_>>();
+    for target in targets {
+        let ready = prepare_batch(paths, target, settings, |t, n, overrides| {
+            resolver(t, n, overrides)
+        })?;
+        for (source, item) in sources.iter_mut().zip(ready) {
+            source.targets.push(PreparedTarget {
+                target: target.clone(),
+                ready: item,
+            });
+        }
+    }
+    Ok(sources)
+}
+
 fn update(shared: &Arc<Mutex<Session>>, index: usize, phase: &str, detail: Option<Value>) {
     if let Ok(mut session) = shared.lock() {
         if let Some(batch) = session.batch.as_mut() {
@@ -475,7 +576,268 @@ fn run_batch(
     });
 }
 
+// Nested file and target receipts preserve Go's per-file Results/Failures,
+// while keeping the existing GPUI batch progress fields.
+fn multi_batch_initial(sources: &[PreparedSource], targets: &[String]) -> Value {
+    json!({
+        "phase":"running", "targets":targets,
+        "total":sources.len(), "completed":0, "filesDone":0,
+        "successes":0, "failures":0, "progress_percent":0,
+        "active_index":null, "error":null,
+        "items":sources.iter().map(|source| json!({
+            "source":source.source, "phase":"queued", "error":null,
+            "results":[], "failures":[],
+            "targets":source.targets.iter().map(|pair| json!({
+                "target":pair.target,
+                "source":pair.ready.item.source,
+                "output":if pair.ready.item.output.as_os_str().is_empty() {
+                    Value::Null
+                } else {
+                    json!(pair.ready.item.output)
+                },
+                "nozzle":pair.ready.item.nozzle,
+                "source_nozzle":pair.ready.source_nozzle,
+                "source_nozzle_assumed":pair.ready.source_nozzle_assumed,
+                "phase":"queued", "receipt":null
+            })).collect::<Vec<_>>()
+        })).collect::<Vec<_>>()
+    })
+}
+
+// The stable Go BatchReply increments FilesDone once per source and reports
+// Results/Failures independently for every requested target. This keeps the
+// same sequence and the source-first result shape for Rust.
+fn mark_multi_target(
+    shared: &Arc<Mutex<Session>>,
+    file_index: usize,
+    target_index: usize,
+    phase: &str,
+    receipt: Value,
+) {
+    if let Ok(mut session) = shared.lock() {
+        if let Some(batch) = session.batch.as_mut() {
+            let target = batch["items"][file_index]["targets"][target_index]["target"].clone();
+            batch["items"][file_index]["targets"][target_index]["phase"] = json!(phase);
+            batch["items"][file_index]["targets"][target_index]["receipt"] = receipt.clone();
+            if phase == "completed" || phase == "failed" {
+                let counter = if phase == "completed" {
+                    "successes"
+                } else {
+                    "failures"
+                };
+                batch[counter] = json!(batch[counter].as_u64().unwrap_or(0) + 1);
+                let list = if phase == "completed" {
+                    "results"
+                } else {
+                    "failures"
+                };
+                if let Some(results) = batch["items"][file_index][list].as_array_mut() {
+                    results.push(json!({"target":target,"receipt":receipt}));
+                }
+                if receipt["code"] == "SOURCE_INVALID" {
+                    batch["items"][file_index]["error"] = receipt["error"].clone();
+                }
+            }
+        }
+    }
+}
+
+fn complete_multi_file(shared: &Arc<Mutex<Session>>, index: usize) {
+    if let Ok(mut session) = shared.lock() {
+        if let Some(batch) = session.batch.as_mut() {
+            let failed = batch["items"][index]["targets"]
+                .as_array()
+                .is_some_and(|targets| targets.iter().any(|target| target["phase"] == "failed"));
+            batch["items"][index]["phase"] = json!(if failed { "failed" } else { "completed" });
+            let completed = batch["completed"].as_u64().unwrap_or(0) + 1;
+            batch["completed"] = json!(completed);
+            batch["filesDone"] = json!(completed);
+            batch["progress_percent"] = json!((completed * 100)
+                .checked_div(batch["total"].as_u64().unwrap_or(0))
+                .unwrap_or(0));
+            batch["active_index"] = Value::Null;
+        }
+    }
+}
+
+fn finish_multi(shared: &Arc<Mutex<Session>>, phase: &str, error: Option<&str>) {
+    finish(shared, phase, error);
+    if phase == "cancelled" || phase == "failed" {
+        if let Ok(mut session) = shared.lock() {
+            if let Some(batch) = session.batch.as_mut() {
+                if let Some(files) = batch["items"].as_array_mut() {
+                    for file in files {
+                        if let Some(targets) = file["targets"].as_array_mut() {
+                            for target in targets {
+                                if target["phase"] == "queued" {
+                                    target["phase"] = json!("skipped");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Four concurrent target workers at most, with a strict source-to-source
+// barrier. The injected callback in tests is a pure mock, never a converter.
+fn run_multi_batch_with<F>(
+    shared: Arc<Mutex<Session>>,
+    sources: Vec<PreparedSource>,
+    cancel: Arc<AtomicBool>,
+    execute: F,
+) where
+    F: Fn(&PreparedItem) -> Result<Value, String> + Sync,
+{
+    for (file_index, source) in sources.iter().enumerate() {
+        if cancel.load(Ordering::SeqCst) {
+            finish_multi(
+                &shared,
+                "cancelled",
+                Some("batch cancelled between sources"),
+            );
+            return;
+        }
+        if let Ok(mut session) = shared.lock() {
+            if let Some(batch) = session.batch.as_mut() {
+                batch["active_index"] = json!(file_index);
+                batch["items"][file_index]["phase"] = json!("running");
+            }
+        }
+        for (chunk_index, chunk) in source.targets.chunks(4).enumerate() {
+            if cancel.load(Ordering::SeqCst) {
+                finish_multi(
+                    &shared,
+                    "cancelled",
+                    Some("batch cancelled between target groups"),
+                );
+                return;
+            }
+            let callback = &execute;
+            let results: Vec<Result<Value, String>> = thread::scope(|scope| {
+                let handles = chunk
+                    .iter()
+                    .map(|pair| {
+                        scope.spawn(move || {
+                            pair.ready
+                                .resolved
+                                .as_ref()
+                                .map_err(Clone::clone)
+                                .and_then(|_| callback(&pair.ready))
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                handles
+                    .into_iter()
+                    .map(|handle| match handle.join() {
+                        Ok(result) => result,
+                        Err(_) => Err("batch target worker panicked".into()),
+                    })
+                    .collect()
+            });
+            for (index_in_chunk, (pair, result)) in chunk.iter().zip(results).enumerate() {
+                let index = chunk_index * 4 + index_in_chunk;
+                match result {
+                    Ok(receipt) => {
+                        mark_multi_target(&shared, file_index, index, "completed", receipt)
+                    }
+                    Err(error) if cancel.load(Ordering::SeqCst) => {
+                        mark_multi_target(
+                            &shared,
+                            file_index,
+                            index,
+                            "cancelled",
+                            json!({"error":error}),
+                        );
+                    }
+                    Err(error) => {
+                        let receipt = if pair.ready.source_invalid {
+                            json!({"code":"SOURCE_INVALID","error":error})
+                        } else {
+                            json!({"error":error})
+                        };
+                        mark_multi_target(&shared, file_index, index, "failed", receipt);
+                    }
+                }
+            }
+            if cancel.load(Ordering::SeqCst) {
+                finish_multi(
+                    &shared,
+                    "cancelled",
+                    Some("batch cancelled during target group"),
+                );
+                return;
+            }
+        }
+        complete_multi_file(&shared, file_index);
+    }
+    finish_multi(&shared, "completed", None);
+}
+
+fn run_multi_batch(
+    shared: Arc<Mutex<Session>>,
+    sources: Vec<PreparedSource>,
+    engine: PathBuf,
+    cancel: Arc<AtomicBool>,
+) {
+    let worker_cancel = Arc::clone(&cancel);
+    run_multi_batch_with(shared, sources, cancel, move |ready| {
+        execute_prepared(ready, &engine, &worker_cancel)
+    });
+}
+
 impl Registry {
+    fn batch_start_multiple(
+        &self,
+        params: &Value,
+        sources: Vec<PathBuf>,
+        targets: Vec<String>,
+        engine: PathBuf,
+    ) -> Result<Value, String> {
+        // The selection comes from the same isolated My Printers inventory
+        // displayed by GPUI. Catalogue membership never grants OEM readiness.
+        let saved = crate::my_printers::read(
+            &crate::my_printers::experimental_path()?,
+            &crate::my_printers::available_installed_ids(),
+        )?;
+        let selected = saved["selectedIds"]
+            .as_array()
+            .ok_or("invalid My Printers selection")?
+            .iter()
+            .map(|id| id.as_str().unwrap_or("").to_owned())
+            .collect::<Vec<_>>();
+        validate_multi_targets(&targets, &selected)?;
+        {
+            let session = self.state.lock().map_err(|e| e.to_string())?;
+            if busy(&session) {
+                return Err("cannot start batch while conversion or batch is active".into());
+            }
+        }
+        let settings = printer_settings::current()?;
+        let items = prepare_multi_batch(&sources, &targets, &settings, oem::resolve)?;
+        let cancel = Arc::new(AtomicBool::new(false));
+        {
+            let mut session = self.state.lock().map_err(|e| e.to_string())?;
+            if busy(&session) {
+                return Err("another conversion started during batch preparation".into());
+            }
+            if printer_settings::current()? != settings {
+                return Err("printer settings changed during batch profile resolution".into());
+            }
+            if params.get("paths").is_none() && session.batch_staged != sources {
+                return Err("staged batch sources changed during profile resolution".into());
+            }
+            session.batch = Some(multi_batch_initial(&items, &targets));
+            session.batch_cancel = Some(cancel.clone());
+        }
+        let count = items.len();
+        let shared = self.state.clone();
+        thread::spawn(move || run_multi_batch(shared, items, engine, cancel));
+        Ok(json!({"started":true, "phase":"running", "count":count, "targets":targets}))
+    }
+
     pub(crate) fn batch_clear(&self) -> Result<Value, String> {
         let mut state = self.state.lock().map_err(|e| e.to_string())?;
         if busy(&state) {
@@ -563,6 +925,11 @@ impl Registry {
         let engine = engine_path(params.get("engine").and_then(Value::as_str))?;
         if !engine.is_file() {
             return Err(format!("batch Rust engine missing: {}", engine.display()));
+        }
+        // Explicit printer targets use Go's source-first, multi-target model.
+        // Legacy single-target callers retain the previous selected OEM path.
+        if let Some(targets) = parse_targets(params)? {
+            return self.batch_start_multiple(params, sources, targets, engine);
         }
         let (bundle, target, nozzle) = {
             let session = self.state.lock().map_err(|e| e.to_string())?;
@@ -957,6 +1324,180 @@ mod tests {
         assert_eq!(fs::read(valid_before).unwrap(), original_before);
         assert_eq!(fs::read(valid_after).unwrap(), original_after);
         assert_eq!(fs::read_dir(&root).unwrap().count(), 1); // corrupt source only
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn explicit_multi_targets_require_unique_saved_my_printers_inventory() {
+        let saved = vec!["snapmaker-u1".into(), "qidi-x-plus-5".into()];
+        let targets = vec!["u1".into(), "qidi".into()];
+        assert!(validate_multi_targets(&targets, &saved).is_ok());
+        assert!(validate_multi_targets(&["c5".into()], &saved).is_err());
+        assert!(validate_multi_targets(&["orca-opaque".into()], &saved).is_err());
+        assert!(validate_multi_targets(&["u1".into(), "u1".into()], &saved).is_err());
+        assert!(validate_multi_targets(&[], &saved).is_err());
+        assert!(validate_multi_targets(&vec!["u1".into(); 33], &saved).is_err());
+        assert_eq!(parse_targets(&json!({})).unwrap(), None);
+        assert_eq!(
+            parse_targets(&json!({"targets":["u1","qidi"]})).unwrap(),
+            Some(targets)
+        );
+        assert!(parse_targets(&json!({"targets":["u1","u1"]})).is_err());
+        assert!(parse_targets(&json!({"targets":["u1",42]})).is_err());
+        assert!(parse_targets(&json!({"targets":[]})).is_err());
+    }
+
+    #[test]
+    fn multi_targets_have_source_first_receipts_and_continue_after_bad_original_3mf() {
+        use std::sync::atomic::AtomicUsize;
+        let root = output_folder("multi-target-no-conversion");
+        let valid_a = fixture("bambu-nozzle-0.2.3mf");
+        let valid_b = fixture("bambu-nozzle-0.6.3mf");
+        let before_a = fs::read(&valid_a).unwrap();
+        let before_b = fs::read(&valid_b).unwrap();
+        let corrupted = root.join("corrupted.3mf");
+        fs::write(&corrupted, &before_a[..before_a.len().min(27)]).unwrap();
+        let paths = vec![valid_a.clone(), corrupted.clone(), valid_b.clone()];
+        let targets = vec!["u1".to_owned(), "qidi".to_owned()];
+        let mut resolutions = Vec::new();
+        let sources = prepare_multi_batch(
+            &paths,
+            &targets,
+            &printer_settings::defaults(),
+            |target, nozzle, _| {
+                resolutions.push((target.to_owned(), nozzle.to_owned()));
+                Ok(json!({"target":target,"nozzle":nozzle}))
+            },
+        )
+        .unwrap();
+        assert_eq!(sources.len(), 3);
+        assert_eq!(sources[0].source, valid_a);
+        assert_eq!(sources[1].source, corrupted);
+        assert_eq!(sources[2].source, valid_b);
+        assert_eq!(resolutions.len(), 4); // invalid source resolved for neither target
+        assert!(sources[1].targets.iter().all(|t| t.ready.source_invalid
+            && t.ready.resolved.is_err()
+            && t.ready.item.output.as_os_str().is_empty()));
+        assert_eq!(
+            sources[0]
+                .targets
+                .iter()
+                .map(|t| t.target.as_str())
+                .collect::<Vec<_>>(),
+            vec!["u1", "qidi"]
+        );
+        assert!(sources[0].targets[0]
+            .ready
+            .item
+            .output
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("U1-"));
+        assert!(sources[0].targets[1]
+            .ready
+            .item
+            .output
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("XPlus5-"));
+        let shared = Arc::new(Mutex::new(Session::default()));
+        shared.lock().unwrap().batch = Some(multi_batch_initial(&sources, &targets));
+        let mock_calls = AtomicUsize::new(0);
+        run_multi_batch_with(
+            shared.clone(),
+            sources,
+            Arc::new(AtomicBool::new(false)),
+            |ready| {
+                mock_calls.fetch_add(1, Ordering::SeqCst);
+                assert!(!ready.item.output.exists());
+                let output = ready.item.output.file_name().unwrap().to_string_lossy();
+                if output.starts_with("XPlus5-") {
+                    Err("fixture refused target".into())
+                } else {
+                    Ok(json!({"mocked":true}))
+                }
+            },
+        );
+        assert_eq!(mock_calls.load(Ordering::SeqCst), 4);
+        let state = shared.lock().unwrap();
+        let batch = state.batch.as_ref().unwrap();
+        assert_eq!(batch["phase"], "completed");
+        assert_eq!(batch["completed"], 3);
+        assert_eq!(batch["filesDone"], 3);
+        assert_eq!(batch["successes"], 2);
+        assert_eq!(batch["failures"], 4);
+        assert_eq!(batch["progress_percent"], 100);
+        assert_eq!(batch["items"][0]["phase"], "failed");
+        assert_eq!(batch["items"][0]["results"].as_array().unwrap().len(), 1);
+        assert_eq!(batch["items"][0]["failures"].as_array().unwrap().len(), 1);
+        assert_eq!(batch["items"][0]["results"][0]["target"], "u1");
+        assert_eq!(batch["items"][0]["failures"][0]["target"], "qidi");
+        assert_eq!(batch["items"][1]["failures"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            batch["items"][1]["targets"][0]["receipt"]["code"],
+            "SOURCE_INVALID"
+        );
+        assert_eq!(
+            batch["items"][1]["targets"][1]["receipt"]["code"],
+            "SOURCE_INVALID"
+        );
+        assert_eq!(batch["items"][2]["results"][0]["target"], "u1");
+        assert_eq!(batch["items"][2]["failures"][0]["target"], "qidi");
+        drop(state);
+        assert_eq!(fs::read(valid_a).unwrap(), before_a);
+        assert_eq!(fs::read(valid_b).unwrap(), before_b);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1); // corrupt source only
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn four_target_workers_max_with_source_barrier_and_mock_only() {
+        use std::sync::atomic::AtomicUsize;
+        let root = output_folder("parallel-mock");
+        let one = fixture("bambu-nozzle-0.2.3mf");
+        let ready = prepare_batch(
+            std::slice::from_ref(&one),
+            "u1",
+            &printer_settings::defaults(),
+            |target, nozzle, _| Ok(json!({"target":target,"nozzle":nozzle})),
+        )
+        .unwrap()
+        .remove(0);
+        let sources = vec![PreparedSource {
+            source: one,
+            targets: (0..8)
+                .map(|index| PreparedTarget {
+                    target: format!("fixture-{index}"),
+                    ready: ready.clone(),
+                })
+                .collect(),
+        }];
+        let targets = (0..8).map(|i| format!("fixture-{i}")).collect::<Vec<_>>();
+        let shared = Arc::new(Mutex::new(Session::default()));
+        shared.lock().unwrap().batch = Some(multi_batch_initial(&sources, &targets));
+        let active = AtomicUsize::new(0);
+        let max_active = AtomicUsize::new(0);
+        run_multi_batch_with(
+            shared.clone(),
+            sources,
+            Arc::new(AtomicBool::new(false)),
+            |_| {
+                let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                max_active.fetch_max(now, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(10));
+                active.fetch_sub(1, Ordering::SeqCst);
+                Ok(json!({"mocked":true}))
+            },
+        );
+        assert_eq!(max_active.load(Ordering::SeqCst), 4);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        let state = shared.lock().unwrap();
+        assert_eq!(state.batch.as_ref().unwrap()["completed"], 1);
+        assert_eq!(state.batch.as_ref().unwrap()["successes"], 8);
+        assert_eq!(state.batch.as_ref().unwrap()["failures"], 0);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
         fs::remove_dir_all(root).unwrap();
     }
 

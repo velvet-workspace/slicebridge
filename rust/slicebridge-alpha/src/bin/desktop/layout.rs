@@ -141,8 +141,6 @@ pub(super) fn render_window(
         queued
     };
     let file_count = display_files.len();
-    let target = status["target"].as_str().unwrap_or("");
-    let nozzle = status["nozzle"].as_str().unwrap_or("");
     let phase = status["phase"].as_str().unwrap_or("idle");
     let result = status["result"].clone();
     let batch = status["batch"].clone();
@@ -458,7 +456,7 @@ pub(super) fn render_window(
         &view.ready_oem_targets,
     );
     for &(id, title) in &ready_rows {
-        let selected = target == id;
+        let selected = view.selected_batch_targets.contains(id);
         targets = targets.child(
             line(rtl)
                 .items_center()
@@ -471,7 +469,7 @@ pub(super) fn render_window(
                         .disabled(running)
                         .label(if selected { "☑" } else { "☐" })
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.select_oem(id, "auto", cx);
+                            this.toggle_batch_target(id, cx);
                         })),
                 )
                 .child(
@@ -482,7 +480,14 @@ pub(super) fn render_window(
                         .gap_1()
                         .child(div().text_sm().text_color(rgb(INK)).child(title))
                         .child(div().text_xs().text_color(rgb(MUTED)).child(if selected {
-                            format!("OEM · {nozzle} mm")
+                            let saved = view.settings_loaded["printers"][id]["nozzle"]
+                                .as_str()
+                                .unwrap_or("auto");
+                            if saved == "auto" {
+                                "OEM · auto".to_string()
+                            } else {
+                                format!("OEM · {saved} mm")
+                            }
                         } else {
                             "—".to_string()
                         })),
@@ -496,6 +501,10 @@ pub(super) fn render_window(
             "No target printers selected. Use the printer icon at the top to add them."
         }));
     }
+    let all_ready_checked = !ready_rows.is_empty()
+        && ready_rows
+            .iter()
+            .all(|(id, _)| view.selected_batch_targets.contains(*id));
     let targets_panel = panel()
         .h(px(230.))
         .flex()
@@ -511,10 +520,17 @@ pub(super) fn render_window(
                 .child(heading("02", label(locale, "targetsTitle"), rtl))
                 .child(
                     Button::new("select-all-printers")
-                        .disabled(true) // Registry only has one selected OEM target.
-                        .label(label(locale, "selectAll"))
+                        .disabled(running || ready_rows.is_empty())
+                        .label(label(
+                            locale,
+                            if all_ready_checked {
+                                "deselectAll"
+                            } else {
+                                "selectAll"
+                            },
+                        ))
                         .on_click(cx.listener(|this, _, _, cx| {
-                            unavailable(this, "Multi-target selection", cx)
+                            this.select_all_batch_targets(cx);
                         })),
                 ),
         )
@@ -556,28 +572,46 @@ pub(super) fn render_window(
                 .as_str()
                 .or_else(|| item["receipt"]["data"]["error"].as_str())
                 .unwrap_or("");
-            results_content = results_content.child(
-                div()
-                    .border_b_1()
-                    .border_color(rgb(STROKE))
-                    .pb_3()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(div().text_sm().text_color(rgb(INK)).child(name))
-                    .child(
+            let mut file_report = div()
+                .border_b_1()
+                .border_color(rgb(STROKE))
+                .pb_3()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(div().text_sm().text_color(rgb(INK)).child(name))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(MUTED))
+                        .child(phase.to_string()),
+                );
+            if let Some(targets) = item["targets"].as_array() {
+                for target in targets {
+                    let id = target["target"].as_str().unwrap_or("unknown");
+                    let state = target["phase"].as_str().unwrap_or("queued");
+                    let error = target["receipt"]["error"].as_str().unwrap_or("");
+                    let detail = if error.is_empty() {
+                        format!("{id} · {state}")
+                    } else {
+                        format!("{id} · {state} · {error}")
+                    };
+                    file_report = file_report.child(
                         div()
                             .text_xs()
-                            .text_color(rgb(MUTED))
-                            .child(phase.to_string()),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(RED))
-                            .child(message.to_string()),
-                    ),
-            );
+                            .text_color(rgb(if state == "failed" { RED } else { MUTED }))
+                            .child(detail),
+                    );
+                }
+            } else if !message.is_empty() {
+                file_report = file_report.child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(RED))
+                        .child(message.to_string()),
+                );
+            }
+            results_content = results_content.child(file_report);
         }
     } else if phase == "idle" || (result.is_null() && batch_total == 0) {
         results_content = results_content.child(
@@ -664,7 +698,11 @@ pub(super) fn render_window(
         label(locale, "summaryFailure")
     } else if batch_total > 0 && batch_phase == "completed" {
         label(locale, "finished")
-    } else if file_count > 0 && !target.is_empty() {
+    } else if file_count > 0
+        && ready_rows
+            .iter()
+            .any(|(id, _)| view.selected_batch_targets.contains(*id))
+    {
         label(locale, "ready")
     } else {
         label(locale, "idle")
@@ -716,22 +754,14 @@ pub(super) fn render_window(
                         .disabled(
                             running
                                 || file_count == 0
-                                || target.is_empty()
-                                || !ready_rows.iter().any(|(id, _)| *id == target),
+                                || !ready_rows
+                                    .iter()
+                                    .any(|(id, _)| view.selected_batch_targets.contains(*id)),
                         )
                         .primary()
                         .label(label(locale, "convert"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if file_count > 1 {
-                                this.start_batch(cx);
-                            } else if this.commands.snapshot()["source"].is_null() {
-                                this.last_message = this.locale.text("noSource");
-                                cx.notify();
-                            } else if this.destination.is_none() {
-                                this.choose_destination(cx);
-                            } else {
-                                this.start_conversion(cx);
-                            }
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.start_batch(cx);
                         })),
                 ),
         );

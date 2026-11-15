@@ -326,12 +326,28 @@ impl SliceBridgeWindow {
         if response["ok"] != true {
             self.printers_error = response["error"].as_str().unwrap_or("Save failed").into();
         } else {
+            let previously_visible: BTreeSet<String> =
+                selected_ready_legacy_rows(&self.printers_saved, &self.ready_oem_targets)
+                    .into_iter()
+                    .map(|(id, _)| id.to_owned())
+                    .collect();
             self.printers_saved = response["data"]["selectedIds"]
                 .as_array()
                 .into_iter()
                 .flatten()
                 .filter_map(Value::as_str)
                 .map(str::to_owned)
+                .collect();
+            let now_visible =
+                selected_ready_legacy_rows(&self.printers_saved, &self.ready_oem_targets);
+            // Go checks newly displayed targets, but preserves the state of
+            // checkboxes which stayed visible.
+            self.selected_batch_targets = now_visible
+                .into_iter()
+                .map(|(id, _)| id.to_owned())
+                .filter(|id| {
+                    !previously_visible.contains(id) || self.selected_batch_targets.contains(id)
+                })
                 .collect();
             self.printers_open = false;
             self.printers_error.clear();

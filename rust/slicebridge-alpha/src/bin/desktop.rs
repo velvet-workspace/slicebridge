@@ -10,15 +10,23 @@ use std::process::Command;
 use std::time::Duration;
 
 fn output_folder(status: &Value) -> Option<PathBuf> {
-    let batch_output = status["batch"]["items"]
-        .as_array()
-        .and_then(|items| {
-            items
-                .iter()
-                .rev()
-                .find(|entry| entry["phase"] == "completed")
+    let batch_output = status["batch"]["items"].as_array().and_then(|items| {
+        items.iter().rev().find_map(|entry| {
+            // Multi-target files may have one successful printer even if
+            // another failed. Only a completed target permits opening output.
+            if let Some(targets) = entry["targets"].as_array() {
+                targets
+                    .iter()
+                    .rev()
+                    .find(|target| target["phase"] == "completed")
+                    .and_then(|target| target["output"].as_str())
+            } else if entry["phase"] == "completed" {
+                entry["output"].as_str()
+            } else {
+                None
+            }
         })
-        .and_then(|entry| entry["output"].as_str());
+    });
     let single_output = if status["phase"] == "completed" {
         status["output"].as_str()
     } else {
@@ -55,6 +63,7 @@ struct SliceBridgeWindow {
     printers_first_run: bool,
     printers_cards: Vec<PrinterCard>,
     ready_oem_targets: BTreeSet<String>,
+    selected_batch_targets: BTreeSet<String>,
     ready_profiles: Value,
     source_nozzle: Option<String>,
     printers_saved: Vec<String>,
@@ -108,13 +117,19 @@ impl SliceBridgeWindow {
                 None,
             );
         let prefs = registry.execute("printers.get", &json!({}));
-        let saved = prefs["data"]["selectedIds"]
+        let saved: Vec<String> = prefs["data"]["selectedIds"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(Value::as_str)
             .map(str::to_owned)
             .collect();
+        // Original app checks newly visible My Printers targets by default.
+        let selected_batch_targets =
+            desktop_printer_picker::selected_ready_legacy_rows(&saved, &ready_oem_targets)
+                .into_iter()
+                .map(|(id, _)| id.to_owned())
+                .collect();
         Self {
             commands: registry,
             last_message:
@@ -127,6 +142,7 @@ impl SliceBridgeWindow {
             printers_first_run: prefs["data"]["onboardingPending"] == true,
             printers_cards: cards,
             ready_oem_targets,
+            selected_batch_targets,
             ready_profiles: discovered["data"].clone(),
             source_nozzle: None,
             printers_saved: saved,
@@ -336,8 +352,62 @@ impl SliceBridgeWindow {
         cx.notify();
     }
 
+    fn toggle_batch_target(&mut self, target: &'static str, cx: &mut Context<Self>) {
+        if !self.selected_batch_targets.remove(target) {
+            self.selected_batch_targets.insert(target.to_owned());
+        }
+        cx.notify();
+    }
+
+    fn select_all_batch_targets(&mut self, cx: &mut Context<Self>) {
+        let visible: BTreeSet<String> = desktop_printer_picker::selected_ready_legacy_rows(
+            &self.printers_saved,
+            &self.ready_oem_targets,
+        )
+        .into_iter()
+        .map(|(id, _)| id.to_owned())
+        .collect();
+        if !visible.is_empty()
+            && visible
+                .iter()
+                .all(|id| self.selected_batch_targets.contains(id))
+        {
+            // Go's button toggles between selecting and clearing shown targets.
+            self.selected_batch_targets.clear();
+        } else {
+            self.selected_batch_targets.extend(visible);
+        }
+        cx.notify();
+    }
+
     fn start_batch(&mut self, cx: &mut Context<Self>) {
-        self.run("batch.start", json!({}), cx);
+        let snapshot = self.commands.snapshot();
+        let mut paths = snapshot["batch_selection"]["paths"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if paths.is_empty() {
+            if let Some(source) = snapshot["source"].as_str() {
+                paths.push(source.to_owned());
+            }
+        }
+        let targets = desktop_printer_picker::selected_ready_legacy_rows(
+            &self.printers_saved,
+            &self.ready_oem_targets,
+        )
+        .into_iter()
+        .filter(|(id, _)| self.selected_batch_targets.contains(*id))
+        .map(|(id, _)| id.to_owned())
+        .collect::<Vec<_>>();
+        if paths.is_empty() || targets.is_empty() {
+            self.last_message = self.locale.text("noSource");
+            cx.notify();
+            return;
+        }
+        self.run("batch.start", json!({"paths":paths,"targets":targets}), cx);
     }
 
     fn open_output_folder(&mut self, cx: &mut Context<Self>) {
@@ -547,5 +617,22 @@ mod original_output_folder_tests {
             })),
             Some(PathBuf::from("converted"))
         );
+        let mixed = json!({
+            "batch":{"items":[
+                {"phase":"failed","targets":[
+                    {"phase":"completed","output":"source-folder/U1-part.3mf"},
+                    {"phase":"failed","output":"source-folder/XPlus5-part.3mf"}
+                ]}
+            ]}
+        });
+        assert_eq!(output_folder(&mixed), Some(PathBuf::from("source-folder")));
+        assert!(output_folder(&json!({
+            "batch":{"items":[
+                {"phase":"failed","targets":[
+                    {"phase":"failed","output":"source-folder/never-created.3mf"}
+                ]}
+            ]}
+        }))
+        .is_none());
     }
 }
