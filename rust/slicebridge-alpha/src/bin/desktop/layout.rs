@@ -1,6 +1,42 @@
 //! Main GPUI shell follows main/native/frontend/dist/index.html + app.css.
 //! Baseline: one conversion workspace, not the experimental Project Studio/Batch Dashboard.
 use super::*;
+use gpui_kit::base::Disableable;
+use std::sync::{Arc, OnceLock};
+
+// Embed the original production artwork in the native binary. No runtime WebView,
+// JavaScript, developer workstation path, or external asset dependency.
+fn brand_mark() -> Arc<Image> {
+    static BRAND: OnceLock<Arc<Image>> = OnceLock::new();
+    BRAND
+        .get_or_init(|| {
+            Arc::new(Image::from_bytes(
+                ImageFormat::Png,
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../native/frontend/dist/brand-icon.png"
+                ))
+                .to_vec(),
+            ))
+        })
+        .clone()
+}
+
+fn original_banner() -> Arc<Image> {
+    static BANNER: OnceLock<Arc<Image>> = OnceLock::new();
+    BANNER
+        .get_or_init(|| {
+            Arc::new(Image::from_bytes(
+                ImageFormat::Png,
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../native/frontend/dist/slicebridge-banner.png"
+                ))
+                .to_vec(),
+            ))
+        })
+        .clone()
+}
 
 const BG: u32 = 0xF5FAF7;
 const WHITE: u32 = 0xFFFFFF;
@@ -120,16 +156,10 @@ pub(super) fn render_window(
         .items_center()
         .gap_3()
         .child(
-            div()
-                .w(px(32.))
-                .h(px(32.))
-                .rounded_lg()
-                .bg(rgb(BRAND))
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(rgb(WHITE))
-                .child("S"),
+            img(brand_mark())
+                .w(px(35.))
+                .h(px(35.))
+                .object_fit(ObjectFit::Contain),
         )
         .child(
             div()
@@ -160,6 +190,7 @@ pub(super) fn render_window(
                 .gap_2()
                 .child(
                     Button::new("my-printers")
+                        .disabled(true) // Saved-printer library is not ported yet.
                         .label(if rtl {
                             "המדפסות שלי"
                         } else {
@@ -171,6 +202,7 @@ pub(super) fn render_window(
                 )
                 .child(
                     Button::new("settings")
+                        .disabled(true) // Do not expose a nonfunctional settings dialog.
                         .label(label(locale, "settings"))
                         .on_click(
                             cx.listener(|this, _, _, cx| unavailable(this, "Printer settings", cx)),
@@ -178,6 +210,7 @@ pub(super) fn render_window(
                 )
                 .child(
                     Button::new("integrations")
+                        .disabled(true) // Same default state as the stable developer gate.
                         .label(label(locale, "makerworldSetup"))
                         .on_click(
                             cx.listener(|this, _, _, cx| unavailable(this, "MakerWorld", cx)),
@@ -185,6 +218,7 @@ pub(super) fn render_window(
                 )
                 .child(
                     Button::new("about")
+                        .disabled(true) // About dialog is still awaiting 1:1 port.
                         .label(if rtl { "אודות" } else { "About" })
                         .on_click(cx.listener(|this, _, _, cx| unavailable(this, "About", cx))),
                 )
@@ -362,6 +396,7 @@ pub(super) fn render_window(
                 )
                 .child(
                     Button::new("clear-source-queue")
+                        .disabled(running || file_count == 0)
                         .label(label(locale, "clear"))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.run("batch.clear", json!({}), cx);
@@ -374,12 +409,14 @@ pub(super) fn render_window(
                 .gap_2()
                 .child(
                     Button::new("add-source-files")
+                        .disabled(running)
                         .primary()
                         .label(format!("＋ {}", label(locale, "addFiles")))
                         .on_click(cx.listener(|this, _, _, cx| this.choose_batch_sources(cx))),
                 )
                 .child(
                     Button::new("add-source-folder")
+                        .disabled(running)
                         .label(format!("▤ {}", label(locale, "addFolder")))
                         .on_click(cx.listener(|this, _, _, cx| this.choose_source_folder(cx))),
                 ),
@@ -424,6 +461,7 @@ pub(super) fn render_window(
                 .bg(rgb(if selected { LIGHT_BRAND } else { WHITE }))
                 .child(
                     Button::new(format!("target-{id}"))
+                        .disabled(running)
                         .label(if selected { "☑" } else { "☐" })
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.select_oem(id, "0.4", cx);
@@ -459,6 +497,7 @@ pub(super) fn render_window(
                 .child(heading("02", label(locale, "targetsTitle"), rtl))
                 .child(
                     Button::new("select-all-printers")
+                        .disabled(true) // Registry only has one selected OEM target.
                         .label(label(locale, "selectAll"))
                         .on_click(cx.listener(|this, _, _, cx| {
                             unavailable(this, "Multi-target selection", cx)
@@ -570,6 +609,7 @@ pub(super) fn render_window(
                 .child(heading("03", label(locale, "resultsTitle"), rtl))
                 .child(
                     Button::new("clear-results")
+                        .disabled(running || (result.is_null() && batch_total == 0))
                         .label(label(locale, "clearResults"))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.run("results.clear", json!({}), cx);
@@ -642,6 +682,7 @@ pub(super) fn render_window(
                 .items_center()
                 .child(
                     Button::new("output-folder")
+                        .disabled(output_folder(&status).is_none())
                         .label(label(locale, "openFolder"))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.open_output_folder(cx);
@@ -649,6 +690,7 @@ pub(super) fn render_window(
                 )
                 .child(
                     Button::new("convert-main")
+                        .disabled(running || file_count == 0 || target.is_empty())
                         .primary()
                         .label(label(locale, "convert"))
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -666,19 +708,97 @@ pub(super) fn render_window(
                 ),
         );
 
-    let progress = line(rtl)
-        .h(px(23.))
-        .px_5()
-        .items_center()
-        .gap_3()
-        .bg(rgb(BG))
-        .child(div().text_xs().text_color(rgb(MUTED)).child(status_result))
+    // Exact stable element order: actionbar, original 91px brand banner,
+    // then a separate 49px conversion-progress row (not a status strip).
+    let brand_banner = div()
+        .id("sb-brand-banner")
+        .relative()
+        .w_full()
+        .h(px(91.))
+        .flex_none()
+        .overflow_hidden()
+        .bg(rgb(0x0E3D36))
+        .border_t_1()
+        .border_color(rgb(0x256C59))
         .child(
             div()
-                .flex_1()
-                .h(px(6.))
+                .absolute()
+                .right_0()
+                .top_0()
+                .h_full()
+                .w(relative(0.78))
+                .child(
+                    img(original_banner())
+                        .size_full()
+                        .object_fit(ObjectFit::Cover),
+                ),
+        )
+        .child(
+            div()
+                .relative()
+                .flex()
+                .flex_col()
+                .justify_center()
+                .h_full()
+                .px_9()
+                .gap_1()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(0xF2FFF9))
+                        .child("DIFFERENT SLICERS."),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(0xF2FFF9))
+                        .child("ONE SIMPLE WORKFLOW."),
+                )
+                .child(div().w(px(26.)).h(px(2.)).bg(rgb(0xA7F3D0)))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(0xDEEEE8))
+                        .child("SliceBridge makes your 3D printing workflow more open, flexible, and connected."),
+                ),
+        );
+
+    let progress = div()
+        .id("sb-conversion-progress")
+        .h(px(49.))
+        .flex_none()
+        .px_5()
+        .py_2()
+        .flex()
+        .flex_col()
+        .justify_center()
+        .gap_2()
+        .bg(rgb(0xF9FFFB))
+        .border_t_1()
+        .border_color(rgb(0xB9D9CA))
+        .child(
+            line(false)
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(0x426959))
+                        .child(status_result),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(INK))
+                        .child(format!("{batch_percent}%")),
+                ),
+        )
+        .child(
+            div()
+                .w_full()
+                .h(px(7.))
                 .rounded_full()
-                .bg(rgb(0xD5E6DD))
+                .bg(rgb(0xD9EEE5))
                 .child(
                     div()
                         .w(relative(batch_percent as f32 / 100.0))
@@ -686,12 +806,6 @@ pub(super) fn render_window(
                         .rounded_full()
                         .bg(rgb(BRAND)),
                 ),
-        )
-        .child(
-            div()
-                .text_xs()
-                .text_color(rgb(MUTED))
-                .child(format!("{batch_percent}%")),
         );
 
     div()
@@ -707,5 +821,6 @@ pub(super) fn render_window(
         .child(sectionbar)
         .child(workspace)
         .child(actionbar)
+        .child(brand_banner)
         .child(progress)
 }
