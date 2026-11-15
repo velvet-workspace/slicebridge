@@ -47,12 +47,18 @@ fn choice_button(
 pub(super) fn ready_from_preferences(
     discovery: &Value,
     settings: &Value,
+    source_nozzle: Option<&str>,
 ) -> std::collections::BTreeSet<String> {
     let mut ready = std::collections::BTreeSet::new();
     for target in ["u1", "qidi"] {
-        let Ok((nozzle, overrides)) =
+        let selection = if let Some(source) = source_nozzle {
+            slicebridge_alpha::printer_settings::profile_choice_for_source(
+                settings, target, "auto", source,
+            )
+        } else {
             slicebridge_alpha::printer_settings::profile_choice(settings, target, "auto")
-        else {
+        };
+        let Ok((nozzle, overrides)) = selection else {
             continue;
         };
         let listed = discovery["profiles"].as_array().is_some_and(|rows| {
@@ -179,7 +185,12 @@ impl SliceBridgeWindow {
             // Echoed readback is the ground truth after atomic write.
             self.settings_loaded = reply["data"].clone();
             let fresh = self.commands.execute("profiles.discover", &json!({}));
-            self.ready_oem_targets = ready_from_preferences(&fresh["data"], &self.settings_loaded);
+            self.ready_profiles = fresh["data"].clone();
+            self.ready_oem_targets = ready_from_preferences(
+                &self.ready_profiles,
+                &self.settings_loaded,
+                self.source_nozzle.as_deref(),
+            );
             self.settings_open = false;
             self.settings_draft = Value::Null;
             self.settings_error.clear();
@@ -535,9 +546,10 @@ mod tests {
             {"target":"u1","nozzle":"0.6","ready":true},
             {"target":"qidi","nozzle":"0.4","ready":false}
         ]});
-        assert!(super::ready_from_preferences(&discovered, &saved).contains("u1"));
+        assert!(super::ready_from_preferences(&discovered, &saved, None).contains("u1"));
         saved["printers"]["u1"]["nozzle"] = json!("auto");
-        assert!(!super::ready_from_preferences(&discovered, &saved).contains("u1"));
+        assert!(!super::ready_from_preferences(&discovered, &saved, None).contains("u1"));
+        assert!(super::ready_from_preferences(&discovered, &saved, Some("0.6")).contains("u1"));
     }
 
     #[test]

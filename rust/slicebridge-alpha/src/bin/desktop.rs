@@ -55,6 +55,8 @@ struct SliceBridgeWindow {
     printers_first_run: bool,
     printers_cards: Vec<PrinterCard>,
     ready_oem_targets: BTreeSet<String>,
+    ready_profiles: Value,
+    source_nozzle: Option<String>,
     printers_saved: Vec<String>,
     printers_draft: Vec<String>,
     printers_maker: Option<String>,
@@ -103,6 +105,7 @@ impl SliceBridgeWindow {
             desktop_printer_settings_ui::ready_from_preferences(
                 &discovered["data"],
                 &settings_value,
+                None,
             );
         let prefs = registry.execute("printers.get", &json!({}));
         let saved = prefs["data"]["selectedIds"]
@@ -124,6 +127,8 @@ impl SliceBridgeWindow {
             printers_first_run: prefs["data"]["onboardingPending"] == true,
             printers_cards: cards,
             ready_oem_targets,
+            ready_profiles: discovered["data"].clone(),
+            source_nozzle: None,
             printers_saved: saved,
             printers_draft: Vec::new(),
             printers_maker: None,
@@ -171,6 +176,19 @@ impl SliceBridgeWindow {
         if name == "source.select" && result["ok"] == true {
             self.destination = None;
             self.destination_source = None;
+            self.source_nozzle = result["data"]["source_nozzle"].as_str().map(str::to_owned);
+            self.ready_oem_targets = desktop_printer_settings_ui::ready_from_preferences(
+                &self.ready_profiles,
+                &self.settings_loaded,
+                self.source_nozzle.as_deref(),
+            );
+        } else if name == "batch.clear" && result["ok"] == true {
+            self.source_nozzle = None;
+            self.ready_oem_targets = desktop_printer_settings_ui::ready_from_preferences(
+                &self.ready_profiles,
+                &self.settings_loaded,
+                None,
+            );
         }
         self.last_message = if result["ok"] == true {
             format!("{name}: {}", result["data"])

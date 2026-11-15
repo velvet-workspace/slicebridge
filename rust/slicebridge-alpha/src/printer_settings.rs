@@ -347,6 +347,50 @@ fn replace_atomic(from: &Path, to: &Path) -> Result<(), String> {
 
 // Translate the original fixed physical-nozzle and installed-filament preferences
 // into an OEM profile request. Explicit agent nozzle choices remain explicit.
+/// Port of engine/bridge/targets.go::targetNozzleForSource.
+pub fn target_nozzle_for_source(target: &str, source: &str) -> Result<&'static str, String> {
+    let (_, nozzles, _) = TARGETS
+        .iter()
+        .find(|row| row.0 == target)
+        .ok_or_else(|| format!("unknown selected printer {target}"))?;
+    for nozzle in *nozzles {
+        if *nozzle == source {
+            return Ok(nozzle);
+        }
+    }
+    if source == "0.2" && nozzles.contains(&"0.25") {
+        return Ok("0.25");
+    }
+    if source == "0.25" && nozzles.contains(&"0.2") {
+        return Ok("0.2");
+    }
+    Err(format!(
+        "no matching {target} target nozzle for source {source} mm"
+    ))
+}
+
+/// A fixed saved physical nozzle overrides the source like original Go.
+/// In automatic mode, the source project determines the target hardware
+/// variant (including the 0.2/0.25 manufacturer-specific mapping).
+pub fn profile_choice_for_source(
+    settings: &Value,
+    target: &str,
+    requested: &str,
+    source: &str,
+) -> Result<(String, std::collections::BTreeMap<String, String>), String> {
+    if requested != "auto" {
+        return profile_choice(settings, target, requested);
+    }
+    let saved = settings["printers"][target]["nozzle"]
+        .as_str()
+        .unwrap_or("auto");
+    if saved != "auto" {
+        return profile_choice(settings, target, "auto");
+    }
+    let mapped = target_nozzle_for_source(target, source)?;
+    profile_choice(settings, target, mapped)
+}
+
 pub fn profile_choice(
     settings: &Value,
     target: &str,
@@ -498,6 +542,58 @@ mod tests {
             assert!(parse(raw.as_bytes()).is_err(), "unexpectedly parsed {raw}");
         }
     }
+    #[test]
+    fn original_source_to_target_nozzle_mapping_is_preserved() {
+        for (source, target, expected) in [
+            ("0.2", "u1", "0.2"),
+            ("0.2", "c5", "0.25"),
+            ("0.2", "cc2", "0.2"),
+            ("0.2", "qidi", "0.2"),
+            ("0.25", "u1", "0.2"),
+            ("0.25", "cc2", "0.2"),
+            ("0.25", "c5", "0.25"),
+            ("0.25", "qidi", "0.2"),
+            ("0.4", "u1", "0.4"),
+            ("0.6", "qidi", "0.6"),
+            ("0.8", "c5", "0.8"),
+        ] {
+            assert_eq!(target_nozzle_for_source(target, source).unwrap(), expected);
+        }
+        assert!(target_nozzle_for_source("u1", "0.3").is_err());
+        assert!(target_nozzle_for_source("unknown", "0.4").is_err());
+    }
+
+    #[test]
+    fn auto_uses_source_unless_physical_nozzle_is_saved() {
+        let mut saved = defaults();
+        assert_eq!(
+            profile_choice_for_source(&saved, "u1", "auto", "0.8")
+                .unwrap()
+                .0,
+            "0.8"
+        );
+        assert_eq!(
+            profile_choice_for_source(&saved, "c5", "auto", "0.2")
+                .unwrap()
+                .0,
+            "0.25"
+        );
+        assert_eq!(
+            profile_choice_for_source(&saved, "qidi", "auto", "0.25")
+                .unwrap()
+                .0,
+            "0.2"
+        );
+        saved["printers"]["u1"]["nozzle"] = json!("0.6");
+        assert_eq!(
+            profile_choice_for_source(&saved, "u1", "auto", "0.2")
+                .unwrap()
+                .0,
+            "0.6"
+        );
+        assert!(profile_choice_for_source(&saved, "u1", "0.4", "0.2").is_err());
+    }
+
     #[test]
     fn profile_selection_applies_fixed_nozzle_and_filament_and_fails_closed() {
         let mut saved = defaults();

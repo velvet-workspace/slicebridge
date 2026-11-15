@@ -7,6 +7,7 @@ mod materials;
 mod modelsettings;
 mod native_archive;
 mod native_plan;
+pub mod nozzle;
 mod paint;
 mod projectsettings;
 mod qidi_origin;
@@ -19,6 +20,7 @@ pub use native_archive::{
     convert_native_archive, convert_native_autonomous, validate_native_autonomous_input,
 };
 pub use native_plan::build_native_conversion_plan;
+pub use nozzle::inspect_source_nozzle;
 pub use paint::{remap_paint_hex, rewrite_model_paint_xml};
 pub use projectsettings::compose_project_settings;
 pub use sanitize::{strip_slice_cache, strip_slice_cache_preserving};

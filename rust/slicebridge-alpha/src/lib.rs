@@ -6,7 +6,9 @@ pub mod oem;
 pub mod printer_settings;
 pub mod protocol;
 use serde_json::{json, Value};
-use slicebridge_3mf_probe::{inspect_package, validate_native_autonomous_input};
+use slicebridge_3mf_probe::{
+    inspect_package, inspect_source_nozzle, validate_native_autonomous_input,
+};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};
@@ -375,12 +377,16 @@ impl Registry {
             "source.inspect" | "source.select" => {
                 let path = user_path(params, "path")?;
                 let facts = inspect_package(&path)?;
+                let nozzle = inspect_source_nozzle(&path)?;
                 let receipt = json!({
                     "path": path.to_string_lossy(),
                     "vertices": facts.vertices,
                     "triangles": facts.triangles,
                     "slice_caches": facts.slice_caches,
                     "printer_model": facts.printer_model,
+                    "source_nozzle": nozzle["source_nozzle"],
+                    "source_nozzle_source": nozzle["source_nozzle_source"],
+                    "source_nozzle_assumed": nozzle["source_nozzle_assumed"],
                 });
                 if command == "source.select" {
                     let mut state = self.state.lock().map_err(|e| e.to_string())?;
@@ -425,11 +431,19 @@ impl Registry {
                         .clone()
                         .ok_or("select source 3MF before OEM profile")?
                 };
-                // Resolve only from actual saved physical nozzle/material preferences.
-                // A request for auto selects saved fixed nozzle, or the existing 0.4mm fallback.
+                // Auto follows the source 3MF nozzle, unless a fixed physical
+                // nozzle was saved for the target. No conversion happens here.
+                let source_nozzle = inspect_source_nozzle(&source)?;
+                let source_diameter = source_nozzle["source_nozzle"]
+                    .as_str()
+                    .ok_or("source 3MF nozzle unavailable")?;
                 let saved = printer_settings::current()?;
-                let (nozzle, overrides) =
-                    printer_settings::profile_choice(&saved, &target, &requested_nozzle)?;
+                let (nozzle, overrides) = printer_settings::profile_choice_for_source(
+                    &saved,
+                    &target,
+                    &requested_nozzle,
+                    source_diameter,
+                )?;
                 let bundle = oem::resolve(&target, &nozzle, &overrides)?;
                 let verified = validate_native_autonomous_input(&bundle, &source)?;
                 let label = verified["printer"]
@@ -808,6 +822,28 @@ mod tests {
         let result = registry.execute("source.select", &json!({"path": "nonexistent.3mf"}));
         assert_eq!(result["ok"], false);
         assert_eq!(registry.snapshot()["source"], Value::Null);
+    }
+
+    #[test]
+    fn source_inspection_and_selection_expose_original_nozzle_provenance() {
+        let source =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/bambu-nozzle-0.6.3mf");
+        let registry = Registry::new();
+        let read = registry.execute("source.inspect", &json!({"path":source}));
+        assert_eq!(read["ok"], true, "{read}");
+        assert_eq!(read["data"]["source_nozzle"], "0.6");
+        assert_eq!(read["data"]["source_nozzle_source"], "nozzle_diameter");
+        assert_eq!(read["data"]["source_nozzle_assumed"], false);
+        assert!(registry.snapshot()["source"].is_null());
+        let selected = registry.execute("source.select", &json!({"path":source}));
+        assert_eq!(selected["ok"], true, "{selected}");
+        assert_eq!(registry.snapshot()["facts"]["source_nozzle"], "0.6");
+        let assumed =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/bambu-one-color.3mf");
+        let legacy = registry.execute("source.inspect", &json!({"path":assumed}));
+        assert_eq!(legacy["ok"], true, "{legacy}");
+        assert_eq!(legacy["data"]["source_nozzle"], "0.4");
+        assert_eq!(legacy["data"]["source_nozzle_assumed"], true);
     }
 
     #[test]

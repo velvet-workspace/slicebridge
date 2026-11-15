@@ -8,6 +8,8 @@ on:
     paths:
       - 'rust/slicebridge-alpha/**'
       - 'rust/3mf-probe/**'
+      - 'tests/nozzle-parity/**'
+      - 'tests/nozzle-parity-check.cjs'
       - 'native/frontend/dist/brand-icon.png'
       - 'native/frontend/dist/slicebridge-banner.png'
       - '.github/workflows/gpui-parity.yml'
@@ -43,6 +45,17 @@ jobs:
           cargo fmt --all -- --check
           cargo test --locked --features desktop --lib --bin slicebridge-desktop
           cargo build --locked --features desktop --bin slicebridge-desktop
+      - name: Go toolchain for read-only baseline nozzle inspection
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: engine/go.mod
+          cache: false
+      - name: Compare original Go and Rust source nozzle results (read-only)
+        working-directory: .
+        run: |
+          set -euo pipefail
+          cargo build --locked --manifest-path rust/slicebridge-alpha/Cargo.toml --bin slicebridge-alpha
+          node tests/nozzle-parity-check.cjs
       - name: Retain isolated Windows QA executable, not a release
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
