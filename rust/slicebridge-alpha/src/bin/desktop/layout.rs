@@ -112,6 +112,46 @@ fn short_path(path: &str, max_chars: usize) -> String {
     )
 }
 
+// Mirrors app.js resultLine: a receipt reads as `CODE: error`, keeping whichever parts exist.
+pub(super) fn receipt_error(receipt: &Value) -> String {
+    let error = receipt["error"]
+        .as_str()
+        .or_else(|| receipt["data"]["error"].as_str())
+        .unwrap_or("");
+    let code = receipt["code"].as_str().unwrap_or("");
+    match (code.is_empty(), error.is_empty()) {
+        (true, _) => error.to_string(),
+        (false, true) => code.to_string(),
+        (false, false) => format!("{code}: {error}"),
+    }
+}
+
+// Mirrors app.js renderResults: successes out of all finished results for one source file.
+pub(super) fn result_counts(item: &Value) -> (usize, usize) {
+    let results = item["results"].as_array();
+    let failures = item["failures"].as_array();
+    if results.is_some() || failures.is_some() {
+        let succeeded = results.map_or(0, Vec::len);
+        let failed = failures.map_or(0, Vec::len);
+        return (succeeded, succeeded + failed);
+    }
+    // Legacy single-target Registry batches do not have nested result arrays.
+    // Do not render their successful outputs as "0 / 0".
+    match item["phase"].as_str() {
+        Some("completed") => (1, 1),
+        Some("failed") => (0, 1),
+        _ => (0, 0),
+    }
+}
+
+// Mirrors app.js renderTargets: the notice shows unless a ready printer is selected for conversion.
+pub(super) fn empty_target_notice_visible(
+    ready_rows: &[(&str, &str)],
+    selected: &BTreeSet<String>,
+) -> bool {
+    !ready_rows.iter().any(|(id, _)| selected.contains(*id))
+}
+
 fn unavailable(view: &mut SliceBridgeWindow, area: &str, cx: &mut Context<SliceBridgeWindow>) {
     view.last_message = format!("{area}: original application behavior not yet migrated to Rust");
     cx.notify();
@@ -494,7 +534,7 @@ pub(super) fn render_window(
                 ),
         );
     }
-    if ready_rows.is_empty() {
+    if empty_target_notice_visible(&ready_rows, &view.selected_batch_targets) {
         targets = targets.child(div().p_3().text_sm().text_color(rgb(MUTED)).child(if rtl {
             "לא נבחרו מדפסות יעד זמינות. אפשר להוסיף דרך סמל המדפסת בראש החלון."
         } else {
@@ -568,10 +608,26 @@ pub(super) fn render_window(
                 .map(filename)
                 .unwrap_or_else(|| format!("#{idx}"));
             let phase = item["phase"].as_str().unwrap_or("queued");
-            let message = item["receipt"]["error"]
-                .as_str()
-                .or_else(|| item["receipt"]["data"]["error"].as_str())
-                .unwrap_or("");
+            let message = receipt_error(&item["receipt"]);
+            let message = if message.is_empty() {
+                item["error"].as_str().unwrap_or("").to_owned()
+            } else {
+                message
+            };
+            let (succeeded, finished) = result_counts(item);
+            let mut name_row = line(rtl)
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(div().text_sm().text_color(rgb(INK)).child(name));
+            if finished != 0 {
+                name_row = name_row.child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(MUTED))
+                        .child(format!("{succeeded} / {finished}")),
+                );
+            }
             let mut file_report = div()
                 .border_b_1()
                 .border_color(rgb(STROKE))
@@ -579,7 +635,7 @@ pub(super) fn render_window(
                 .flex()
                 .flex_col()
                 .gap_1()
-                .child(div().text_sm().text_color(rgb(INK)).child(name))
+                .child(name_row)
                 .child(
                     div()
                         .text_xs()
@@ -590,7 +646,7 @@ pub(super) fn render_window(
                 for target in targets {
                     let id = target["target"].as_str().unwrap_or("unknown");
                     let state = target["phase"].as_str().unwrap_or("queued");
-                    let error = target["receipt"]["error"].as_str().unwrap_or("");
+                    let error = receipt_error(&target["receipt"]);
                     let detail = if error.is_empty() {
                         format!("{id} · {state}")
                     } else {
@@ -603,13 +659,10 @@ pub(super) fn render_window(
                             .child(detail),
                     );
                 }
-            } else if !message.is_empty() {
-                file_report = file_report.child(
-                    div()
-                        .text_xs()
-                        .text_color(rgb(RED))
-                        .child(message.to_string()),
-                );
+            }
+            if !message.is_empty() {
+                file_report =
+                    file_report.child(div().text_xs().text_color(rgb(RED)).child(message));
             }
             results_content = results_content.child(file_report);
         }

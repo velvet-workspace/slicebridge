@@ -636,3 +636,54 @@ mod original_output_folder_tests {
         .is_none());
     }
 }
+
+#[cfg(test)]
+mod layout_helper_tests {
+    use super::desktop_layout::{empty_target_notice_visible, receipt_error, result_counts};
+    use serde_json::json;
+    use serde_json::Value;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn receipt_error_keeps_code_and_message() {
+        assert_eq!(
+            receipt_error(&json!({"code":"SOURCE_INVALID","error":"bad 3MF"})),
+            "SOURCE_INVALID: bad 3MF"
+        );
+        assert_eq!(receipt_error(&json!({"error":"bad 3MF"})), "bad 3MF");
+        assert_eq!(
+            receipt_error(&json!({"code":"OUTPUT_COLLISIONS"})),
+            "OUTPUT_COLLISIONS"
+        );
+        assert_eq!(
+            receipt_error(&json!({"code":"X","data":{"error":"nested"}})),
+            "X: nested"
+        );
+        assert_eq!(receipt_error(&Value::Null), "");
+    }
+
+    #[test]
+    fn result_counts_use_results_and_failures_arrays() {
+        let item = json!({
+            "results": [{"target":"u1","receipt":null}],
+            "failures": [{"target":"qidi","receipt":{"code":"X"}}, {"target":"k2","receipt":null}]
+        });
+        assert_eq!(result_counts(&item), (1, 3));
+        assert_eq!(result_counts(&json!({"phase":"queued"})), (0, 0));
+        assert_eq!(result_counts(&json!({"phase":"completed"})), (1, 1));
+        assert_eq!(result_counts(&json!({"phase":"failed"})), (0, 1));
+    }
+
+    #[test]
+    fn empty_target_notice_requires_no_selected_ready_printer() {
+        let rows = [("u1", "Ultimaker"), ("qidi", "Qidi")];
+        let mut selected = BTreeSet::new();
+        assert!(empty_target_notice_visible(&rows, &selected));
+        // A stale selection that matches no ready printer still leaves nothing to convert to.
+        selected.insert("gone".to_string());
+        assert!(empty_target_notice_visible(&rows, &selected));
+        selected.insert("qidi".to_string());
+        assert!(!empty_target_notice_visible(&rows, &selected));
+        assert!(empty_target_notice_visible(&[], &BTreeSet::new()));
+    }
+}
