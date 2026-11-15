@@ -318,9 +318,12 @@ pub fn experimental_path() -> Result<PathBuf, String> {
 }
 
 pub fn available_installed_ids() -> HashSet<String> {
-    // Dynamic Orca/Prusa target discovery is not ported yet. Never claim a
-    // catalogue entry is installed or conversion-ready based on its name.
-    HashSet::new()
+    // Prusa IDs are discovered from fully resolved installed user presets only.
+    // This is My Printers membership, never evidence of conversion readiness:
+    // every per-printer Prusa export remains gated off until verified.
+    crate::prusa::installed_prusa_target_ids()
+        .into_iter()
+        .collect()
 }
 
 #[cfg(test)]
@@ -435,6 +438,29 @@ mod tests {
         assert_eq!(disk["selectedIds"], json!(["qidi-x-plus-5", dynamic]));
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
+    #[test]
+    fn resolved_prusa_membership_never_becomes_export_readiness() {
+        let path = temp("prusa-membership");
+        let id = "prusa-custom-mk4-0123456789".to_string();
+        let installed = HashSet::from([id.clone()]);
+        assert_eq!(
+            save(&path, &[id.clone()], &installed).unwrap()["selectedIds"],
+            json!([id])
+        );
+        // Missing user presets are hidden but never destroyed by a later save.
+        assert_eq!(save(&path, &[], &none()).unwrap()["selectedIds"], json!([]));
+        let disk: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(disk["selectedIds"], json!([id]));
+        // Once installed again, the membership can be deselected explicitly.
+        assert_eq!(
+            save(&path, &[], &installed).unwrap()["selectedIds"],
+            json!([])
+        );
+        let disk: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(disk["selectedIds"], json!([]));
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
     #[test]
     fn installed_dynamic_id_is_visible_and_can_be_removed() {
         let path = temp("installed");

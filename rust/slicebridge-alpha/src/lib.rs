@@ -160,6 +160,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "Read exact 603-model offline stable My Printers catalogue",
     ),
     (
+        "printers.installed_prusa",
+        "Read installed PrusaSlicer user presets, all conversion-unverified",
+    ),
+    (
         "settings.get",
         "Read validated stable printer settings or defaults without modifying installed settings",
     ),
@@ -396,6 +400,7 @@ impl Registry {
                 .collect::<Vec<_>>()})),
             "app.status" | "conversion.status" => Ok(self.snapshot()),
             "printers.catalog" => my_printers::catalog_snapshot(),
+            "printers.installed_prusa" => Ok(prusa::installed_prusa_reply()),
             "updates.version" => {
                 let (os, arch) = updates::current_platform();
                 Ok(json!({
@@ -1052,6 +1057,24 @@ fn same_path(a: &Path, b: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prusa_discovery_is_read_only_and_conversion_unverified() {
+        let registry = Registry::new();
+        let before = registry.snapshot();
+        let result = registry.execute("printers.installed_prusa", &json!({}));
+        assert_eq!(result["ok"], true);
+        let data = &result["data"];
+        assert!(data["targets"].is_array());
+        assert!(data["rejected"].is_array());
+        for target in data["targets"].as_array().unwrap() {
+            assert_eq!(target["ready"], false);
+            assert!(target["reason"]
+                .as_str()
+                .is_some_and(|reason| !reason.is_empty()));
+        }
+        assert_eq!(registry.snapshot(), before);
+    }
 
     #[test]
     fn registry_commands_are_discoverable() {

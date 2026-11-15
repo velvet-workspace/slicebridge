@@ -10,6 +10,7 @@
 //! Every target is reported with `ready: false`. Per-printer PrusaSlicer export
 //! has not been verified, so listing a target never authorises conversion.
 
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::env;
 use std::fs::{self, File};
@@ -132,6 +133,33 @@ enum PrusaScanError {
 /// Discovers installed PrusaSlicer printers from the fixed install locations.
 pub(crate) fn discover_prusa() -> PrusaDiscovery {
     discover_prusa_at(&installed_prusa_locations())
+}
+
+/// The same public view as native/prusa_targets.go. Preset names used by the
+/// conversion engine stay private; no per-printer Prusa export is authorized.
+pub(crate) fn discovery_reply(discovery: PrusaDiscovery) -> Value {
+    json!({
+        "targets": discovery.targets.into_iter().map(|target| json!({
+            "id": target.id,
+            "title": target.name,
+            "slicer": target.slicer,
+            "vendor": target.vendor,
+            "model": target.model,
+            "nozzle": target.nozzle,
+            "ready": false,
+            "reason": PRUSA_EXPORT_NOT_VERIFIED,
+        })).collect::<Vec<_>>(),
+        "rejected": discovery.rejected.into_iter().map(|item| json!({
+            "vendor": item.vendor,
+            "machine": item.machine,
+            "slicer": item.slicer,
+            "reason": item.reason,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+pub(crate) fn installed_prusa_reply() -> Value {
+    discovery_reply(discover_prusa())
 }
 
 /// Lists the IDs of installed targets, in the same order as `discover_prusa`.
@@ -911,6 +939,40 @@ fn hex_lower(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installed_reply_matches_go_and_never_claims_unverified_export() {
+        let discovery = PrusaDiscovery {
+            targets: vec![PrusaTarget {
+                id: "prusa-custom-mk4-0123456789".into(),
+                name: "MK4 0.4".into(),
+                slicer: PRUSA_SLICER_LABEL,
+                source_root: "user",
+                vendor: "Prusa Research".into(),
+                model: "MK4".into(),
+                nozzle: "0.4",
+                print: "0.20mm QUALITY".into(),
+                filament: "Generic PLA".into(),
+                ready: false,
+                reason: PRUSA_EXPORT_NOT_VERIFIED,
+            }],
+            rejected: vec![PrusaRejection {
+                vendor: "Custom".into(),
+                machine: "incomplete".into(),
+                slicer: PRUSA_SLICER_LABEL,
+                reason: "no compatible PLA".into(),
+            }],
+        };
+        let reply = discovery_reply(discovery);
+        assert_eq!(reply["targets"].as_array().unwrap().len(), 1);
+        assert_eq!(reply["targets"][0]["ready"], false);
+        assert_eq!(reply["targets"][0]["title"], "MK4 0.4");
+        assert_eq!(reply["targets"][0]["reason"], PRUSA_EXPORT_NOT_VERIFIED);
+        assert!(reply["targets"][0].get("print").is_none());
+        assert!(reply["targets"][0].get("filament").is_none());
+        assert!(reply["targets"][0].get("source_root").is_none());
+        assert_eq!(reply["rejected"][0]["reason"], "no compatible PLA");
+    }
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     const QIDI_VENDOR_FIXTURE: &str = r##"# fixture
