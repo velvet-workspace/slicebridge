@@ -193,10 +193,11 @@ struct SliceBridgeWindow {
     about_developer_error: bool,
     about_link_error: bool,
     about_document: Option<AboutDocument>,
+    update: UpdateCheck,
 }
 
 // Matches the installed-version string the stable Go app shows (`appVersion` in native/updates_bridge.go).
-const ABOUT_INSTALLED_VERSION: &str = "0.4.0-beta.6.dev.3";
+const ABOUT_INSTALLED_VERSION: &str = slicebridge_alpha::updates::INSTALLED_VERSION;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AboutDocument {
@@ -236,8 +237,8 @@ fn about_page_url(kind: &str) -> Option<&'static str> {
 }
 
 // Shell-free launcher for one allowlisted URL, passed as a single argument. Callers pass only
-// values returned by `about_page_url`.
-fn about_open_command(url: &'static str) -> Command {
+// values returned by `about_page_url` or URLs that passed `allowed_update_url`.
+fn about_open_command(url: &str) -> Command {
     if cfg!(windows) {
         let mut command = Command::new("rundll32.exe");
         command.arg("url.dll,FileProtocolHandler").arg(url);
@@ -250,6 +251,153 @@ fn about_open_command(url: &'static str) -> Command {
         let mut command = Command::new("xdg-open");
         command.arg(url);
         command
+    }
+}
+
+// Update links the release notice may open, mirroring updates.rs: the repository's Releases page,
+// its preview-build workflow page, and one release tag page. Any other host, path, query or
+// fragment is refused, so no UI or GitHub JSON value reaches the OS launcher unchecked.
+fn allowed_update_url(url: &str) -> bool {
+    const REPOSITORY: &str = "https://github.com/nocturney/slicebridge";
+    let Some(path) = url.strip_prefix(REPOSITORY) else {
+        return false;
+    };
+    match path {
+        "/releases" | "/actions/workflows/native.yml" => true,
+        _ => path
+            .strip_prefix("/releases/tag/")
+            .is_some_and(allowed_release_tag),
+    }
+}
+
+// Same bounds as updates.rs safe_tag: short, and only ASCII letters, digits, dots, dashes and plus.
+fn allowed_release_tag(tag: &str) -> bool {
+    let version = tag.strip_prefix('v').unwrap_or(tag);
+    !version.is_empty()
+        && tag.len() <= 90
+        && !tag.contains("..")
+        && tag
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+'))
+}
+
+// The only links the update notice offers, as app.js renderUpdates does. The Registry checks them again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum UpdateAction {
+    Release(String),
+    Releases,
+    Builds,
+}
+
+impl UpdateAction {
+    fn label_key(&self) -> &'static str {
+        match self {
+            Self::Release(_) => "openRelease",
+            Self::Releases => "openReleases",
+            Self::Builds => "openPreviewBuilds",
+        }
+    }
+
+    fn page_params(&self) -> Value {
+        match self {
+            Self::Release(tag) => json!({"kind":"release","tag":tag}),
+            Self::Releases => json!({"kind":"releases"}),
+            Self::Builds => json!({"kind":"builds"}),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct UpdateNotice {
+    message_key: &'static str,
+    // Fills `{v}` in the message. Empty when the status carries no version.
+    version: String,
+    action: Option<UpdateAction>,
+}
+
+// Mirrors app.js renderUpdates, status by status. A release tag is offered only when it is safe.
+fn update_notice_for(data: &Value) -> UpdateNotice {
+    let (message_key, action) = match data["status"].as_str().unwrap_or("") {
+        "update_available" => (
+            "updateAvailable",
+            data["releaseTag"]
+                .as_str()
+                .filter(|&tag| allowed_release_tag(tag))
+                .map(|tag| UpdateAction::Release(tag.to_owned())),
+        ),
+        "up_to_date" => ("latestInstalled", None),
+        "no_releases" => ("noPublishedReleases", Some(UpdateAction::Builds)),
+        "platform_unavailable" => ("platformUnavailable", Some(UpdateAction::Releases)),
+        "authentication_required" => ("authRequired", Some(UpdateAction::Releases)),
+        _ => ("unsupportedPlatform", None),
+    };
+    UpdateNotice {
+        message_key,
+        version: data["latestVersion"].as_str().unwrap_or("").to_owned(),
+        action,
+    }
+}
+
+// The Registry reply as the notice reads it: the check data, or the error it reports. Never a guess.
+fn update_check_outcome(reply: &Value) -> Result<Value, String> {
+    if reply["ok"] != true {
+        return Err(reply["error"]
+            .as_str()
+            .unwrap_or("unknown error")
+            .to_owned());
+    }
+    if reply["data"]["status"].as_str().is_none() {
+        return Err("invalid update check reply".to_owned());
+    }
+    Ok(reply["data"].clone())
+}
+
+// Update notice state, kept apart from GPUI so the request rules can be unit-tested.
+#[derive(Default)]
+struct UpdateCheck {
+    checking: bool,
+    // Bumped by each check and by closing About, so only the request the user still sees may show.
+    request: u64,
+    data: Option<Value>,
+    error: String,
+    link_error: bool,
+}
+
+impl UpdateCheck {
+    // Returns the request ID for a new check, or None while one is already in flight.
+    fn begin(&mut self) -> Option<u64> {
+        if self.checking {
+            return None;
+        }
+        self.checking = true;
+        self.request = self.request.wrapping_add(1);
+        self.data = None;
+        self.error.clear();
+        self.link_error = false;
+        Some(self.request)
+    }
+
+    // A reply for an older request still ends the wait, but it is never shown.
+    fn finish(&mut self, request: u64, reply: &Value) {
+        self.checking = false;
+        if request == self.request {
+            match update_check_outcome(reply) {
+                Ok(data) => self.data = Some(data),
+                Err(error) => self.error = error,
+            }
+        }
+    }
+
+    fn dismiss(&mut self) {
+        self.data = None;
+        self.error.clear();
+        self.link_error = false;
+    }
+
+    // Closing About abandons what was shown. A check still running can no longer show its result.
+    fn close(&mut self) {
+        self.request = self.request.wrapping_add(1);
+        self.dismiss();
     }
 }
 
@@ -339,6 +487,7 @@ impl SliceBridgeWindow {
             about_developer_error: false,
             about_link_error: false,
             about_document: None,
+            update: UpdateCheck::default(),
         }
     }
 
@@ -524,6 +673,71 @@ impl SliceBridgeWindow {
         self.about_open = false;
         self.about_link_error = false;
         self.about_document = None;
+        self.update.close();
+        cx.notify();
+    }
+
+    // Runs only on a deliberate click. The Registry read can take up to 13 seconds, so it runs on
+    // the background executor, and a second click cannot start an overlapping request.
+    fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        let Some(request) = self.update.begin() else {
+            return;
+        };
+        let registry = self.commands.clone();
+        cx.spawn(async move |this, cx| {
+            let reply = cx
+                .background_executor()
+                .spawn(async move { registry.execute("updates.check", &json!({})) })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                view.update.finish(request, &reply);
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn dismiss_update_notice(&mut self, cx: &mut Context<Self>) {
+        self.update.dismiss();
+        cx.notify();
+    }
+
+    // Only a page reply the Registry produced and the allowlist accepts reaches the launcher.
+    // Launch happens off the UI thread, and a failed launch shows the link error.
+    fn open_update_action(&mut self, action: UpdateAction, cx: &mut Context<Self>) {
+        let reply = self.commands.execute("updates.page", &action.page_params());
+        let url = reply["data"]["url"]
+            .as_str()
+            .filter(|url| reply["ok"] == true && allowed_update_url(url))
+            .map(str::to_owned);
+        let Some(url) = url else {
+            self.update.error = reply["error"]
+                .as_str()
+                .unwrap_or("invalid update page")
+                .to_owned();
+            cx.notify();
+            return;
+        };
+        self.update.error.clear();
+        self.update.link_error = false;
+        let request = self.update.request;
+        let mut command = about_open_command(&url);
+        cx.spawn(async move |this, cx| {
+            let opened = cx
+                .background_executor()
+                .spawn(async move { command.status().is_ok_and(|status| status.success()) })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                // A stale browser-launch reply must not rewrite the notice
+                // after the user closed About or started another check.
+                if view.about_open && view.update.request == request {
+                    view.update.link_error = !opened;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
         cx.notify();
     }
 
@@ -1351,5 +1565,256 @@ mod makerworld_badge_tests {
     #[test]
     fn origin_batches_match_the_registry_cap() {
         assert_eq!(MAKERWORLD_ORIGIN_LIMIT, 200);
+    }
+}
+
+#[cfg(test)]
+mod update_check_tests {
+    use super::desktop_i18n::Locale;
+    use super::{
+        allowed_update_url, update_check_outcome, update_notice_for, UpdateAction, UpdateCheck,
+        UpdateNotice,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn statuses_map_to_the_go_copy_and_one_action() {
+        let available = update_notice_for(&json!({
+            "status":"update_available",
+            "latestVersion":"0.4.0-beta.10",
+            "releaseTag":"v0.4.0-beta.10"
+        }));
+        assert_eq!(
+            available,
+            UpdateNotice {
+                message_key: "updateAvailable",
+                version: "0.4.0-beta.10".into(),
+                action: Some(UpdateAction::Release("v0.4.0-beta.10".into())),
+            }
+        );
+        assert_eq!(
+            Locale::En
+                .text(available.message_key)
+                .replace("{v}", &available.version),
+            "New version available: 0.4.0-beta.10"
+        );
+
+        let up_to_date = update_notice_for(&json!({"status":"up_to_date"}));
+        assert_eq!(up_to_date.message_key, "latestInstalled");
+        assert_eq!(up_to_date.action, None);
+        assert_eq!(
+            Locale::En.text("latestInstalled"),
+            "You have the latest published version."
+        );
+
+        let no_releases = update_notice_for(&json!({"status":"no_releases"}));
+        assert_eq!(no_releases.message_key, "noPublishedReleases");
+        assert_eq!(no_releases.action, Some(UpdateAction::Builds));
+        assert_eq!(
+            Locale::En.text(UpdateAction::Builds.label_key()),
+            "View beta builds"
+        );
+
+        let platform = update_notice_for(&json!({
+            "status":"platform_unavailable",
+            "latestVersion":"0.4.9"
+        }));
+        assert_eq!(platform.message_key, "platformUnavailable");
+        assert_eq!(platform.version, "0.4.9");
+        assert_eq!(platform.action, Some(UpdateAction::Releases));
+        assert_eq!(
+            Locale::En
+                .text(platform.message_key)
+                .replace("{v}", &platform.version),
+            "Version 0.4.9 exists, but not for this platform."
+        );
+        assert_eq!(
+            Locale::En.text(UpdateAction::Releases.label_key()),
+            "View releases"
+        );
+
+        let auth = update_notice_for(&json!({"status":"authentication_required"}));
+        assert_eq!(auth.message_key, "authRequired");
+        assert_eq!(auth.action, Some(UpdateAction::Releases));
+    }
+
+    #[test]
+    fn unknown_or_unsupported_status_shows_unsupported_copy_without_action() {
+        for data in [
+            json!({"status":"unsupported_platform"}),
+            json!({"status":"something_new"}),
+            json!({"status":7}),
+            json!({}),
+        ] {
+            assert_eq!(
+                update_notice_for(&data),
+                UpdateNotice {
+                    message_key: "unsupportedPlatform",
+                    version: String::new(),
+                    action: None,
+                },
+                "{data}"
+            );
+        }
+        assert_eq!(
+            Locale::En.text("unsupportedPlatform"),
+            "No update package exists for this platform."
+        );
+    }
+
+    #[test]
+    fn update_available_offers_the_release_only_for_a_safe_tag() {
+        for tag in [
+            json!(null),
+            json!(""),
+            json!("../../evil"),
+            json!("https://evil.example"),
+            json!("v1..2"),
+        ] {
+            let notice = update_notice_for(&json!({
+                "status":"update_available",
+                "latestVersion":"0.4.0",
+                "releaseTag":tag
+            }));
+            assert_eq!(notice.message_key, "updateAvailable");
+            assert_eq!(notice.action, None, "{tag}");
+        }
+    }
+
+    #[test]
+    fn actions_send_only_the_registry_page_kinds_and_labels() {
+        assert_eq!(
+            UpdateAction::Release("v0.4.0".into()).page_params(),
+            json!({"kind":"release","tag":"v0.4.0"})
+        );
+        assert_eq!(
+            UpdateAction::Releases.page_params(),
+            json!({"kind":"releases"})
+        );
+        assert_eq!(UpdateAction::Builds.page_params(), json!({"kind":"builds"}));
+        assert_eq!(
+            UpdateAction::Release("v0.4.0".into()).label_key(),
+            "openRelease"
+        );
+        assert_eq!(UpdateAction::Releases.label_key(), "openReleases");
+        assert_eq!(UpdateAction::Builds.label_key(), "openPreviewBuilds");
+    }
+
+    #[test]
+    fn update_links_accept_only_the_fixed_repository_pages() {
+        for url in [
+            "https://github.com/nocturney/slicebridge/releases",
+            "https://github.com/nocturney/slicebridge/releases/tag/v0.4.0-beta.10",
+            "https://github.com/nocturney/slicebridge/actions/workflows/native.yml",
+        ] {
+            assert!(allowed_update_url(url), "{url}");
+        }
+    }
+
+    #[test]
+    fn update_links_refuse_host_path_and_scheme_tricks() {
+        for url in [
+            "",
+            "https://github.com/nocturney/slicebridge",
+            "https://github.com/nocturney/slicebridge/",
+            "https://github.com/nocturney/slicebridge.evil/releases",
+            "https://github.com/nocturney/slicebridgeX/releases",
+            "https://github.com/nocturney/slicebridge/releases.evil",
+            "https://github.com/nocturney/slicebridge@evil.example/releases",
+            "https://github.com/nocturney/slicebridge/releases/tag/",
+            "https://github.com/nocturney/slicebridge/releases/tag/v1..2",
+            "https://github.com/nocturney/slicebridge/releases/tag/v1.2/../../x",
+            "https://github.com/nocturney/slicebridge/releases/tag/v1.2?x=1",
+            "https://github.com/nocturney/slicebridge/releases/tag/v1.2#x",
+            "https://github.com/nocturney/slicebridge/releases/tag/v1.2 ",
+            "https://github.com/nocturney/slicebridge/releases/tag/v1.2\n",
+            "https://evil.example/https://github.com/nocturney/slicebridge/releases",
+            "http://github.com/nocturney/slicebridge/releases",
+            "file:///etc/passwd",
+            "--help",
+        ] {
+            assert!(!allowed_update_url(url), "{url:?}");
+        }
+    }
+
+    #[test]
+    fn check_reply_is_its_data_or_its_error_never_a_guess() {
+        assert_eq!(
+            update_check_outcome(&json!({"ok":true,"data":{"status":"up_to_date"}})),
+            Ok(json!({"status":"up_to_date"}))
+        );
+        assert_eq!(
+            update_check_outcome(&json!({"ok":false,"error":"GitHub API access limited"})),
+            Err("GitHub API access limited".to_owned())
+        );
+        assert_eq!(
+            update_check_outcome(&json!({"ok":false})),
+            Err("unknown error".to_owned())
+        );
+        assert!(update_check_outcome(&json!({"ok":true,"data":{}})).is_err());
+        assert!(update_check_outcome(&json!({"ok":true,"data":{"status":7}})).is_err());
+    }
+
+    #[test]
+    fn only_one_check_is_in_flight_at_a_time() {
+        let mut check = UpdateCheck::default();
+        let first = check.begin().expect("first check starts");
+        assert!(check.checking);
+        assert_eq!(check.begin(), None);
+        check.finish(first, &json!({"ok":true,"data":{"status":"up_to_date"}}));
+        assert!(!check.checking);
+        assert!(check.begin().is_some());
+    }
+
+    #[test]
+    fn finished_check_shows_its_data_or_error_and_dismiss_resets_it() {
+        let mut check = UpdateCheck::default();
+        let request = check.begin().unwrap();
+        check.finish(request, &json!({"ok":true,"data":{"status":"no_releases"}}));
+        assert_eq!(check.data, Some(json!({"status":"no_releases"})));
+        check.dismiss();
+        assert_eq!(check.data, None);
+        assert!(check.error.is_empty());
+
+        let request = check.begin().unwrap();
+        check.finish(
+            request,
+            &json!({"ok":false,"error":"GitHub API access limited"}),
+        );
+        assert_eq!(check.data, None);
+        assert_eq!(check.error, "GitHub API access limited");
+        check.dismiss();
+        assert!(check.error.is_empty());
+        assert!(!check.link_error);
+    }
+
+    #[test]
+    fn dismiss_during_a_check_keeps_the_wait_until_its_reply() {
+        let mut check = UpdateCheck::default();
+        check.begin().unwrap();
+        check.dismiss();
+        assert!(check.checking);
+        assert_eq!(check.begin(), None);
+    }
+
+    #[test]
+    fn reply_after_about_closed_is_never_shown_as_success() {
+        let mut check = UpdateCheck::default();
+        let request = check.begin().unwrap();
+        check.close();
+        check.finish(
+            request,
+            &json!({"ok":true,"data":{
+                "status":"update_available","latestVersion":"9.9.9","releaseTag":"v9.9.9"
+            }}),
+        );
+        assert!(!check.checking);
+        assert_eq!(check.data, None);
+        assert!(check.error.is_empty());
+
+        // Reopening About and checking again shows that new request's own result.
+        let request = check.begin().unwrap();
+        check.finish(request, &json!({"ok":true,"data":{"status":"up_to_date"}}));
+        assert_eq!(check.data, Some(json!({"status":"up_to_date"})));
     }
 }

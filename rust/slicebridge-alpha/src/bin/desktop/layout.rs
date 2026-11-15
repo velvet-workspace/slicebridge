@@ -957,6 +957,60 @@ pub(super) fn render_window(
     root
 }
 
+// Mirrors index.html #updateNotice and app.js renderUpdates: one status line, at most one link,
+// and a dismiss control. Nothing shows until a deliberate check or a link attempt produces state.
+fn render_update_notice(
+    view: &SliceBridgeWindow,
+    cx: &mut Context<SliceBridgeWindow>,
+) -> Option<Div> {
+    let locale = view.locale;
+    let rtl = locale.rtl();
+    let update = &view.update;
+    let (text, failed, action) = if update.checking {
+        (label(locale, "checkingUpdates"), false, None)
+    } else if !update.error.is_empty() {
+        (
+            format!("{}: {}", label(locale, "updateError"), update.error),
+            true,
+            None,
+        )
+    } else if let Some(data) = &update.data {
+        let notice = update_notice_for(data);
+        (
+            label(locale, notice.message_key).replace("{v}", &notice.version),
+            false,
+            notice.action,
+        )
+    } else {
+        return None;
+    };
+
+    let mut row = line(rtl).items_center().gap_2().child(
+        div()
+            .flex_1()
+            .text_xs()
+            .text_color(if failed { rgb(RED) } else { rgb(INK) })
+            .child(text),
+    );
+    if let Some(action) = action {
+        row = row.child(
+            Button::new("update-action")
+                .label(label(locale, action.label_key()))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.open_update_action(action.clone(), cx);
+                })),
+        );
+    }
+    Some(
+        row.child(
+            Button::new("dismiss-update")
+                .label("×")
+                .tooltip(label(locale, "dismiss"))
+                .on_click(cx.listener(|this, _, _, cx| this.dismiss_update_notice(cx))),
+        ),
+    )
+}
+
 // Mirrors index.html #aboutDialog and about.js: same copy, sections and order. Developer mode
 // toggles natively, and the source/releases links open the pinned GitHub URLs on click.
 fn render_about(view: &SliceBridgeWindow, cx: &mut Context<SliceBridgeWindow>) -> impl IntoElement {
@@ -1012,18 +1066,38 @@ fn render_about(view: &SliceBridgeWindow, cx: &mut Context<SliceBridgeWindow>) -
         )
         .child(div().text_sm().text_color(rgb(INK)).child("SliceBridge"));
 
-    let version_card = panel()
-        .p_4()
-        .flex()
-        .flex_col()
-        .gap_1()
+    // Same placement as index.html: the check button sits in the version row, and its notice below.
+    let check_button = Button::new("check-updates")
+        .disabled(view.update.checking)
+        .label(label(locale, "checkUpdates"))
+        .on_click(cx.listener(|this, _, _, cx| this.check_for_updates(cx)));
+    let version_row = line(rtl)
+        .items_center()
+        .justify_between()
+        .gap_3()
         .child(
-            div()
-                .text_sm()
-                .text_color(rgb(INK))
-                .child(label(locale, "aboutVersion")),
+            align_text(div().flex().flex_col().gap_1(), rtl)
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(rgb(INK))
+                        .child(label(locale, "aboutVersion")),
+                )
+                .child(div().text_sm().text_color(rgb(MUTED)).child(version)),
         )
-        .child(div().text_sm().text_color(rgb(MUTED)).child(version));
+        .child(check_button);
+    let mut version_card = panel().p_4().flex().flex_col().gap_2().child(version_row);
+    if let Some(notice) = render_update_notice(view, cx) {
+        version_card = version_card.child(notice);
+    }
+    if view.update.link_error {
+        version_card = version_card.child(
+            div()
+                .text_xs()
+                .text_color(rgb(RED))
+                .child(label(locale, "aboutLinkError")),
+        );
+    }
 
     let mut developer_card = panel().p_4().flex().flex_col().gap_2().child(
         line(rtl)
