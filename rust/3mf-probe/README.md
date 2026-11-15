@@ -23,9 +23,25 @@ separate applicable approval.
 
 Current reference: PR #117, commit `7043a606c57af8fc46e1b0d1c7da1b673dbb669c`,
 [experimental Windows/macOS RC](https://github.com/velvet-workspace/slicebridge/releases/tag/ci-run-43690312150-a1-7043a606c57a).
-The Windows app-to-Rust host already passed synthetic OEM U1 five-material and
-QIDI single-material conversions. QA of actual target-slicer UI behavior remains
-a separate acceptance gate.
+The Windows app-to-Rust host already passed synthetic OEM U1 five-material
+and QIDI single-material conversions. Direct native-slicer acceptance found:
+Snapmaker U1 opened the Rust five-material project with four PLA profiles and
+one PETG profile, preserving the model. QIDIStudio **02.07.02.73** opened both
+the Go and Rust 4-PLA + 1-PETG 3MF projects but substituted **PLA Rapido** for
+the fifth declared PETG preset in its GUI. Supplying OEM-derived
+`filament_ids`, `inherits_group`, `filament_map` and `filament_volume_map`
+in a separate read-only experiment did **not** fix this importer behavior.
+Selecting installed **Ext Generic PETG** manually in QIDIStudio worked, but
+QIDIStudio's own Save Project As then changed the fifth displayed color from
+`#FFFFFF` to `#060606`. Its save also rewrote hundreds of settings; blindly
+copying those changes into Rust would lose source color fidelity.
+
+Treat the QIDI X-Plus 5 five-virtual-material GUI import as **not fully
+accepted**: verify material name, color, temperature and external-spool/tool
+assignment in QIDIStudio before slicing. It has **one physical tool** in the
+verified profile, not five feeders. The Rust-native app now emits a targeted
+warning for this observed pattern; the installed Go app and source 3MF files
+were not changed. No slicing, G-code or physical print was performed.
 
 ### Historical implementation notes
 

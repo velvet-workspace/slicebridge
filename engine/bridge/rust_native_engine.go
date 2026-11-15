@@ -14,6 +14,27 @@ import (
 	"github.com/BryanSmee/bl_to_std/pkg/converter"
 )
 
+// qidiXPlus5PETGImportWarning reflects direct visual acceptance against
+// QIDIStudio 02.07.02.73: both working Go and Rust 3MF projects declared
+// the fifth PETG preset correctly, but QIDIStudio displayed PLA Rapido.
+// Even supplying OEM filament IDs and inheritance metadata did not prevent
+// this importer substitution. Do not mutate the proven source color or claim
+// physical five-tool support to make the GUI appear to accept the project.
+func qidiXPlus5PETGImportWarning(target, model string, physicalTools int, slots []converter.Slot) string {
+	if target != "qidi" || model != "X-Plus 5" || physicalTools != 1 || len(slots) != 5 {
+		return ""
+	}
+	for _, slot := range slots[:4] {
+		if !strings.EqualFold(strings.TrimSpace(slot.Type), "PLA") {
+			return ""
+		}
+	}
+	if !strings.EqualFold(strings.TrimSpace(slots[4].Type), "PETG") {
+		return ""
+	}
+	return "QIDIStudio X-Plus 5 import warning: the tested GUI silently displayed the fifth PETG virtual filament as PLA Rapido even though the 3MF declared Generic PETG and its verified temperature/flow settings. Select the correct Generic PETG preset for slot 5 in QIDIStudio, then verify its color, temperature and external-spool assignment before slicing. Selecting it can change the slot's color in the native GUI. Five virtual filaments do NOT mean five physical toolheads."
+}
+
 // convertWithNativeRust is an opt-in *application* path. Go resolves the
 // approved installed machine, captures the source, and independently audits
 // the published archive. Rust discovers source colors/filaments/settings from
@@ -214,6 +235,9 @@ func convertWithNativeRust(ctx context.Context, source, destination string, reso
 		warnings = append(warnings, fmt.Sprintf(
 			"All %d original color/material slots remain separate virtual project filaments. The target profile reports %s; this does not establish filament feeder capacity. Verify material-changing hardware and each slot's assignment in the native slicer. Do not combine or discard colors unless explicitly intended.",
 			len(receipt.Slots), physicalToolPhrase(resolved.PhysicalTools)))
+	}
+	if warning := qidiXPlus5PETGImportWarning(resolved.ID, resolved.ExpectedModel, resolved.PhysicalTools, receipt.Slots); warning != "" {
+		warnings = append(warnings, warning)
 	}
 	if len(receipt.Slots) > 1 {
 		warnings = append(warnings,
