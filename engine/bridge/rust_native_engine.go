@@ -72,13 +72,9 @@ func convertWithNativeRust(ctx context.Context, source, destination string, reso
 	if err != nil {
 		return nil, fail("SOURCE_INVALID", "%v", err)
 	}
-	binary := os.Getenv("SLICEBRIDGE_RUST_ENGINE_BIN")
-	if binary == "" || !filepath.IsAbs(binary) {
-		return nil, fail("RUST_ENGINE_FAILED", "Rust-native requires an explicit absolute SLICEBRIDGE_RUST_ENGINE_BIN")
-	}
-	info, err := os.Stat(binary)
-	if err != nil || !info.Mode().IsRegular() {
-		return nil, fail("RUST_ENGINE_FAILED", "Rust-native executable is not a regular local file: %s", binary)
+	binary, err := resolveRustNativeBinary()
+	if err != nil {
+		return nil, fail("RUST_ENGINE_FAILED", "%v", err)
 	}
 	outDir := filepath.Dir(dst)
 	if st, err := os.Stat(outDir); err != nil || !st.IsDir() {
