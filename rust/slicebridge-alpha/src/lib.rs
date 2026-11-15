@@ -28,6 +28,34 @@ use std::time::Duration;
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 const MAX_RECENT_PROJECTS: usize = 16;
+const ORCA_EXPORT_NOT_VERIFIED: &str = "dynamic Orca conversion is not verified in Rust";
+
+// Go's installed Orca target list, exposed read-only without private profile
+// paths or a conversion-ready claim. The full machine/process/material chain
+// is already verified by orca_profiles::discover before a target is returned.
+fn orca_discovery_reply(discovery: orca_profiles::OrcaDiscovery) -> Value {
+    json!({
+        "targets": discovery.targets.into_iter().map(|target| json!({
+            "id": target.id,
+            "title": target.title,
+            "slicer": target.slicer,
+            "vendor": target.vendor,
+            "machine": target.machine,
+            "model": target.model,
+            "nozzle": target.nozzle,
+            "physicalTools": target.physical_tools,
+            "materials": target.materials,
+            "ready": false,
+            "reason": ORCA_EXPORT_NOT_VERIFIED,
+        })).collect::<Vec<_>>(),
+        "rejected": discovery.rejected.into_iter().map(|item| json!({
+            "vendor": item.vendor,
+            "machine": item.machine,
+            "slicer": item.slicer,
+            "reason": item.reason,
+        })).collect::<Vec<_>>(),
+    })
+}
 
 #[derive(Default)]
 struct Session {
@@ -163,6 +191,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     (
         "printers.installed_prusa",
         "Read installed PrusaSlicer user presets, all conversion-unverified",
+    ),
+    (
+        "printers.installed_orca",
+        "Read fully resolved Orca-family profiles, all conversion-unverified",
     ),
     (
         "settings.get",
@@ -402,6 +434,7 @@ impl Registry {
             "app.status" | "conversion.status" => Ok(self.snapshot()),
             "printers.catalog" => my_printers::catalog_snapshot(),
             "printers.installed_prusa" => Ok(prusa::installed_prusa_reply()),
+            "printers.installed_orca" => Ok(orca_discovery_reply(orca_profiles::discover())),
             "updates.version" => {
                 let (os, arch) = updates::current_platform();
                 Ok(json!({
@@ -1058,6 +1091,57 @@ fn same_path(a: &Path, b: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn orca_reply_matches_go_inventory_shape_without_conversion_or_private_paths() {
+        let reply = orca_discovery_reply(orca_profiles::OrcaDiscovery {
+            targets: vec![orca_profiles::OrcaTarget {
+                id: "orca-snapmaker-u1-0123456789".into(),
+                title: "U1 0.4".into(),
+                slicer: "Snapmaker Orca".into(),
+                vendor: "Snapmaker".into(),
+                machine: "U1 0.4 nozzle".into(),
+                model: "U1".into(),
+                nozzle: "0.4".into(),
+                physical_tools: 4,
+                materials: vec!["PLA".into()],
+            }],
+            rejected: vec![orca_profiles::OrcaRejection {
+                vendor: "Other".into(),
+                machine: "broken profile".into(),
+                slicer: "OrcaSlicer".into(),
+                reason: "missing compatible PLA".into(),
+            }],
+        });
+        assert_eq!(reply["targets"].as_array().unwrap().len(), 1);
+        assert_eq!(reply["targets"][0]["ready"], false);
+        assert_eq!(reply["targets"][0]["id"], "orca-snapmaker-u1-0123456789");
+        assert_eq!(reply["targets"][0]["physicalTools"], 4);
+        assert_eq!(reply["targets"][0]["materials"], json!(["PLA"]));
+        assert_eq!(reply["targets"][0]["reason"], ORCA_EXPORT_NOT_VERIFIED);
+        assert!(reply["targets"][0].get("bundle").is_none());
+        assert!(reply["targets"][0].get("root").is_none());
+        assert!(reply["targets"][0].get("executable").is_none());
+        assert_eq!(reply["rejected"][0]["reason"], "missing compatible PLA");
+    }
+
+    #[test]
+    fn orca_registry_is_read_only_and_conversion_unverified() {
+        let registry = Registry::new();
+        let before = registry.snapshot();
+        let result = registry.execute("printers.installed_orca", &json!({}));
+        assert_eq!(result["ok"], true);
+        let data = &result["data"];
+        assert!(data["targets"].is_array());
+        assert!(data["rejected"].is_array());
+        for target in data["targets"].as_array().unwrap() {
+            assert_eq!(target["ready"], false);
+            assert_eq!(target["reason"], ORCA_EXPORT_NOT_VERIFIED);
+            assert!(target.get("root").is_none());
+            assert!(target.get("bundle").is_none());
+        }
+        assert_eq!(registry.snapshot(), before);
+    }
 
     #[test]
     fn prusa_discovery_is_read_only_and_conversion_unverified() {

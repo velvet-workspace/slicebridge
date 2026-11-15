@@ -318,11 +318,12 @@ pub fn experimental_path() -> Result<PathBuf, String> {
 }
 
 pub fn available_installed_ids() -> HashSet<String> {
-    // Prusa IDs are discovered from fully resolved installed user presets only.
-    // This is My Printers membership, never evidence of conversion readiness:
-    // every per-printer Prusa export remains gated off until verified.
+    // Membership is based on fully resolved installed user presets, never on
+    // an app folder or a catalogue match. The batch engine remains separately
+    // gated: no unported dynamic Orca/Prusa ID is a conversion-ready target.
     crate::prusa::installed_prusa_target_ids()
         .into_iter()
+        .chain(crate::orca_profiles::installed_ids())
         .collect()
 }
 
