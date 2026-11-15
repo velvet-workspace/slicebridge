@@ -1,6 +1,7 @@
 //! One Rust command surface for the desktop and agent transports.
 //! The proven 3MF implementation remains in slicebridge-3mf-probe.
 pub mod batch;
+pub mod browser_setup;
 pub mod makerworld;
 pub mod my_printers;
 pub mod oem;
@@ -116,6 +117,26 @@ pub const COMMANDS: &[(&str, &str)] = &[
     (
         "updates.page",
         "Construct allowlisted GitHub release/build page link without opening it",
+    ),
+    (
+        "browser.setup.status",
+        "Read-only inspection of the alpha app-link association; never register a protocol",
+    ),
+    (
+        "browser.setup.store",
+        "Read the source-locked approved browser store listing, empty until published",
+    ),
+    (
+        "browser.setup.page",
+        "Return only the selected browser extension manager page; never open it",
+    ),
+    (
+        "browser.setup.prepare",
+        "On a Developer Mode user gesture, prepare official bundled extension files only in GPUI Alpha config",
+    ),
+    (
+        "browser.setup.open",
+        "On explicit Developer Mode user click, open allowlisted manager or MakerWorld mode URL in selected browser",
     ),
     (
         "makerworld.origins",
@@ -302,6 +323,15 @@ impl Registry {
                 }))
             }
             "updates.check" => updates::check_installed(),
+            "browser.setup.status" => browser_setup::status(),
+            "browser.setup.store" => browser_setup::unpublished_store(arg(params, "browser")?),
+            "browser.setup.page" => browser_setup::manager_page(arg(params, "browser")?),
+            "browser.setup.prepare" => browser_setup::prepare(arg(params, "browser")?),
+            "browser.setup.open" => browser_setup::open(
+                arg(params, "browser")?,
+                arg(params, "kind")?,
+                params.get("mode").and_then(Value::as_str),
+            ),
             "updates.page" => {
                 let kind = params
                     .get("kind")
