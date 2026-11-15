@@ -1,17 +1,20 @@
 //! One Rust command surface for the desktop and agent transports.
 //! The proven 3MF implementation remains in slicebridge-3mf-probe.
+pub mod oem;
 pub mod protocol;
 use serde_json::{json, Value};
 use slicebridge_3mf_probe::{inspect_package, validate_native_autonomous_input};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+
+static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Default)]
 struct Session {
@@ -19,7 +22,11 @@ struct Session {
     facts: Option<Value>,
     bundle_path: Option<PathBuf>,
     bundle_label: Option<String>,
-    selected_materials: BTreeMap<usize, String>,
+    bundle: Option<Value>,
+    installed_oem: bool,
+    target: Option<String>,
+    nozzle: Option<String>,
+    selected_materials: BTreeMap<String, String>,
     output: Option<PathBuf>,
     phase: String,
     last_result: Option<Value>,
@@ -42,6 +49,18 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "Inspect 3MF source without changing any file",
     ),
     ("source.select", "Select and inspect a 3MF source"),
+    (
+        "profiles.discover",
+        "List locally installed Rust-resolved OEM targets",
+    ),
+    (
+        "profiles.select",
+        "Select and verify an installed OEM printer for source",
+    ),
+    (
+        "profiles.materials",
+        "List exact matching installed OEM material presets",
+    ),
     (
         "bundle.load",
         "Validate a complete, pre-resolved OEM bundle",
@@ -66,6 +85,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     (
         "slicer.open",
         "Open the output in an explicitly chosen slicer",
+    ),
+    (
+        "slicer.open_selected",
+        "Open converted output in selected installed OEM slicer",
     ),
 ];
 
@@ -110,6 +133,9 @@ impl Registry {
             "facts": state.facts,
             "bundle_path": state.bundle_path.as_ref().map(|p| p.to_string_lossy().to_string()),
             "printer": state.bundle_label,
+            "target": state.target,
+            "nozzle": state.nozzle,
+            "installed_oem": state.installed_oem,
             "materials": state.selected_materials,
             "output": state.output.as_ref().map(|p| p.to_string_lossy().to_string()),
             "phase": if state.phase.is_empty() { "idle" } else { &state.phase },
@@ -150,8 +176,75 @@ impl Registry {
                     state.facts = Some(receipt.clone());
                     state.last_result = None;
                     state.output = None;
+                    state.phase = "idle".into();
+                    state.bundle_path = None;
+                    state.bundle_label = None;
+                    state.bundle = None;
+                    state.installed_oem = false;
+                    state.target = None;
+                    state.nozzle = None;
+                    state.selected_materials.clear();
                 }
                 Ok(receipt)
+            }
+            "profiles.discover" => Ok(oem::discover()),
+            "profiles.select" => {
+                let target = arg(params, "target")?.to_string();
+                let nozzle = params
+                    .get("nozzle")
+                    .and_then(Value::as_str)
+                    .unwrap_or("0.4")
+                    .to_string();
+                let source = {
+                    let state = self.state.lock().map_err(|e| e.to_string())?;
+                    if state.phase == "running" {
+                        return Err("cannot select OEM while converting".into());
+                    }
+                    state
+                        .source
+                        .clone()
+                        .ok_or("select source 3MF before OEM profile")?
+                };
+                let bundle = oem::resolve(&target, &nozzle, &BTreeMap::new())?;
+                let verified = validate_native_autonomous_input(&bundle, &source)?;
+                let label = verified["printer"]
+                    .as_str()
+                    .ok_or("OEM model missing")?
+                    .to_owned();
+                let selected_materials = bundle["profile"]["filament_profiles"]
+                    .as_object()
+                    .ok_or("installed material profile catalog missing")?
+                    .iter()
+                    .filter_map(|(k, v)| v.as_str().map(|name| (k.clone(), name.to_string())))
+                    .collect();
+                let mut state = self.state.lock().map_err(|e| e.to_string())?;
+                if state.phase == "running" || state.source.as_ref() != Some(&source) {
+                    return Err("source or job changed while verifying installed profile".into());
+                }
+                state.bundle_path = None;
+                state.bundle_label = Some(label.clone());
+                state.bundle = Some(bundle);
+                state.installed_oem = true;
+                state.target = Some(target);
+                state.nozzle = Some(nozzle);
+                state.selected_materials = selected_materials;
+                state.output = None;
+                state.last_result = None;
+                state.phase = "idle".into();
+                Ok(json!({"printer":label,"validation":verified,
+                    "materials":state.selected_materials,"installed_oem":true}))
+            }
+            "profiles.materials" => {
+                let material = arg(params, "material")?;
+                let state = self.state.lock().map_err(|e| e.to_string())?;
+                if !state.installed_oem {
+                    return Err("select installed OEM printer first".into());
+                }
+                let target = state.target.as_deref().ok_or("missing installed target")?;
+                let nozzle = state.nozzle.as_deref().ok_or("missing installed nozzle")?;
+                let choices = oem::choices(target, nozzle, material)?;
+                Ok(json!({"material":material,"presets":choices,
+                    "selected":state.selected_materials.get(material)}))
             }
             "bundle.load" => {
                 let path = user_path(params, "path")?;
@@ -184,8 +277,15 @@ impl Registry {
                 }
                 state.bundle_path = Some(path);
                 state.bundle_label = Some(label.clone());
+                state.target = bundle["target"].as_str().map(str::to_owned);
+                state.nozzle = bundle["nozzle"].as_str().map(str::to_owned);
+                state.bundle = Some(bundle);
+                state.installed_oem = false;
                 state.selected_materials.clear();
-                Ok(json!({"printer": label, "validation": verified}))
+                state.output = None;
+                state.last_result = None;
+                state.phase = "idle".into();
+                Ok(json!({"printer": label, "validation": verified, "installed_oem":false}))
             }
             "printer.select" => {
                 let target = arg(params, "name")?;
@@ -201,26 +301,48 @@ impl Registry {
                 Ok(json!({"printer": target}))
             }
             "material.select" => {
-                let slot = params
-                    .get("slot")
-                    .and_then(Value::as_u64)
-                    .ok_or("slot must be a positive integer")?;
-                if !(1..=64).contains(&slot) {
-                    return Err("slot must be 1..64".into());
-                }
-                let name = arg(params, "name")?;
+                let material = arg(params, "material")?.to_string();
+                let preset = arg(params, "preset")?.to_string();
+                let (target, nozzle, source, mut overrides) = {
+                    let state = self.state.lock().map_err(|e| e.to_string())?;
+                    if state.phase == "running" {
+                        return Err("cannot change materials while converting".into());
+                    }
+                    if !state.installed_oem {
+                        return Err(
+                            "select a locally installed OEM printer before material selection"
+                                .into(),
+                        );
+                    }
+                    (
+                        state.target.clone().ok_or("no installed target")?,
+                        state.nozzle.clone().ok_or("no installed nozzle")?,
+                        state.source.clone().ok_or("no selected source")?,
+                        state.selected_materials.clone(),
+                    )
+                };
+                overrides.insert(material.clone(), preset.clone());
+                // Rebuild the entire bundle from the same installed OEM inheritance;
+                // no display-only state or copied vendor material constants.
+                let bundle = oem::resolve(&target, &nozzle, &overrides)?;
+                let verified = validate_native_autonomous_input(&bundle, &source)?;
                 let mut state = self.state.lock().map_err(|e| e.to_string())?;
-                if state.bundle_path.is_none() {
-                    return Err("load a verified OEM bundle before selecting materials".into());
+                if state.phase == "running"
+                    || state.source.as_ref() != Some(&source)
+                    || state.target.as_deref() != Some(&target)
+                    || state.nozzle.as_deref() != Some(&nozzle)
+                {
+                    return Err("source or printer changed during material verification".into());
                 }
-                // This is a visible selection receipt, not a fabricated replacement OEM leaf.
-                // Only a fully verified bundle determines conversion parameters.
-                state
-                    .selected_materials
-                    .insert(slot as usize, name.to_string());
-                Ok(
-                    json!({"slot": slot, "name": name, "note": "display selection only; conversion uses verified OEM bundle"}),
-                )
+                state.bundle = Some(bundle.clone());
+                state.selected_materials = overrides;
+                state.output = None;
+                state.last_result = None;
+                state.phase = "idle".into();
+                Ok(json!({"material":material,"preset":preset,"applied":true,
+                    "temperature":bundle["material_settings"][&material]["nozzle_temperature"],
+                    "flow_ratio":bundle["material_settings"][&material]["filament_flow_ratio"],
+                    "validation":verified}))
             }
             "conversion.start" => self.start_conversion(params),
             "conversion.cancel" => {
@@ -251,12 +373,29 @@ impl Registry {
                 if !slicer.is_file() {
                     return Err("slicer executable does not exist".into());
                 }
-                Command::new(&slicer)
-                    .arg(&output)
-                    .spawn()
-                    .map_err(|e| format!("could not open slicer: {e}"))?;
+                launch_slicer(&slicer, &output)?;
                 Ok(json!({"launched": true, "slicer": slicer.to_string_lossy(),
                     "file": output.to_string_lossy(), "slicing": false}))
+            }
+            "slicer.open_selected" => {
+                let state = self.state.lock().map_err(|e| e.to_string())?;
+                if !state.installed_oem {
+                    return Err("select an installed OEM printer before opening its slicer".into());
+                }
+                let target = state.target.as_deref().ok_or("no selected OEM target")?;
+                let nozzle = state.nozzle.as_deref().ok_or("no selected OEM nozzle")?;
+                let output = state
+                    .output
+                    .clone()
+                    .ok_or("convert source before opening slicer")?;
+                if !output.is_file() {
+                    return Err("converted output is missing".into());
+                }
+                let slicer = oem::installed_executable(target, nozzle)?;
+                drop(state);
+                launch_slicer(&slicer, &output)?;
+                Ok(json!({"launched":true,"slicer":slicer.to_string_lossy(),
+                    "file":output.to_string_lossy(),"slicing":false}))
             }
             _ => Err(format!("unknown command: {command}")),
         }
@@ -280,21 +419,45 @@ impl Registry {
         }
         let source = state.source.clone().ok_or("select a source 3MF first")?;
         let bundle = state
-            .bundle_path
+            .bundle
             .clone()
-            .ok_or("load a verified OEM bundle first")?;
+            .ok_or("select a verified OEM bundle first")?;
         if same_path(&source, &output) {
             return Err("output must differ from source".into());
         }
-        let child = Command::new(&engine)
+        // Only the verified, source-owned OEM snapshot is passed to the Rust
+        // conversion worker. An ephemeral file preserves the existing worker
+        // interface without changing the real vendor installation.
+        let tmp = std::env::temp_dir().join(format!(
+            "slicebridge-verified-oem-{}-{}.json",
+            std::process::id(),
+            TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .map_err(|e| format!("create temporary OEM snapshot: {e}"))?;
+        if let Err(e) = file.write_all(bundle.to_string().as_bytes()) {
+            let _ = fs::remove_file(&tmp);
+            return Err(format!("write verified OEM snapshot: {e}"));
+        }
+        drop(file);
+        let child = match Command::new(&engine)
             .arg("--convert-native-autonomous")
-            .arg(&bundle)
+            .arg(&tmp)
             .arg(&source)
             .arg(&output)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("Rust engine start failed: {e}"))?;
+        {
+            Ok(child) => child,
+            Err(e) => {
+                let _ = fs::remove_file(&tmp);
+                return Err(format!("Rust engine start failed: {e}"));
+            }
+        };
         let cancel = Arc::new(AtomicBool::new(false));
         state.cancel = Some(cancel.clone());
         state.phase = "running".into();
@@ -349,6 +512,7 @@ impl Registry {
                     }
                 }
             };
+            let _ = fs::remove_file(&tmp);
             if let Ok(mut state) = shared.lock() {
                 state.phase = phase.into();
                 state.last_result = Some(receipt);
@@ -362,6 +526,25 @@ impl Registry {
         });
         Ok(json!({"started": true, "phase": "running", "output": output.to_string_lossy()}))
     }
+}
+
+fn launch_slicer(executable: &Path, output: &Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let mut launch = {
+        let mut cmd = Command::new("open");
+        cmd.arg("-a").arg(executable).arg("--args").arg(output);
+        cmd
+    };
+    #[cfg(not(target_os = "macos"))]
+    let mut launch = {
+        let mut cmd = Command::new(executable);
+        cmd.arg(output);
+        cmd
+    };
+    launch
+        .spawn()
+        .map_err(|e| format!("could not open selected slicer: {e}"))?;
+    Ok(())
 }
 
 fn same_path(a: &Path, b: &Path) -> bool {
@@ -403,6 +586,59 @@ mod tests {
         let result = registry.execute("conversion.start", &json!({"output": "out.3mf"}));
         assert_eq!(result["ok"], false);
         assert_eq!(registry.snapshot()["phase"], "idle");
+    }
+
+    #[test]
+    fn changing_source_invalidates_old_oem_and_output() {
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/bambu-one-color.3mf");
+        assert!(
+            fixture.is_file(),
+            "permissioned repository source fixture missing"
+        );
+        let registry = Registry::new();
+        {
+            let mut old = registry.state.lock().unwrap();
+            old.phase = "completed".into();
+            old.source = Some("stale.3mf".into());
+            old.bundle = Some(json!({"target":"u1"}));
+            old.bundle_path = Some("stale-oem.json".into());
+            old.bundle_label = Some("Snapmaker U1".into());
+            old.installed_oem = true;
+            old.target = Some("u1".into());
+            old.nozzle = Some("0.4".into());
+            old.output = Some("old-output.3mf".into());
+        }
+        let reply = registry.execute("source.select", &json!({"path": fixture}));
+        assert_eq!(reply["ok"], true, "{reply}");
+        let status = registry.snapshot();
+        assert_eq!(status["phase"], "idle");
+        assert!(status["output"].is_null());
+        assert!(status["bundle_path"].is_null());
+        assert!(status["printer"].is_null());
+        assert!(status["target"].is_null());
+        assert_eq!(status["installed_oem"], false);
+    }
+
+    #[test]
+    fn material_change_never_accepts_display_only_values() {
+        let registry = Registry::new();
+        let result = registry.execute(
+            "material.select",
+            &json!({"material":"PETG","preset":"Fictional PETG"}),
+        );
+        assert_eq!(result["ok"], false);
+        assert!(registry.snapshot()["materials"]
+            .as_object()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn opening_selected_slicer_requires_completed_conversion() {
+        let registry = Registry::new();
+        let result = registry.execute("slicer.open_selected", &json!({}));
+        assert_eq!(result["ok"], false);
     }
 
     #[test]

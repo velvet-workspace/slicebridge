@@ -116,8 +116,45 @@ impl SliceBridgeWindow {
         cx.notify();
     }
 
-    fn set_material(&mut self, name: &'static str, cx: &mut Context<Self>) {
-        self.run("material.select", json!({"slot":1,"name":name}), cx);
+    fn select_oem(&mut self, target: &'static str, cx: &mut Context<Self>) {
+        self.run(
+            "profiles.select",
+            json!({"target":target,"nozzle":"0.4"}),
+            cx,
+        );
+    }
+
+    fn next_material(&mut self, material: &'static str, cx: &mut Context<Self>) {
+        let reply = self
+            .commands
+            .execute("profiles.materials", &json!({"material":material}));
+        if reply["ok"] != true {
+            self.last_message = format!("OEM material options: {}", reply["error"]);
+            cx.notify();
+            return;
+        }
+        let options = reply["data"]["presets"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if options.is_empty() {
+            self.last_message = format!("No compatible installed {material} presets");
+            cx.notify();
+            return;
+        }
+        let current = reply["data"]["selected"].as_str().unwrap_or("");
+        let next = options
+            .iter()
+            .position(|v| v.as_str() == Some(current))
+            .map(|idx| (idx + 1) % options.len())
+            .unwrap_or(0);
+        if let Some(preset) = options[next].as_str() {
+            self.run(
+                "material.select",
+                json!({"material":material,"preset":preset}),
+                cx,
+            );
+        }
     }
 }
 
@@ -132,7 +169,16 @@ impl Render for SliceBridgeWindow {
             .as_str()
             .unwrap_or("No OEM profile loaded")
             .to_string();
-        let bundle = status["bundle_path"].as_str().unwrap_or("None").to_string();
+        let bundle = status["bundle_path"]
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                if status["installed_oem"] == true {
+                    "Live installed OEM inheritance".into()
+                } else {
+                    "None".into()
+                }
+            });
         let phase = status["phase"].as_str().unwrap_or("idle").to_string();
         let triangles = status["facts"]["triangles"]
             .as_u64()
@@ -147,6 +193,21 @@ impl Render for SliceBridgeWindow {
             ("3MF source", source),
             ("OEM printer", printer),
             ("OEM bundle", bundle),
+            (
+                "Printer target",
+                status["target"].as_str().unwrap_or("None").into(),
+            ),
+            (
+                "PLA OEM preset",
+                status["materials"]["PLA"].as_str().unwrap_or("None").into(),
+            ),
+            (
+                "PETG OEM preset",
+                status["materials"]["PETG"]
+                    .as_str()
+                    .unwrap_or("None")
+                    .into(),
+            ),
             ("Triangles", triangles),
             ("Vertices", vertices),
             ("Save target", output),
@@ -172,8 +233,12 @@ impl Render for SliceBridgeWindow {
                 div().flex().flex_row().gap_2()
                     .child(Button::new("choose-source").primary().label("Open 3MF")
                         .on_click(cx.listener(|this, _, _, cx| this.choose_file("source.select", cx))))
-                    .child(Button::new("choose-oem").label("Load verified OEM")
-                        .on_click(cx.listener(|this, _, _, cx| this.choose_file("bundle.load", cx))))
+                    .child(Button::new("discover-oem").label("Scan installed OEM")
+                        .on_click(cx.listener(|this, _, _, cx| this.run("profiles.discover", json!({}), cx))))
+                    .child(Button::new("select-u1").label("Snapmaker U1 · 0.4")
+                        .on_click(cx.listener(|this, _, _, cx| this.select_oem("u1", cx))))
+                    .child(Button::new("select-qidi").label("QIDI X-Plus 5 · 0.4")
+                        .on_click(cx.listener(|this, _, _, cx| this.select_oem("qidi", cx))))
                     .child(Button::new("choose-target").label("Save as...")
                         .on_click(cx.listener(|this, _, _, cx| this.choose_destination(cx))))
             )
@@ -181,19 +246,21 @@ impl Render for SliceBridgeWindow {
             .child(table)
             .child(
                 div().flex().flex_row().gap_2()
-                    .child(Button::new("material-pla").label("PLA (preview)")
-                        .on_click(cx.listener(|this, _, _, cx| this.set_material("PLA", cx))))
-                    .child(Button::new("material-petg").label("PETG (preview)")
-                        .on_click(cx.listener(|this, _, _, cx| this.set_material("PETG", cx))))
+                    .child(Button::new("material-pla").label("Next verified PLA preset")
+                        .on_click(cx.listener(|this, _, _, cx| this.next_material("PLA", cx))))
+                    .child(Button::new("material-petg").label("Next verified PETG preset")
+                        .on_click(cx.listener(|this, _, _, cx| this.next_material("PETG", cx))))
             )
-            .child(div().child("Material buttons preview selection; conversion is bound to validated OEM profiles."))
+            .child(div().child("Material changes rebuild the live installed OEM profile; they affect the Rust conversion."))
             .child(
                 div().flex().flex_row().gap_2()
                     .child(Button::new("convert").primary().label("Convert 3MF")
                         .on_click(cx.listener(|this, _, _, cx| this.start_conversion(cx))))
                     .child(Button::new("cancel").label("Cancel")
                         .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))))
-                    .child(Button::new("open-in-slicer").label("Open in slicer")
+                    .child(Button::new("open-selected").label("Open in OEM slicer")
+                        .on_click(cx.listener(|this, _, _, cx| this.run("slicer.open_selected", json!({}), cx))))
+                    .child(Button::new("open-in-slicer").label("Other slicer...")
                         .on_click(cx.listener(|this, _, _, cx| this.choose_slicer(cx))))
                     .child(Button::new("refresh").label("Refresh status")
                         .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))))

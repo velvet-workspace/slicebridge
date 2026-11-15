@@ -9,7 +9,9 @@ fn schema(name: &str) -> Value {
     let required = match name {
         "source.inspect" | "source.select" | "bundle.load" => vec!["path"],
         "printer.select" => vec!["name"],
-        "material.select" => vec!["slot", "name"],
+        "profiles.select" => vec!["target"],
+        "profiles.materials" => vec!["material"],
+        "material.select" => vec!["material", "preset"],
         "conversion.start" => vec!["output"],
         "slicer.open" => vec!["executable"],
         _ => vec![],
@@ -20,6 +22,10 @@ fn schema(name: &str) -> Value {
         "engine":{"type":"string"},
         "executable":{"type":"string"},
         "name":{"type":"string"},
+        "target":{"type":"string","enum":["u1","qidi"]},
+        "nozzle":{"type":"string","enum":["0.4"]},
+        "material":{"type":"string","enum":["PLA","PETG","ABS","ASA","TPU"]},
+        "preset":{"type":"string"},
         "slot":{"type":"integer","minimum":1,"maximum":64}
     },"required":required,"additionalProperties":false})
 }

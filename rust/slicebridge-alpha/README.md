@@ -1,53 +1,79 @@
-# SliceBridge Rust/GPUI agent-first pilot
+# SliceBridge Rust / GPUI — installed OEM integration spike
 
-This is an **experimental, independent Rust desktop process** in a separate feature branch. It does **not** replace the stable Go/Wails application and does not slice, generate G-code, or contact printers.
+This is an experimental independent Rust-native GPUI + GPUI Kit desktop app.
+It does not contain a Go/Wails runtime, replace the stable app, generate
+G-code, initiate slicing, or contact a printer.
 
-## What works
+## Implemented
 
-- A native Windows GPUI + GPUI Kit window with file pickers, a project/printer/material summary, conversion start, cancellation, status and a user-selected target slicer launcher. This is a small functional frame, not the final rich editor/table/docking design.
-- One Rust `Registry` in `src/lib.rs` powers all commands. The GPUI window, standalone CLI/JSON-lines, MCP stdio tools and the local loopback attach server reuse this logic.
-- `source.select` and `source.inspect` reuse `slicebridge-3mf-probe::inspect_package`; `bundle.load` reuses `validate_native_bundle`.
-- `conversion.start` launches the existing Rust-native `slicebridge-3mf-probe --convert-native-autonomous` executable as a sibling process. It refuses overwrite and supports `conversion.status` and `conversion.cancel`. This uses the proven conversion engine without copying it into UI code.
-- `slicer.open` explicitly opens a previously converted file in a user-selected slicer executable. It never asks the slicer to slice.
+- GPUI GUI: select 3MF, inspect geometry, choose an installed OEM printer,
+  cycle through installed PLA/PETG material presets, choose destination,
+  convert, cancel, read status and open converted output in an OEM slicer.
+- One Rust Registry drives the GUI, JSONL CLI, MCP stdio and local attach.
+- OEM discovery resolves installed vendor machine/process/material inheritance
+  on disk, read-only, including leading UTF-8 BOM where present.
+- Windows OEM scope: Snapmaker U1 0.4mm / Snapmaker Orca, and QIDI X-Plus 5
+  0.4mm / QIDIStudio. No cross-vendor assumption or generated profile leaf.
+- profiles.select validates the installed OEM resolution against the selected
+  3MF source through the existing Rust-native source-owned conversion planner.
+- profiles.materials lists real matching presets. material.select re-resolves
+  and validates the conversion bundle; the selection changes output metadata.
+- Existing slicebridge-3mf-probe Rust binary performs conversions using a
+  transient verified OEM snapshot; original 3MF files are never overwritten.
+- slicer.open_selected resolves the installed OEM application to open an
+  already converted file; no slicing or printing command is issued.
 
-## Build on Windows
+## Build
 
-Use the repository's available Rust toolchain:
+    cargo test --manifest-path rust/slicebridge-alpha/Cargo.toml
+    cargo clippy --manifest-path rust/slicebridge-alpha/Cargo.toml --all-targets --features desktop -- -D warnings
+    cargo build --manifest-path rust/3mf-probe/Cargo.toml --bin slicebridge-3mf-probe
+    cargo build --manifest-path rust/slicebridge-alpha/Cargo.toml --features desktop --bins
 
-```powershell
-cargo test --manifest-path rust/slicebridge-alpha/Cargo.toml
-cargo clippy --manifest-path rust/slicebridge-alpha/Cargo.toml --all-targets -- -D warnings
-cargo build --manifest-path rust/3mf-probe/Cargo.toml --bin slicebridge-3mf-probe
-cargo build --manifest-path rust/slicebridge-alpha/Cargo.toml --features desktop --bins
-```
+Keep slicebridge-desktop, slicebridge-alpha and slicebridge-3mf-probe together.
+For a Windows executable add .exe to each name.
 
-Place the three Rust binaries `slicebridge-desktop.exe`, `slicebridge-alpha.exe` and `slicebridge-3mf-probe.exe` together in a writable scratch directory when packaging. Avoid modifying installed production files.
+## Agent CLI and MCP
 
-## Commands and agents
+    slicebridge-alpha commands.list
+    slicebridge-alpha profiles.discover
+    slicebridge-alpha --stdio
+    slicebridge-alpha --mcp
+    slicebridge-alpha --serve 127.0.0.1:48638
+    slicebridge-alpha --attach 127.0.0.1:48638 app.status
 
-```text
-slicebridge-alpha.exe commands.list
-slicebridge-alpha.exe --stdio
-slicebridge-alpha.exe --mcp
-slicebridge-alpha.exe --serve 127.0.0.1:48638
-slicebridge-alpha.exe --attach 127.0.0.1:48638 app.status
-```
+The running GUI listens at 127.0.0.1:48637, with the same Registry instance.
+Keep a persistent CLI/MCP/attach connection for an end-to-end conversion.
 
-The desktop process serves the same commands at `127.0.0.1:48637`. In persistent `--stdio` and MCP sessions, issue `source.select`, `bundle.load`, `conversion.start`, then poll `conversion.status`, and optionally call `slicer.open`. Example JSON-lines command:
+Example JSONL command sequence:
 
-```json
-{"command":"source.inspect","args":{"path":"C:\\scratch\\source.3mf"}}
-```
+    {"command":"source.select","args":{"path":"C:\\scratch\\project.3mf"}}
+    {"command":"profiles.discover","args":{}}
+    {"command":"profiles.select","args":{"target":"qidi","nozzle":"0.4"}}
+    {"command":"profiles.materials","args":{"material":"PETG"}}
+    {"command":"material.select","args":{"material":"PETG","preset":"Bambu PETG @Qidi X-Plus 5 0.4 nozzle"}}
+    {"command":"conversion.start","args":{"output":"C:\\scratch\\converted.3mf"}}
+    {"command":"conversion.status","args":{}}
+    {"command":"slicer.open_selected","args":{}}
 
-MCP methods are `initialize`, `ping`, `tools/list` and `tools/call`. MCP exposes the same named Rust commands and structured results/errors.
+conversion.start is asynchronous. Wait for status completed before opening.
+conversion.cancel can cancel a running Rust worker. bundle.load remains for
+QA of a manually prepared and verified OEM snapshot.
 
-## Important acceptance gaps
+## Verification and gaps
 
-1. The OEM `bundle.load` input must already be an *authoritatively resolved, complete* profile snapshot; Rust-native installed slicer discovery, inheritance and material/printer catalog selection are NOT yet implemented.
-2. PLA/PETG buttons currently record **preview selection only**. They do not change the validated bundle or conversion parameters. Never substitute a guessed or incomplete OEM leaf.
-3. The desktop window is still a pilot: no true large data table, docking framework, batch processing or progress percentage. The status reports job phases, cancellation and errors.
-4. The UI is English-first with a clear localization slot; full string extraction, translated catalogs and RTL are later work.
-5. Windows build/run has to be measured on the actual desktop; macOS and Linux need independent build/run smoke checks. No untested platform is claimed supported.
-6. Integration parity with actual installed QIDIStudio/Snapmaker Orca and permissioned real 3MF sources is an acceptance gate beyond isolated synthetic fixture tests.
+Windows QA on installed OEM resources and permitted 3MF fixtures passed four
+one-color/five-color conversions across both targets, preserving source SHA
+and geometry and removing stale slice caches. For a QIDI 4xPLA + 1xPETG
+source, changing from Generic PETG to installed Bambu PETG changed the
+fifth OEM filament preset ID in the output without changing the source;
+both presets specified 250 C, so temperature did NOT change.
 
-Never merge this spike into `main`, replace a stable installation, or slice, generate G-code, or print without separate owner authorization.
+Still incomplete: more nozzles/models/Orca forks, actual slicer import and UI
+material verification for this new app, advanced tables and docking,
+batch/drag-drop, accurate percentages, localization and Linux testing.
+The earlier GPUI shell built and ran on macOS; this new installed-OEM
+extension requires an independent macOS build/runtime test.
+
+Do not merge main, replace stable installation, slice, generate G-code or
+control printers without applicable user authorization.
