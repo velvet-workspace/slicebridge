@@ -26,6 +26,7 @@ struct PreparedItem {
     item: Item,
     source_nozzle: String,
     source_nozzle_assumed: bool,
+    source_invalid: bool,
     // Per-source OEM refusal is retained as a file result; other sources
     // can still use a valid variant, as in the original Go batch.
     resolved: Result<Arc<Value>, String>,
@@ -55,7 +56,9 @@ fn plan_batch(
     paths: &[PathBuf],
     output_dir: &Path,
     target: &str,
-    nozzles: &[String],
+    // None denotes a source rejected by 3MF inspection or profile selection.
+    // It must remain in the batch report, but must not be assigned an output.
+    nozzles: &[Option<String>],
 ) -> Result<Vec<Item>, String> {
     if paths.is_empty() || paths.len() > MAX_BATCH {
         return Err(format!(
@@ -72,11 +75,6 @@ fn plan_batch(
     let mut destinations = BTreeSet::new();
     let mut result = Vec::with_capacity(paths.len());
     for (path, nozzle) in paths.iter().zip(nozzles) {
-        if !["0.2", "0.25", "0.4", "0.6", "0.8"].contains(&nozzle.as_str()) {
-            return Err(format!(
-                "invalid physical nozzle {nozzle:?} for batch source"
-            ));
-        }
         if !path.is_file() {
             return Err(format!(
                 "batch source is not a regular file: {}",
@@ -95,6 +93,20 @@ fn plan_batch(
             .map_err(|e| format!("batch source canonicalization: {e}"))?;
         if !sources.insert(canonical) {
             return Err(format!("duplicate 3MF source: {}", path.display()));
+        }
+        let Some(nozzle) = nozzle.as_deref() else {
+            // Failed preflight: no destination is reserved or ever written.
+            result.push(Item {
+                source: path.clone(),
+                output: PathBuf::new(),
+                nozzle: String::new(),
+            });
+            continue;
+        };
+        if !["0.2", "0.25", "0.4", "0.6", "0.8"].contains(&nozzle) {
+            return Err(format!(
+                "invalid physical nozzle {nozzle:?} for batch source"
+            ));
         }
         let stem = path
             .file_stem()
@@ -122,7 +134,7 @@ fn plan_batch(
         result.push(Item {
             source: path.clone(),
             output: destination,
-            nozzle: nozzle.clone(),
+            nozzle: nozzle.to_owned(),
         });
     }
     Ok(result)
@@ -149,20 +161,48 @@ where
     }
     let mut metadata = Vec::with_capacity(paths.len());
     let mut variant_nozzles = Vec::with_capacity(paths.len());
-    // Every source uses the same saved printer preferences, but a different
-    // source nozzle may select a different *installed* OEM variant.
+    // The stable Go loop records a SOURCE_INVALID failure and processes the
+    // next file. Keep a rejected source in place, without an OEM or output.
     let mut verified_bundles: BTreeMap<String, Result<Arc<Value>, String>> = BTreeMap::new();
     for path in paths {
-        let source =
-            inspect_source_nozzle(path).map_err(|err| format!("{}: {err}", path.display()))?;
-        let source_nozzle = source["source_nozzle"]
-            .as_str()
-            .ok_or("source nozzle inspection returned no diameter")?
-            .to_owned();
-        let assumed = source["source_nozzle_assumed"] == true;
-        let (target_nozzle, overrides) =
-            printer_settings::profile_choice_for_source(settings, target, "auto", &source_nozzle)
-                .map_err(|err| format!("{}: {err}", path.display()))?;
+        let inspected = inspect_source_nozzle(path).and_then(|source| {
+            let source_nozzle = source["source_nozzle"]
+                .as_str()
+                .ok_or("source nozzle inspection returned no diameter")?
+                .to_owned();
+            Ok((source_nozzle, source["source_nozzle_assumed"] == true))
+        });
+        let (source_nozzle, assumed) = match inspected {
+            Ok(details) => details,
+            Err(err) => {
+                variant_nozzles.push(None);
+                metadata.push((
+                    String::new(),
+                    false,
+                    true,
+                    Err(format!("{}: {err}", path.display())),
+                ));
+                continue;
+            }
+        };
+        let (target_nozzle, overrides) = match printer_settings::profile_choice_for_source(
+            settings,
+            target,
+            "auto",
+            &source_nozzle,
+        ) {
+            Ok(choice) => choice,
+            Err(err) => {
+                variant_nozzles.push(None);
+                metadata.push((
+                    source_nozzle,
+                    assumed,
+                    false,
+                    Err(format!("{}: {err}", path.display())),
+                ));
+                continue;
+            }
+        };
         let resolved = if let Some(cached) = verified_bundles.get(&target_nozzle) {
             cached.clone()
         } else {
@@ -178,19 +218,22 @@ where
             verified_bundles.insert(target_nozzle.clone(), result.clone());
             result
         };
-        variant_nozzles.push(target_nozzle);
-        metadata.push((source_nozzle, assumed, resolved));
+        variant_nozzles.push(Some(target_nozzle));
+        metadata.push((source_nozzle, assumed, false, resolved));
     }
     let filenames = plan_batch(paths, output_dir, target, &variant_nozzles)?;
     Ok(filenames
         .into_iter()
         .zip(metadata)
         .map(
-            |(item, (source_nozzle, source_nozzle_assumed, resolved))| PreparedItem {
-                item,
-                source_nozzle,
-                source_nozzle_assumed,
-                resolved,
+            |(item, (source_nozzle, source_nozzle_assumed, source_invalid, resolved))| {
+                PreparedItem {
+                    item,
+                    source_nozzle,
+                    source_nozzle_assumed,
+                    source_invalid,
+                    resolved,
+                }
             },
         )
         .collect())
@@ -261,103 +304,127 @@ fn verify_source_nozzle_unchanged(ready: &PreparedItem) -> Result<(), String> {
     Ok(())
 }
 
+// This is the only path that can reach the converter; rejected preflight
+// entries have no output and are filtered out by run_batch_with.
+fn execute_prepared(
+    ready: &PreparedItem,
+    engine: &Path,
+    cancel: &Arc<AtomicBool>,
+) -> Result<Value, String> {
+    let item = &ready.item;
+    let bundle = ready.resolved.as_ref().map_err(Clone::clone)?;
+    if item.output.as_os_str().is_empty() {
+        return Err("rejected batch file has no output destination".into());
+    }
+    // Recheck source and materials after planning, before the worker starts.
+    verify_source_nozzle_unchanged(ready)?;
+    let validation = validate_native_autonomous_input(bundle.as_ref(), &item.source)?;
+    if cancel.load(Ordering::SeqCst) {
+        return Err("batch cancelled during preflight".into());
+    }
+    let worker = Registry::new();
+    let selected = worker.execute("source.select", &json!({"path":item.source}));
+    if selected["ok"] != true {
+        return Err(format!("source inspection failed: {}", selected["error"]));
+    }
+    {
+        let mut session = worker.state.lock().map_err(|e| e.to_string())?;
+        session.bundle = Some(bundle.as_ref().clone());
+    }
+    let start = worker.execute(
+        "conversion.start",
+        &json!({"output":item.output,"engine":engine}),
+    );
+    if start["ok"] != true {
+        return Err(format!("worker failed to start: {}", start["error"]));
+    }
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            worker.execute("conversion.cancel", &json!({}));
+        }
+        let status = worker.snapshot();
+        match status["phase"].as_str().unwrap_or("unknown") {
+            "running" => thread::sleep(Duration::from_millis(80)),
+            "completed" => {
+                let converted = status["output"]
+                    .as_str()
+                    .ok_or("conversion completed without output file")?;
+                if converted != item.output.to_string_lossy() {
+                    return Err("batch worker output path differs from planned path".into());
+                }
+                if !item.output.is_file() {
+                    return Err("batch worker output file missing".into());
+                }
+                return Ok(json!({
+                    "validation": validation,
+                    "source_nozzle":ready.source_nozzle,
+                    "source_nozzle_assumed":ready.source_nozzle_assumed,
+                    "target_nozzle":item.nozzle,
+                    "conversion":status["result"],
+                    "bytes":fs::metadata(&item.output).map_err(|e|e.to_string())?.len()
+                }));
+            }
+            "failed" | "cancelled" => {
+                return Err(format!(
+                    "conversion {}: {}",
+                    status["phase"], status["result"]
+                ));
+            }
+            phase => return Err(format!("unexpected conversion phase: {phase}")),
+        }
+    }
+}
+
+// The injectable executor lets QA prove mixed failure/success progress without
+// any real conversion, slicing, G-code generation or printer operation.
+fn run_batch_with<F>(
+    shared: Arc<Mutex<Session>>,
+    items: Vec<PreparedItem>,
+    cancel: Arc<AtomicBool>,
+    mut execute: F,
+) where
+    F: FnMut(&PreparedItem) -> Result<Value, String>,
+{
+    for (index, ready) in items.iter().enumerate() {
+        if cancel.load(Ordering::SeqCst) {
+            finish(&shared, "cancelled", Some("batch cancelled between items"));
+            return;
+        }
+        update(&shared, index, "running", None);
+        let result = ready
+            .resolved
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|_| execute(ready));
+        match result {
+            Ok(receipt) => update(&shared, index, "completed", Some(receipt)),
+            Err(error) => {
+                if cancel.load(Ordering::SeqCst) {
+                    update(&shared, index, "cancelled", Some(json!({"error":error})));
+                    finish(&shared, "cancelled", Some(&error));
+                    return;
+                }
+                let mut receipt = json!({"error":error});
+                if ready.source_invalid {
+                    receipt["code"] = json!("SOURCE_INVALID");
+                }
+                update(&shared, index, "failed", Some(receipt));
+            }
+        }
+    }
+    finish(&shared, "completed", None);
+}
+
 fn run_batch(
     shared: Arc<Mutex<Session>>,
     items: Vec<PreparedItem>,
     engine: PathBuf,
     cancel: Arc<AtomicBool>,
 ) {
-    for (index, ready) in items.iter().enumerate() {
-        let item = &ready.item;
-        if cancel.load(Ordering::SeqCst) {
-            finish(&shared, "cancelled", Some("batch cancelled between items"));
-            return;
-        }
-        update(&shared, index, "running", None);
-        let result: Result<Value, String> = (|| {
-            // A staged source may have changed after its read-only planning.
-            // Never apply a stale OEM variant to a different source nozzle.
-            // A missing installed profile is a per-source failure, not a
-            // reason to drop the rest of the original batch.
-            let bundle = ready.resolved.as_ref().map_err(|error| error.clone())?;
-            verify_source_nozzle_unchanged(ready)?;
-            // Only trusted installed OEM inheritance. Revalidate the
-            // resolved profile against EACH source's own slot materials.
-            let validation = validate_native_autonomous_input(bundle.as_ref(), &item.source)?;
-            if cancel.load(Ordering::SeqCst) {
-                return Err("batch cancelled during preflight".into());
-            }
-            let worker = Registry::new();
-            let selected = worker.execute("source.select", &json!({"path":item.source}));
-            if selected["ok"] != true {
-                return Err(format!("source inspection failed: {}", selected["error"]));
-            }
-            {
-                let mut session = worker.state.lock().map_err(|e| e.to_string())?;
-                session.bundle = Some(bundle.as_ref().clone());
-            }
-            let start = worker.execute(
-                "conversion.start",
-                &json!({"output":item.output,"engine":engine}),
-            );
-            if start["ok"] != true {
-                return Err(format!("worker failed to start: {}", start["error"]));
-            }
-            loop {
-                if cancel.load(Ordering::SeqCst) {
-                    worker.execute("conversion.cancel", &json!({}));
-                }
-                let status = worker.snapshot();
-                match status["phase"].as_str().unwrap_or("unknown") {
-                    "running" => thread::sleep(Duration::from_millis(80)),
-                    "completed" => {
-                        // If cancellation arrives just after the native worker has
-                        // atomically completed, keep that finished output in the
-                        // receipt. The next iteration observes cancel and stops.
-                        let converted = status["output"]
-                            .as_str()
-                            .ok_or("conversion completed without output file")?;
-                        if converted != item.output.to_string_lossy() {
-                            return Err("batch worker output path differs from planned path".into());
-                        }
-                        if !item.output.is_file() {
-                            return Err("batch worker output file missing".into());
-                        }
-                        return Ok(json!({
-                            "validation": validation,
-                            "source_nozzle":ready.source_nozzle,
-                            "source_nozzle_assumed":ready.source_nozzle_assumed,
-                            "target_nozzle":item.nozzle,
-                            "conversion":status["result"],
-                            "bytes":fs::metadata(&item.output).map_err(|e|e.to_string())?.len()
-                        }));
-                    }
-                    "failed" | "cancelled" => {
-                        return Err(format!(
-                            "conversion {}: {}",
-                            status["phase"], status["result"]
-                        ));
-                    }
-                    phase => return Err(format!("unexpected conversion phase: {phase}")),
-                }
-            }
-        })();
-        match result {
-            Ok(receipt) => update(&shared, index, "completed", Some(receipt)),
-            Err(error) => {
-                // A per-file profile/material/source error is not a global
-                // batch failure in original Go: report it and keep processing.
-                // Cancellation remains terminal and marks queued work skipped.
-                if cancel.load(Ordering::SeqCst) {
-                    update(&shared, index, "cancelled", Some(json!({"error":error})));
-                    finish(&shared, "cancelled", Some(&error));
-                    return;
-                }
-                update(&shared, index, "failed", Some(json!({"error":error})));
-            }
-        }
-    }
-    finish(&shared, "completed", None);
+    let worker_cancel = Arc::clone(&cancel);
+    run_batch_with(shared, items, cancel, move |ready| {
+        execute_prepared(ready, &engine, &worker_cancel)
+    });
 }
 
 impl Registry {
@@ -764,16 +831,108 @@ mod tests {
             .contains("does not match"));
         let invalid = root.join("not-a-3mf.3mf");
         fs::write(&invalid, b"invalid source").unwrap();
-        assert!(prepare_batch(
-            &[invalid.clone()],
+        let rejected = prepare_batch(
+            std::slice::from_ref(&invalid),
             &root,
             "u1",
             &settings,
-            |_, _, _| panic!("an invalid source must never resolve an OEM")
+            |_, _, _| panic!("an invalid source must never resolve an OEM"),
         )
-        .is_err());
-        assert!(root.join("not-a-3mf-slicebridge-u1-0_4.3mf").exists() == false);
+        .unwrap();
+        assert_eq!(rejected.len(), 1);
+        assert!(rejected[0].resolved.is_err());
+        assert!(rejected[0].item.output.as_os_str().is_empty());
+        assert!(rejected[0].item.nozzle.is_empty());
+        assert!(!root.join("not-a-3mf-slicebridge-u1-0_4.3mf").exists());
         assert_eq!(fs::read(&invalid).unwrap(), b"invalid source");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn corrupted_original_3mf_between_valid_files_does_not_abort_or_execute() {
+        let root = output_folder("corrupt-middle");
+        let valid_before = fixture("bambu-nozzle-0.2.3mf");
+        let valid_after = fixture("bambu-nozzle-0.6.3mf");
+        let original_before = fs::read(&valid_before).unwrap();
+        let original_after = fs::read(&valid_after).unwrap();
+        let corrupted = root.join("damaged.3mf");
+        // A truncated copy of a real 3MF, not an invented extension or model.
+        fs::write(
+            &corrupted,
+            &original_before[..original_before.len().min(64)],
+        )
+        .unwrap();
+        let paths = [valid_before.clone(), corrupted.clone(), valid_after.clone()];
+        let mut resolved = Vec::new();
+        let ready = prepare_batch(
+            &paths,
+            &root,
+            "u1",
+            &printer_settings::defaults(),
+            |target, nozzle, _| {
+                resolved.push(nozzle.to_owned());
+                Ok(json!({"target":target,"nozzle":nozzle}))
+            },
+        )
+        .unwrap();
+        assert_eq!(resolved, vec!["0.2", "0.6"]);
+        assert_eq!(ready.len(), 3);
+        assert!(ready[0].resolved.is_ok());
+        assert!(ready[1].resolved.is_err());
+        assert!(ready[1].source_invalid);
+        assert!(ready[1].item.output.as_os_str().is_empty());
+        assert!(ready[2].resolved.is_ok());
+        assert!(!ready[0].item.output.exists());
+        assert!(!ready[2].item.output.exists());
+
+        let shared = Arc::new(Mutex::new(Session::default()));
+        {
+            let mut state = shared.lock().unwrap();
+            state.batch = Some(json!({
+                "phase":"running","total":3,"completed":0,"successes":0,
+                "failures":0,"progress_percent":0,
+                "items":[
+                    {"phase":"queued","receipt":null},
+                    {"phase":"queued","receipt":null},
+                    {"phase":"queued","receipt":null}
+                ]
+            }));
+        }
+        let mut executed_sources = Vec::new();
+        run_batch_with(
+            shared.clone(),
+            ready,
+            Arc::new(AtomicBool::new(false)),
+            |entry| {
+                // No real engine can run: this is a synthetic receipt for QA.
+                assert!(!entry.item.output.as_os_str().is_empty());
+                executed_sources.push(entry.item.source.clone());
+                Ok(json!({"mocked":true}))
+            },
+        );
+        assert_eq!(
+            executed_sources,
+            vec![valid_before.clone(), valid_after.clone()]
+        );
+        let state = shared.lock().unwrap();
+        let batch = state.batch.as_ref().unwrap();
+        assert_eq!(batch["phase"], "completed");
+        assert_eq!(batch["completed"], 3);
+        assert_eq!(batch["successes"], 2);
+        assert_eq!(batch["failures"], 1);
+        assert_eq!(batch["progress_percent"], 100);
+        assert_eq!(batch["items"][0]["phase"], "completed");
+        assert_eq!(batch["items"][1]["phase"], "failed");
+        assert_eq!(batch["items"][1]["receipt"]["code"], "SOURCE_INVALID");
+        assert!(batch["items"][1]["receipt"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("damaged.3mf"));
+        assert_eq!(batch["items"][2]["phase"], "completed");
+        drop(state);
+        assert_eq!(fs::read(valid_before).unwrap(), original_before);
+        assert_eq!(fs::read(valid_after).unwrap(), original_after);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1); // corrupt source only
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -842,7 +1001,7 @@ mod tests {
             std::slice::from_ref(&source),
             &base,
             "qidi",
-            &["0.6".into()],
+            &[Some("0.6".into())],
         )
         .unwrap();
         let output = base.join("design-slicebridge-qidi-0_6.3mf");
@@ -851,11 +1010,11 @@ mod tests {
             &[source.clone(), source.clone()],
             &base,
             "qidi",
-            &["0.6".into(), "0.6".into()]
+            &[Some("0.6".into()), Some("0.6".into())]
         )
         .is_err());
         fs::write(&output, b"already exists").unwrap();
-        assert!(plan_batch(&[source], &base, "qidi", &["0.6".into()]).is_err());
+        assert!(plan_batch(&[source], &base, "qidi", &[Some("0.6".into())]).is_err());
         fs::remove_dir_all(base).unwrap();
     }
     #[test]
@@ -870,7 +1029,13 @@ mod tests {
         }
         fs::create_dir_all(&dest).unwrap();
         let paths = sources.map(|dir| dir.join("same.3mf"));
-        let err = plan_batch(&paths, &dest, "u1", &["0.4".into(), "0.4".into()]).unwrap_err();
+        let err = plan_batch(
+            &paths,
+            &dest,
+            "u1",
+            &[Some("0.4".into()), Some("0.4".into())],
+        )
+        .unwrap_err();
         assert!(err.contains("collision"), "{err}");
         fs::remove_dir_all(root).unwrap();
     }
