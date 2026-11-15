@@ -305,3 +305,32 @@ jobs:
           path: native/build/bin/SliceBridge-Rust-Native-RC-macOS-Apple-Silicon.zip
           if-no-files-found: error
           retention-days: 14
+
+  rust-gpui-desktop-parity:
+    name: GPUI Rust desktop compatibility (${{ matrix.os }})
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: rust/slicebridge-alpha
+        shell: bash
+    steps:
+      - name: Check out source (never touch installed stable app)
+        uses: actions/checkout@v7
+        with:
+          submodules: true
+      - name: Use stable Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup default stable
+      - name: Validate original GPUI desktop shell without slicing
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked --features desktop --lib --bin slicebridge-desktop
+          cargo build --locked --features desktop --bin slicebridge-desktop
