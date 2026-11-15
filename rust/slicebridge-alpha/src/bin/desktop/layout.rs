@@ -69,6 +69,27 @@ fn caption(text: String, color: u32, rtl: bool) -> Div {
     align_text(div().text_xs().text_color(rgb(color)).child(text), rtl)
 }
 
+// Click-only handoff: the Registry verifies the completed receipt for this target before launching the saved slicer.
+fn open_slicer_button(
+    id: String,
+    locale: Locale,
+    running: bool,
+    source: String,
+    target: String,
+    cx: &mut Context<SliceBridgeWindow>,
+) -> Button {
+    Button::new(id)
+        .disabled(running)
+        .label(label(locale, "openSlicer"))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.run(
+                "slicer.open_batch_output",
+                json!({"source":source.clone(),"target":target.clone()}),
+                cx,
+            );
+        }))
+}
+
 fn panel() -> Div {
     div()
         .rounded_lg()
@@ -765,6 +786,7 @@ pub(super) fn render_window(
                         file_report.child(caption(label(locale, "sourceAssumed"), INK, rtl));
                 }
             }
+            let item_source = item["source"].as_str().map(str::to_owned);
             if let Some(targets) = item["targets"].as_array() {
                 for target in targets {
                     let id = target["target"].as_str().unwrap_or("unknown");
@@ -803,6 +825,20 @@ pub(super) fn render_window(
                     if !error.is_empty() {
                         target_report = target_report.child(caption(error, RED, rtl));
                     }
+                    if state == "completed" {
+                        if let (Some(source), Some(target_id)) =
+                            (item_source.as_ref(), target["target"].as_str())
+                        {
+                            target_report = target_report.child(open_slicer_button(
+                                format!("open-slicer-{idx}-{target_id}"),
+                                locale,
+                                running,
+                                source.clone(),
+                                target_id.to_owned(),
+                                cx,
+                            ));
+                        }
+                    }
                     file_report = file_report.child(target_report);
                 }
             } else {
@@ -832,6 +868,18 @@ pub(super) fn render_window(
                                     .child(status_text),
                             ),
                     );
+                    if phase == "completed" {
+                        if let Some(source) = item_source.as_ref() {
+                            file_report = file_report.child(open_slicer_button(
+                                format!("open-slicer-{idx}-{id}"),
+                                locale,
+                                running,
+                                source.clone(),
+                                id.to_owned(),
+                                cx,
+                            ));
+                        }
+                    }
                 }
                 if let Some(output) = completed_output_name(phase, receipt, &item["output"]) {
                     file_report = file_report.child(caption(output, MUTED, rtl));

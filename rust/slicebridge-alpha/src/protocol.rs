@@ -16,16 +16,18 @@ fn schema(name: &str) -> Value {
         "conversion.start" => vec!["output"],
         "batch.stage" => vec!["paths"],
         "slicer.open" => vec!["executable"],
+        "slicer.open_batch_output" => vec!["source", "target"],
         _ => vec![],
     };
     json!({"type":"object","properties":{
         "path":{"type":"string"},
+        "source":{"type":"string"},
         "output":{"type":"string"},
         "engine":{"type":"string"},
         "executable":{"type":"string"},
         "name":{"type":"string"},
-        "target":{"type":"string","enum":["u1","qidi"]},
-        "nozzle":{"type":"string","enum":["0.2","0.4","0.6","0.8"]},
+        "target":{"type":"string","enum":["u1","c5","cc2","qidi"]},
+        "nozzle":{"type":"string","enum":["auto","0.2","0.25","0.4","0.6","0.8"]},
         "material":{"type":"string","enum":["PLA","PETG","ABS","ASA","TPU"]},
         "preset":{"type":"string"},
         "slot":{"type":"integer","minimum":1,"maximum":64},
@@ -167,6 +169,21 @@ mod tests {
         let names = response["result"]["tools"].as_array().unwrap();
         assert_eq!(names.len(), COMMANDS.len());
         assert_eq!(response["id"], 5);
+    }
+
+    #[test]
+    fn batch_slicer_open_schema_requires_only_source_and_target() {
+        let schema = schema("slicer.open_batch_output");
+        assert_eq!(schema["required"], json!(["source", "target"]));
+        assert_eq!(
+            schema["properties"]["target"]["enum"],
+            json!(["u1", "c5", "cc2", "qidi"])
+        );
+        assert_eq!(
+            schema["properties"]["nozzle"]["enum"],
+            json!(["auto", "0.2", "0.25", "0.4", "0.6", "0.8"])
+        );
+        assert_eq!(schema["additionalProperties"], false);
     }
 
     #[test]

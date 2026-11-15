@@ -71,6 +71,80 @@ fn invalidate_active_settings_target(state: &mut Session, target: &str) {
     state.selected_materials.clear();
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RecordedBatchOutput {
+    path: PathBuf,
+    target_nozzle: String,
+    slicer_id: String,
+}
+
+// Match Go's generated-output ownership check: the requested source and target
+// must resolve to a completed receipt in THIS registry session. Never trust an
+// arbitrary output path supplied by the frontend or an MCP caller.
+fn recorded_batch_output(
+    batch: &Value,
+    source: &str,
+    target: &str,
+) -> Result<RecordedBatchOutput, String> {
+    let items = batch["items"]
+        .as_array()
+        .ok_or("no batch output is available in this session")?;
+    let item = items
+        .iter()
+        .find(|item| item["source"].as_str() == Some(source))
+        .ok_or("source was not generated in the current batch session")?;
+
+    let (phase, receipt) = if let Some(targets) = item["targets"].as_array() {
+        let selected = targets
+            .iter()
+            .find(|entry| entry["target"].as_str() == Some(target))
+            .ok_or("file was not generated for this printer in the current session")?;
+        (selected["phase"].as_str(), &selected["receipt"])
+    } else {
+        if batch["target"].as_str() != Some(target) {
+            return Err("file was not generated for this printer in the current session".into());
+        }
+        (item["phase"].as_str(), &item["receipt"])
+    };
+    if phase != Some("completed") {
+        return Err("batch output is not completed for this printer".into());
+    }
+    let output = receipt["output"]
+        .as_str()
+        .filter(|path| !path.trim().is_empty())
+        .ok_or("completed batch receipt has no generated output path")?;
+    let target_nozzle = receipt["target_nozzle"]
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("completed batch receipt has no verified target nozzle")?;
+    let slicer_id = receipt["slicer_id"]
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("completed batch receipt has no verified slicer identity")?;
+    Ok(RecordedBatchOutput {
+        path: PathBuf::from(output),
+        target_nozzle: target_nozzle.to_owned(),
+        slicer_id: slicer_id.to_owned(),
+    })
+}
+
+fn validate_recorded_3mf(path: &Path) -> Result<(), String> {
+    if !path.is_absolute() {
+        return Err("invalid output path".into());
+    }
+    if !path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("3mf"))
+    {
+        return Err("choose a generated .3mf file".into());
+    }
+    let metadata = fs::metadata(path).map_err(|error| format!("read generated output: {error}"))?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 250 * 1024 * 1024 {
+        return Err("generated output must be a regular .3mf file up to 250 MB".into());
+    }
+    Ok(())
+}
+
 #[derive(Clone, Default)]
 pub struct Registry {
     state: Arc<Mutex<Session>>,
@@ -240,6 +314,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     (
         "slicer.open_selected",
         "Open converted output in selected installed OEM slicer",
+    ),
+    (
+        "slicer.open_batch_output",
+        "Open only a completed batch output recorded for the requested source and target",
     ),
 ];
 
@@ -779,6 +857,30 @@ impl Registry {
                 Ok(json!({"launched":true,"slicer":slicer.to_string_lossy(),
                     "file":output.to_string_lossy(),"slicing":false}))
             }
+            "slicer.open_batch_output" => {
+                let source = arg(params, "source")?;
+                let target = arg(params, "target")?;
+                let recorded = {
+                    let state = self.state.lock().map_err(|e| e.to_string())?;
+                    let batch = state.batch.as_ref().ok_or("no batch output available")?;
+                    recorded_batch_output(batch, source, target)?
+                };
+                validate_recorded_3mf(&recorded.path)?;
+                let slicer = oem::installed_executable_configured(
+                    target,
+                    &recorded.target_nozzle,
+                    &recorded.slicer_id,
+                )?;
+                // The output path comes exclusively from this registry's completed
+                // receipt; the caller cannot substitute another file or executable.
+                launch_slicer(&slicer, &recorded.path)?;
+                Ok(json!({
+                    "launched":true,
+                    "slicer":slicer.to_string_lossy(),
+                    "file":recorded.path.to_string_lossy(),
+                    "slicing":false
+                }))
+            }
             _ => Err(format!("unknown command: {command}")),
         }
     }
@@ -910,22 +1012,27 @@ impl Registry {
     }
 }
 
-fn launch_slicer(executable: &Path, output: &Path) -> Result<(), String> {
+fn slicer_command(executable: &Path, output: &Path) -> Command {
     #[cfg(target_os = "macos")]
-    let mut launch = {
-        let mut cmd = Command::new("open");
-        cmd.arg("-a").arg(executable).arg("--args").arg(output);
-        cmd
-    };
+    {
+        // Match Go's exec.Command("open", "-a", app, output): open the 3MF
+        // document in the selected app, rather than passing it as app arguments.
+        let mut command = Command::new("open");
+        command.arg("-a").arg(executable).arg(output);
+        command
+    }
     #[cfg(not(target_os = "macos"))]
-    let mut launch = {
-        let mut cmd = Command::new(executable);
-        cmd.arg(output);
-        cmd
-    };
-    launch
+    {
+        let mut command = Command::new(executable);
+        command.arg(output);
+        command
+    }
+}
+
+fn launch_slicer(executable: &Path, output: &Path) -> Result<(), String> {
+    slicer_command(executable, output)
         .spawn()
-        .map_err(|e| format!("could not open selected slicer: {e}"))?;
+        .map_err(|error| format!("could not open selected slicer: {error}"))?;
     Ok(())
 }
 
@@ -1168,10 +1275,96 @@ mod tests {
     }
 
     #[test]
+    fn recorded_batch_output_requires_exact_completed_source_and_target() {
+        let single = json!({
+            "target":"u1",
+            "items":[{
+                "source":"/sources/a.3mf",
+                "phase":"completed",
+                "receipt":{
+                    "output":"/sources/U1-a.3mf",
+                    "target_nozzle":"0.4",
+                    "slicer_id":"snapmaker-orca"
+                }
+            }]
+        });
+        let output = recorded_batch_output(&single, "/sources/a.3mf", "u1").unwrap();
+        assert_eq!(output.path, PathBuf::from("/sources/U1-a.3mf"));
+        assert_eq!(output.target_nozzle, "0.4");
+        assert_eq!(output.slicer_id, "snapmaker-orca");
+        assert!(recorded_batch_output(&single, "/sources/a.3mf", "qidi").is_err());
+        assert!(recorded_batch_output(&single, "/sources/other.3mf", "u1").is_err());
+
+        let multi = json!({"items":[{
+            "source":"/sources/b.3mf",
+            "targets":[
+                {"target":"c5","phase":"failed","receipt":{"error":"bad source"}},
+                {"target":"cc2","phase":"completed","receipt":{
+                    "output":"/sources/CentauriCarbon2-b.3mf",
+                    "target_nozzle":"0.6",
+                    "slicer_id":"elegoo-slicer"
+                }}
+            ]
+        }]});
+        let output = recorded_batch_output(&multi, "/sources/b.3mf", "cc2").unwrap();
+        assert_eq!(output.target_nozzle, "0.6");
+        assert_eq!(output.slicer_id, "elegoo-slicer");
+        assert!(recorded_batch_output(&multi, "/sources/b.3mf", "c5").is_err());
+        assert!(recorded_batch_output(&multi, "/sources/b.3mf", "u1").is_err());
+
+        let unfinished = json!({"target":"u1","items":[{
+            "source":"/sources/a.3mf","phase":"running",
+            "receipt":{"output":"/sources/U1-a.3mf","target_nozzle":"0.4",
+                "slicer_id":"snapmaker-orca"}
+        }]});
+        assert!(recorded_batch_output(&unfinished, "/sources/a.3mf", "u1").is_err());
+    }
+
+    #[test]
+    fn recorded_batch_output_requires_slicer_identity_and_verified_3mf_file() {
+        let missing_slicer = json!({"target":"u1","items":[{
+            "source":"/sources/a.3mf","phase":"completed",
+            "receipt":{"output":"/sources/U1-a.3mf","target_nozzle":"0.4"}
+        }]});
+        assert!(recorded_batch_output(&missing_slicer, "/sources/a.3mf", "u1").is_err());
+
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/bambu-one-color.3mf");
+        validate_recorded_3mf(&fixture).unwrap();
+        assert!(validate_recorded_3mf(Path::new("/tmp/not-a-3mf.txt")).is_err());
+        assert!(validate_recorded_3mf(Path::new("relative.3mf")).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_slicer_open_passes_the_3mf_as_a_document_not_app_arguments() {
+        let command = slicer_command(
+            Path::new("/Applications/Example.app"),
+            Path::new("/tmp/Example.3mf"),
+        );
+        assert_eq!(command.get_program(), "open");
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args,
+            vec!["-a", "/Applications/Example.app", "/tmp/Example.3mf"]
+        );
+    }
+
+    #[test]
     fn opening_selected_slicer_requires_completed_conversion() {
         let registry = Registry::new();
         let result = registry.execute("slicer.open_selected", &json!({}));
         assert_eq!(result["ok"], false);
+        let batch = registry.execute(
+            "slicer.open_batch_output",
+            &json!({
+                "source":"/sources/a.3mf","target":"u1"
+            }),
+        );
+        assert_eq!(batch["ok"], false);
     }
 
     #[test]
