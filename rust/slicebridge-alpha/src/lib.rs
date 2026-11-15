@@ -3,6 +3,7 @@
 pub mod batch;
 pub mod my_printers;
 pub mod oem;
+pub mod printer_settings;
 pub mod protocol;
 use serde_json::{json, Value};
 use slicebridge_3mf_probe::{inspect_package, validate_native_autonomous_input};
@@ -60,6 +61,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     (
         "printers.catalog",
         "Read exact 603-model offline stable My Printers catalogue",
+    ),
+    (
+        "settings.get",
+        "Read validated stable printer settings or defaults without modifying installed settings",
     ),
     (
         "printers.get",
@@ -234,6 +239,7 @@ impl Registry {
                 .collect::<Vec<_>>()})),
             "app.status" | "conversion.status" => Ok(self.snapshot()),
             "printers.catalog" => my_printers::catalog_snapshot(),
+            "settings.get" => printer_settings::current(),
             "printers.get" => my_printers::read(
                 &my_printers::experimental_path()?,
                 &my_printers::available_installed_ids(),
