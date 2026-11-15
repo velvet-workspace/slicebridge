@@ -85,39 +85,41 @@ func equivalentQIDINativeProjectFix(goSettings, rustSettings any) bool {
 
 func TestQIDINativeProjectIdentityFixIsExactNotGeneralParityExemption(t *testing.T) {
 	before := map[string]any{
-		"printer_model": "X-Plus 5",
-		"filament_type": []any{"PLA", "PETG"},
-		"filament_colour": []any{"#123456", "#FFFFFF"},
+		"printer_model":        "X-Plus 5",
+		"filament_type":        []any{"PLA", "PETG"},
+		"filament_colour":      []any{"#123456", "#FFFFFF"},
 		"filament_settings_id": []any{"Generic PLA", "Generic PETG"},
-		"filament_id": "QFA90",
-		"nozzle_temperature": []any{"220", "250"},
+		"filament_id":          "QFA90",
+		"nozzle_temperature":   []any{"220", "250"},
 	}
 	good := map[string]any{
-		"printer_model": "X-Plus 5",
-		"filament_type": []any{"PLA", "PETG"},
-		"filament_colour": []any{"#123456", "#FFFFFF"},
+		"printer_model":         "X-Plus 5",
+		"filament_type":         []any{"PLA", "PETG"},
+		"filament_colour":       []any{"#123456", "#FFFFFF"},
 		"filament_multi_colour": []any{"#123456", "#FFFFFF"},
-		"filament_settings_id": []any{"Generic PLA", "Generic PETG"},
-		"filament_ids": []any{"QFA90", "QFG90"},
-		"filament_self_index": []any{"1", "2"},
-		"nozzle_temperature": []any{"220", "250"},
+		"filament_settings_id":  []any{"Generic PLA", "Generic PETG"},
+		"filament_ids":          []any{"QFA90", "QFG90"},
+		"filament_self_index":   []any{"1", "2"},
+		"nozzle_temperature":    []any{"220", "250"},
 	}
 	if !equivalentQIDINativeProjectFix(before, good) {
 		t.Fatal("real native per-slot material/color correction rejected")
 	}
 	for name, mutation := range map[string]func(map[string]any){
-		"color changed": func(v map[string]any) { v["filament_colour"] = []any{"#123456", "#060606"} },
+		"color changed":          func(v map[string]any) { v["filament_colour"] = []any{"#123456", "#060606"} },
 		"original model changed": func(v map[string]any) { v["printer_model"] = "Other" },
-		"material changed": func(v map[string]any) { v["filament_type"] = []any{"PLA", "PLA"} },
-		"material id reused": func(v map[string]any) { v["filament_ids"] = []any{"QFA90", "QFA90"} },
+		"material changed":       func(v map[string]any) { v["filament_type"] = []any{"PLA", "PLA"} },
+		"material id reused":     func(v map[string]any) { v["filament_ids"] = []any{"QFA90", "QFA90"} },
 		"color aliases disagree": func(v map[string]any) { v["filament_multi_colour"] = []any{"#123456", "#060606"} },
-		"slot permutation": func(v map[string]any) { v["filament_self_index"] = []any{"2", "1"} },
-		"nozzle changed": func(v map[string]any) { v["nozzle_temperature"] = []any{"220", "275"} },
+		"slot permutation":       func(v map[string]any) { v["filament_self_index"] = []any{"2", "1"} },
+		"nozzle changed":         func(v map[string]any) { v["nozzle_temperature"] = []any{"220", "275"} },
 		"legacy scalar retained": func(v map[string]any) { v["filament_id"] = "QFA90" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			altered := make(map[string]any, len(good))
-			for key, value := range good { altered[key] = value }
+			for key, value := range good {
+				altered[key] = value
+			}
 			mutation(altered)
 			if equivalentQIDINativeProjectFix(before, altered) {
 				t.Fatal("disallowed vendor/material/color change accepted as parity")
