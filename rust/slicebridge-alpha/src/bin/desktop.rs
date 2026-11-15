@@ -169,6 +169,8 @@ struct SliceBridgeWindow {
     printers_open: bool,
     printers_first_run: bool,
     printers_cards: Vec<PrinterCard>,
+    // Catalogue-only cards; installed PrusaSlicer targets are merged in on each open.
+    printers_catalogue_cards: Vec<PrinterCard>,
     ready_oem_targets: BTreeSet<String>,
     selected_batch_targets: BTreeSet<String>,
     ready_profiles: Value,
@@ -638,11 +640,16 @@ impl SliceBridgeWindow {
             }
         });
         let catalog = registry.execute("printers.catalog", &json!({}));
-        let cards = if catalog["ok"] == true {
+        let catalogue_cards = if catalog["ok"] == true {
             desktop_printer_picker::original_catalogue_cards(&catalog["data"])
         } else {
             Vec::new()
         };
+        let installed = registry.execute("printers.installed_prusa", &json!({}));
+        let cards = desktop_printer_picker::cards_with_installed_prusa(
+            &catalogue_cards,
+            &installed["data"],
+        );
         let discovered = registry.execute("profiles.discover", &json!({}));
         let read_settings = registry.execute("settings.get", &json!({}));
         let settings_value = if read_settings["ok"] == true {
@@ -685,6 +692,7 @@ impl SliceBridgeWindow {
             printers_open: false,
             printers_first_run: prefs["data"]["onboardingPending"] == true,
             printers_cards: cards,
+            printers_catalogue_cards: catalogue_cards,
             ready_oem_targets,
             selected_batch_targets,
             ready_profiles: discovered["data"].clone(),

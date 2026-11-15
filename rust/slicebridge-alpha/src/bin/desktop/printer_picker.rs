@@ -165,6 +165,158 @@ pub(super) fn original_catalogue_cards(catalog: &Value) -> Vec<PrinterCard> {
     grouped.into_values().collect()
 }
 
+// Installed PrusaSlicer printers from printers.installed_prusa. Same rules as
+// SliceBridgePicker.prusaDynamicItem and groupDestinations: only structurally
+// valid, non-Bambu targets are listed, each folded into the card of its physical
+// model. Installed rows are never conversion-ready here: the backend reports
+// `ready: false` and per-printer export is unverified, so no ready flag is kept.
+pub(super) fn cards_with_installed_prusa(
+    catalogue: &[PrinterCard],
+    reply: &Value,
+) -> Vec<PrinterCard> {
+    let mut cards = catalogue.to_vec();
+    let mut by_key: BTreeMap<String, usize> = cards
+        .iter()
+        .enumerate()
+        .map(|(index, card)| (physical_key(&card.manufacturer, &card.model), index))
+        .collect();
+    // Installed-only cards show their lowest-nozzle target, as defaultVariant does.
+    let mut installed_nozzle: BTreeMap<usize, f64> = BTreeMap::new();
+    for target in reply["targets"].as_array().into_iter().flatten() {
+        let Some(card) = installed_prusa_card(target) else {
+            continue;
+        };
+        if cards.iter().any(|known| known.ids.contains(&card.id)) {
+            continue;
+        }
+        let nozzle = target["nozzle"]
+            .as_str()
+            .and_then(|text| text.trim().parse::<f64>().ok())
+            .unwrap_or(f64::INFINITY);
+        let key = physical_key(&card.manufacturer, &card.model);
+        match by_key.get(&key).copied() {
+            Some(index) => {
+                cards[index].ids.push(card.id.clone());
+                if let Some(best) = installed_nozzle.get_mut(&index) {
+                    if nozzle < *best {
+                        *best = nozzle;
+                        cards[index].id = card.id.clone();
+                    }
+                }
+            }
+            None => {
+                installed_nozzle.insert(cards.len(), nozzle);
+                by_key.insert(key, cards.len());
+                cards.push(card);
+            }
+        }
+    }
+    cards
+}
+
+fn installed_prusa_card(target: &Value) -> Option<PrinterCard> {
+    let id = target["id"].as_str()?;
+    if !is_prusa_target_id(id) {
+        return None;
+    }
+    let vendor = clean_text(target["vendor"].as_str().unwrap_or(""));
+    let vendor = if vendor.is_empty() {
+        "Prusa".to_owned()
+    } else {
+        vendor
+    };
+    let title = clean_text(target["title"].as_str().unwrap_or(""));
+    let title = if title.is_empty() {
+        clean_text(target["model"].as_str().unwrap_or(""))
+    } else {
+        title
+    };
+    let name = strip_nozzle(&title);
+    if name.is_empty() || is_bambu_name(&vendor) || is_bambu_name(&name) {
+        return None;
+    }
+    let manufacturer = maker_label(&vendor);
+    let model = displayed_model(&displayed_model(&name, &vendor), &manufacturer);
+    Some(PrinterCard {
+        id: id.into(),
+        ids: vec![id.into()],
+        manufacturer,
+        model: if model.is_empty() { name } else { model },
+        aliases: Vec::new(),
+        release_date: None,
+    })
+}
+
+// Mirrors prusa-<slug>-<10 lowercase hex>, the shape the backend issues.
+fn is_prusa_target_id(id: &str) -> bool {
+    let Some((slug, hash)) = id
+        .strip_prefix("prusa-")
+        .and_then(|rest| rest.rsplit_once('-'))
+    else {
+        return false;
+    };
+    let hash_ok = hash.len() == 10
+        && hash
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    let slug_ok = slug.split('-').all(|part| {
+        !part.is_empty()
+            && part
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    });
+    hash_ok && slug_ok
+}
+
+fn clean_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+// Same word rule as SliceBridgePicker.isBambuName: "bambu" as a whole word, or "bbl".
+fn is_bambu_name(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+        .any(|word| word == "bambu")
+        || lower == "bbl"
+}
+
+// Same as SliceBridgePicker.stripNozzle: removes a trailing nozzle size such as
+// " 0.4 nozzle", " 0.4+0.6 mm" or " nozzle". A bare trailing number is kept.
+fn strip_nozzle(name: &str) -> String {
+    for (at, ch) in name.char_indices() {
+        if ch.is_whitespace() && nozzle_tail(name[at..].trim_start()) {
+            return name[..at].trim().to_owned();
+        }
+    }
+    name.trim().to_owned()
+}
+
+fn nozzle_tail(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    let stem = match lower.strip_suffix("nozzle") {
+        Some(rest) if rest.ends_with(char::is_whitespace) => &body[..rest.len()],
+        _ => body,
+    };
+    stem.trim().eq_ignore_ascii_case("nozzle") || is_nozzle_diameter(stem)
+}
+
+fn is_nozzle_diameter(text: &str) -> bool {
+    let lower = text.trim_end().to_ascii_lowercase();
+    let core = lower
+        .strip_suffix("mm")
+        .unwrap_or(lower.as_str())
+        .trim_end();
+    !core.is_empty()
+        && core.split('+').all(|part| {
+            matches!(part.trim().split_once('.'), Some((whole, frac))
+                if !whole.is_empty()
+                    && !frac.is_empty()
+                    && whole.bytes().all(|b| b.is_ascii_digit())
+                    && frac.bytes().all(|b| b.is_ascii_digit()))
+        })
+}
+
 fn selected(card: &PrinterCard, ids: &[String]) -> bool {
     card.ids.iter().any(|id| ids.contains(id))
 }
@@ -279,6 +431,12 @@ impl SliceBridgeWindow {
             .filter_map(Value::as_str)
             .map(str::to_owned)
             .collect();
+        // Installed PrusaSlicer printers are re-read on every open, like printers.get.
+        let installed = self
+            .commands
+            .execute("printers.installed_prusa", &json!({}));
+        self.printers_cards =
+            cards_with_installed_prusa(&self.printers_catalogue_cards, &installed["data"]);
         self.printers_draft = self.printers_saved.clone();
         self.printers_error.clear();
         self.printers_maker = None;
@@ -696,7 +854,7 @@ impl SliceBridgeWindow {
 #[cfg(test)]
 mod tests {
     use super::{cards_for_view, maker_key, original_catalogue_cards};
-    use serde_json::Value;
+    use serde_json::{json, Value};
     fn catalogue() -> Value {
         slicebridge_alpha::my_printers::catalog_snapshot().unwrap()
     }
@@ -788,5 +946,118 @@ mod tests {
         assert!(!snap.is_empty());
         assert!(snap.iter().any(|item| item.id == "snapmaker-u1"));
         assert!(cards_for_view(&entries, &saved, "xxyyzz-not-existing", None, true).is_empty());
+    }
+
+    fn synthetic_catalogue() -> Vec<super::PrinterCard> {
+        let card = |id: &str, maker: &str, model: &str| super::PrinterCard {
+            id: id.into(),
+            ids: vec![id.into()],
+            manufacturer: maker.into(),
+            model: model.into(),
+            aliases: Vec::new(),
+            release_date: None,
+        };
+        vec![
+            card("prusa-mk4-catalogue", "Prusa Research", "MK4"),
+            card("snapmaker-u1", "Snapmaker", "U1"),
+        ]
+    }
+
+    // Shaped like the printers.installed_prusa reply: the backend always sends ready:false.
+    fn installed_target(id: &str, title: &str, vendor: &str, nozzle: &str) -> Value {
+        json!({
+            "id": id, "title": title, "slicer": "PrusaSlicer", "vendor": vendor,
+            "model": title, "nozzle": nozzle, "ready": false,
+            "reason": "per-printer export not verified",
+        })
+    }
+
+    #[test]
+    fn missing_installed_prusa_leaves_catalogue_cards_unchanged() {
+        let catalogue = synthetic_catalogue();
+        let expected: Vec<Vec<String>> = catalogue.iter().map(|c| c.ids.clone()).collect();
+        for reply in [json!({"targets": []}), Value::Null, json!({"rejected": []})] {
+            let merged = super::cards_with_installed_prusa(&catalogue, &reply);
+            let ids: Vec<Vec<String>> = merged.iter().map(|c| c.ids.clone()).collect();
+            assert_eq!(ids, expected);
+        }
+    }
+
+    #[test]
+    fn installed_target_folds_into_its_catalogue_card_without_a_duplicate() {
+        let catalogue = synthetic_catalogue();
+        let reply = json!({"targets": [installed_target(
+            "prusa-mk4-0123456789", "MK4 0.4", "Prusa Research", "0.4")]});
+        let merged = super::cards_with_installed_prusa(&catalogue, &reply);
+        assert_eq!(merged.len(), catalogue.len());
+        let mk4 = merged.iter().find(|c| c.model == "MK4").unwrap();
+        assert_eq!(mk4.id, "prusa-mk4-catalogue");
+        assert_eq!(
+            mk4.ids,
+            vec![
+                "prusa-mk4-catalogue".to_owned(),
+                "prusa-mk4-0123456789".to_owned()
+            ]
+        );
+        // Refreshing again with the same reply must not add the installed ID twice.
+        let again = super::cards_with_installed_prusa(&merged, &reply);
+        assert_eq!(again.len(), catalogue.len());
+        assert_eq!(
+            again.iter().find(|c| c.model == "MK4").unwrap().ids.len(),
+            2
+        );
+    }
+
+    #[test]
+    fn installed_only_model_uses_lowest_nozzle_target_and_one_card() {
+        let reply = json!({"targets": [
+            installed_target("prusa-mk3s-abcdef0123", "MK3S 0.6 nozzle", "Prusa Research", "0.6"),
+            installed_target("prusa-mk3s-0123456789", "MK3S 0.4 nozzle", "Prusa Research", "0.4"),
+        ]});
+        let merged = super::cards_with_installed_prusa(&[], &reply);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].model, "MK3S");
+        assert_eq!(merged[0].manufacturer, "Prusa Research");
+        assert_eq!(merged[0].id, "prusa-mk3s-0123456789");
+        assert_eq!(merged[0].ids.len(), 2);
+    }
+
+    #[test]
+    fn bambu_and_structurally_invalid_targets_are_never_listed() {
+        let catalogue = synthetic_catalogue();
+        let reply = json!({"targets": [
+            installed_target("prusa-p1s-0123456789", "P1S 0.4", "Bambu Lab", "0.4"),
+            installed_target("prusa-x1c-0123456789", "Bambu X1C", "Prusa Research", "0.4"),
+            installed_target("prusa-project", "Project", "Prusa Research", "0.4"),
+            installed_target("prusa-mk4-XYZ", "MK4", "Prusa Research", "0.4"),
+            installed_target("orca-mk4-0123456789", "MK4", "Prusa Research", "0.4"),
+            installed_target("prusa-mk4-0123456789", "  ", "Prusa Research", "0.4"),
+        ]});
+        let merged = super::cards_with_installed_prusa(&catalogue, &reply);
+        assert_eq!(merged.len(), catalogue.len());
+        assert!(merged
+            .iter()
+            .all(|card| !card.ids.iter().any(|id| id.starts_with("prusa-p1s")
+                || id.starts_with("prusa-x1c")
+                || id == "prusa-project")));
+    }
+
+    #[test]
+    fn selected_installed_target_ranks_first_and_never_grants_readiness() {
+        let catalogue = synthetic_catalogue();
+        let installed = "prusa-mk3s-0123456789";
+        let reply = json!({"targets": [installed_target(installed, "MK3S 0.4 nozzle", "Prusa Research", "0.4")]});
+        let merged = super::cards_with_installed_prusa(&catalogue, &reply);
+        let saved = vec![installed.to_owned()];
+        let rows = cards_for_view(&merged, &saved, "", None, false);
+        assert!(rows[0].ids.contains(&installed.to_owned()));
+        // A saved installed Prusa ID is inventory only: no built-in conversion row appears.
+        let all_ready = std::collections::BTreeSet::from([
+            "u1".to_owned(),
+            "c5".to_owned(),
+            "cc2".to_owned(),
+            "qidi".to_owned(),
+        ]);
+        assert!(super::selected_ready_legacy_rows(&saved, &all_ready).is_empty());
     }
 }
