@@ -52,9 +52,80 @@ fn parse_sources(params: &Value) -> Result<Vec<PathBuf>, String> {
         .collect()
 }
 
+// Source-locked to origin/main native/app.go outputs and native/batch.go
+// writeConversion: output is a sibling of the original source, never in an
+// unrelated destination directory or decorated with the physical nozzle.
+fn original_prefix(target: &str) -> Result<&'static str, String> {
+    match target {
+        "u1" => Ok("U1"),
+        "c5" => Ok("Creator5"),
+        "cc2" => Ok("CentauriCarbon2"),
+        "qidi" => Ok("XPlus5"),
+        _ => Err(format!(
+            "no verified original output prefix for target {target:?}"
+        )),
+    }
+}
+
+fn output_key(path: &Path) -> String {
+    let text = path.to_string_lossy().into_owned();
+    if cfg!(windows) {
+        text.to_lowercase()
+    } else {
+        text
+    }
+}
+
+// The injectable existence probe makes all filename collision tests read-only;
+// production uses fs::metadata, matching Go's os.Stat behavior.
+fn next_original_output_with<F>(
+    source: &Path,
+    target: &str,
+    reserved: &BTreeSet<String>,
+    mut exists: F,
+) -> Result<PathBuf, String>
+where
+    F: FnMut(&Path) -> Result<bool, String>,
+{
+    let prefix = original_prefix(target)?;
+    let name = source
+        .file_name()
+        .and_then(|part| part.to_str())
+        .ok_or("source filename is not UTF-8")?;
+    let stem = source
+        .file_stem()
+        .and_then(|part| part.to_str())
+        .ok_or("source stem is not UTF-8")?;
+    let extension = source
+        .extension()
+        .and_then(|part| part.to_str())
+        .ok_or("source extension is not UTF-8")?;
+    let directory = source.parent().ok_or("source has no parent directory")?;
+    for attempt in 1..=100 {
+        let filename = if attempt == 1 {
+            format!("{prefix}-{name}")
+        } else {
+            format!("{prefix}-{stem}-{attempt}.{extension}")
+        };
+        let candidate = directory.join(filename);
+        if reserved.contains(&output_key(&candidate)) || exists(&candidate)? {
+            continue;
+        }
+        return Ok(candidate);
+    }
+    Err("OUTPUT_COLLISIONS: Too many same-name outputs".into())
+}
+
+fn output_exists(path: &Path) -> Result<bool, String> {
+    match fs::metadata(path) {
+        Ok(_) => Ok(true),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(format!("OUTPUT_INVALID: {err}")),
+    }
+}
+
 fn plan_batch(
     paths: &[PathBuf],
-    output_dir: &Path,
     target: &str,
     // None denotes a source rejected by 3MF inspection or profile selection.
     // It must remain in the batch report, but must not be assigned an output.
@@ -64,9 +135,6 @@ fn plan_batch(
         return Err(format!(
             "batch requires 1..={MAX_BATCH} distinct 3MF sources"
         ));
-    }
-    if !output_dir.is_dir() {
-        return Err("batch output_dir must be an existing directory".into());
     }
     if paths.len() != nozzles.len() {
         return Err("batch source and physical nozzle counts differ".into());
@@ -108,29 +176,13 @@ fn plan_batch(
                 "invalid physical nozzle {nozzle:?} for batch source"
             ));
         }
-        let stem = path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .ok_or("batch source filename is not UTF-8")?;
-        let suffix = nozzle.replace('.', "_");
-        let destination = output_dir.join(format!("{stem}-slicebridge-{target}-{suffix}.3mf"));
-        // Windows output comparison is case-insensitive, as is filesystem naming.
-        let key = destination.to_string_lossy().to_lowercase();
-        if !destinations.insert(key) {
-            return Err(format!(
-                "batch output filename collision: {}",
-                destination.display()
-            ));
-        }
-        if destination.exists() {
-            return Err(format!(
-                "batch refuses existing output: {}",
-                destination.display()
-            ));
-        }
+        // Go's writeConversion chooses the first free name in the source's
+        // own directory. Reserve earlier planned names within this batch.
+        let destination = next_original_output_with(path, target, &destinations, output_exists)?;
         if crate::same_path(path, &destination) {
             return Err("batch output cannot be the original source".into());
         }
+        destinations.insert(output_key(&destination));
         result.push(Item {
             source: path.clone(),
             output: destination,
@@ -145,7 +197,6 @@ fn plan_batch(
 /// This is read-only. No worker is started and no output is opened here.
 fn prepare_batch<F>(
     paths: &[PathBuf],
-    output_dir: &Path,
     target: &str,
     settings: &Value,
     mut resolver: F,
@@ -155,9 +206,6 @@ where
 {
     if paths.is_empty() || paths.len() > MAX_BATCH {
         return Err(format!("batch requires 1..={MAX_BATCH} source files"));
-    }
-    if !output_dir.is_dir() {
-        return Err("batch output_dir must be an existing directory".into());
     }
     let mut metadata = Vec::with_capacity(paths.len());
     let mut variant_nozzles = Vec::with_capacity(paths.len());
@@ -221,7 +269,7 @@ where
         variant_nozzles.push(Some(target_nozzle));
         metadata.push((source_nozzle, assumed, false, resolved));
     }
-    let filenames = plan_batch(paths, output_dir, target, &variant_nozzles)?;
+    let filenames = plan_batch(paths, target, &variant_nozzles)?;
     Ok(filenames
         .into_iter()
         .zip(metadata)
@@ -504,22 +552,13 @@ impl Registry {
     pub(crate) fn batch_start(&self, params: &Value) -> Result<Value, String> {
         // An explicit batch.start payload remains backwards-compatible with CLI/MCP.
         // With no payload the same command starts the agent-visible staged selection.
-        let (sources, output_dir) = {
+        let sources = {
             let session = self.state.lock().map_err(|e| e.to_string())?;
-            let sources = if params.get("paths").is_some() {
+            if params.get("paths").is_some() {
                 parse_sources(params)?
             } else {
                 session.batch_staged.clone()
-            };
-            let output_dir = if params.get("output_dir").is_some() {
-                PathBuf::from(arg(params, "output_dir")?)
-            } else {
-                session
-                    .batch_output_dir
-                    .clone()
-                    .ok_or("batch output directory not selected")?
-            };
-            (sources, output_dir)
+            }
         };
         let engine = engine_path(params.get("engine").and_then(Value::as_str))?;
         if !engine.is_file() {
@@ -542,7 +581,7 @@ impl Registry {
         // No writes or converter process here. The original Go batch resolves
         // each file's source nozzle independently, not just the first source.
         let settings = printer_settings::current()?;
-        let items = prepare_batch(&sources, &output_dir, &target, &settings, oem::resolve)?;
+        let items = prepare_batch(&sources, &target, &settings, oem::resolve)?;
         let batch_nozzle = if items
             .iter()
             .all(|ready| ready.item.nozzle == items[0].item.nozzle)
@@ -568,11 +607,6 @@ impl Registry {
             if params.get("paths").is_none() && session.batch_staged != sources {
                 return Err("staged batch sources changed during profile resolution".into());
             }
-            if params.get("output_dir").is_none()
-                && session.batch_output_dir.as_ref() != Some(&output_dir)
-            {
-                return Err("batch output directory changed during profile resolution".into());
-            }
             session.batch = Some(json!({
                 "phase":"running",
                 "target":target,"nozzle":batch_nozzle,
@@ -593,7 +627,7 @@ impl Registry {
         let count = items.len();
         thread::spawn(move || run_batch(shared, items, engine, cancel));
         Ok(json!({"started":true,"phase":"running","count":count,
-            "target":target,"nozzle":batch_nozzle,"output_dir":output_dir}))
+            "target":target,"nozzle":batch_nozzle}))
     }
 
     pub(crate) fn batch_cancel(&self) -> Result<Value, String> {
@@ -656,7 +690,6 @@ mod tests {
         let mut resolved = Vec::<String>::new();
         let ready = prepare_batch(
             &paths,
-            &root,
             "u1",
             &printer_settings::defaults(),
             |target, nozzle, overrides| {
@@ -683,11 +716,10 @@ mod tests {
         );
         assert!(ready[2].source_nozzle_assumed);
         assert!(!ready[0].source_nozzle_assumed);
-        assert!(ready[1]
-            .item
-            .output
-            .to_string_lossy()
-            .ends_with("-u1-0_6.3mf"));
+        assert_eq!(
+            ready[1].item.output.file_name().unwrap(),
+            "U1-bambu-nozzle-0.6.3mf"
+        );
         assert!(ready.iter().all(|v| !v.item.output.exists()));
         assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
         for (path, bytes) in paths.iter().zip(before) {
@@ -706,7 +738,7 @@ mod tests {
         let mut settings = printer_settings::defaults();
         settings["printers"]["u1"]["nozzle"] = json!("0.6");
         let mut calls = 0;
-        let ready = prepare_batch(&paths, &root, "u1", &settings, |target, nozzle, _| {
+        let ready = prepare_batch(&paths, "u1", &settings, |target, nozzle, _| {
             assert_eq!(target, "u1");
             assert_eq!(nozzle, "0.6");
             calls += 1;
@@ -736,7 +768,6 @@ mod tests {
         let mut calls = 0;
         let ready = prepare_batch(
             &paths,
-            &root,
             "c5",
             &printer_settings::defaults(),
             |target, nozzle, _| {
@@ -760,13 +791,9 @@ mod tests {
     fn oversized_batch_is_rejected_before_inspection_or_oem_resolution() {
         let root = output_folder("oversized");
         let missing = vec![PathBuf::from("does-not-exist.3mf"); 201];
-        let error = prepare_batch(
-            &missing,
-            &root,
-            "u1",
-            &printer_settings::defaults(),
-            |_, _, _| panic!("oversized batch must not inspect/resolve files"),
-        )
+        let error = prepare_batch(&missing, "u1", &printer_settings::defaults(), |_, _, _| {
+            panic!("oversized batch must not inspect/resolve files")
+        })
         .unwrap_err();
         assert!(error.contains("1..=200"), "{error}");
         assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
@@ -779,7 +806,6 @@ mod tests {
         let paths = [fixture("bambu-nozzle-0.2.3mf")];
         let mut ready = prepare_batch(
             &paths,
-            &root,
             "u1",
             &printer_settings::defaults(),
             |target, nozzle, _| Ok(json!({"target":target,"nozzle":nozzle})),
@@ -805,7 +831,7 @@ mod tests {
             fixture("bambu-nozzle-0.6.3mf"),
         ];
         let settings = printer_settings::defaults();
-        let failed = prepare_batch(&paths, &root, "u1", &settings, |target, nozzle, _| {
+        let failed = prepare_batch(&paths, "u1", &settings, |target, nozzle, _| {
             if nozzle == "0.6" {
                 Err("installed OEM 0.6 not found".into())
             } else {
@@ -820,7 +846,7 @@ mod tests {
             .unwrap_err()
             .contains("0.6 not found"));
         assert!(failed.iter().all(|item| !item.item.output.exists()));
-        let mismatch = prepare_batch(&paths[..1], &root, "u1", &settings, |target, _, _| {
+        let mismatch = prepare_batch(&paths[..1], "u1", &settings, |target, _, _| {
             Ok(json!({"target":target,"nozzle":"0.4"}))
         })
         .unwrap();
@@ -833,7 +859,6 @@ mod tests {
         fs::write(&invalid, b"invalid source").unwrap();
         let rejected = prepare_batch(
             std::slice::from_ref(&invalid),
-            &root,
             "u1",
             &settings,
             |_, _, _| panic!("an invalid source must never resolve an OEM"),
@@ -866,7 +891,6 @@ mod tests {
         let mut resolved = Vec::new();
         let ready = prepare_batch(
             &paths,
-            &root,
             "u1",
             &printer_settings::defaults(),
             |target, nozzle, _| {
@@ -945,7 +969,6 @@ mod tests {
         ];
         let ready = prepare_batch(
             &sources,
-            &root,
             "u1",
             &printer_settings::defaults(),
             |_, nozzle, _| Err(format!("OEM {nozzle} unavailable")),
@@ -997,28 +1020,40 @@ mod tests {
         fs::create_dir_all(&base).unwrap();
         let source = base.join("design.3mf");
         fs::write(&source, b"not-a-real-3mf").unwrap();
-        let items = plan_batch(
-            std::slice::from_ref(&source),
-            &base,
-            "qidi",
-            &[Some("0.6".into())],
-        )
-        .unwrap();
-        let output = base.join("design-slicebridge-qidi-0_6.3mf");
+        let items =
+            plan_batch(std::slice::from_ref(&source), "qidi", &[Some("0.6".into())]).unwrap();
+        let output = base.join("XPlus5-design.3mf");
         assert_eq!(items[0].output, output);
         assert!(plan_batch(
             &[source.clone(), source.clone()],
-            &base,
             "qidi",
             &[Some("0.6".into()), Some("0.6".into())]
         )
         .is_err());
-        fs::write(&output, b"already exists").unwrap();
-        assert!(plan_batch(&[source], &base, "qidi", &[Some("0.6".into())]).is_err());
+        // Simulate existing outputs without creating conversion-output files.
+        let existing = [output.clone(), base.join("XPlus5-design-2.3mf")];
+        let chosen = next_original_output_with(&source, "qidi", &BTreeSet::new(), |path| {
+            Ok(existing.iter().any(|candidate| candidate == path))
+        })
+        .unwrap();
+        assert_eq!(chosen, base.join("XPlus5-design-3.3mf"));
+        let mut reserved = BTreeSet::new();
+        reserved.insert(output_key(&output));
+        let second = next_original_output_with(&source, "qidi", &reserved, |_| Ok(false)).unwrap();
+        assert_eq!(second, base.join("XPlus5-design-2.3mf"));
+        let saturated =
+            next_original_output_with(&source, "qidi", &BTreeSet::new(), |_| Ok(true)).unwrap_err();
+        assert!(saturated.contains("OUTPUT_COLLISIONS"));
+        let denied = next_original_output_with(&source, "qidi", &BTreeSet::new(), |_| {
+            Err("OUTPUT_INVALID: permission denied".to_owned())
+        })
+        .unwrap_err();
+        assert!(denied.contains("OUTPUT_INVALID"));
+        assert_eq!(fs::read_dir(&base).unwrap().count(), 1); // source only
         fs::remove_dir_all(base).unwrap();
     }
     #[test]
-    fn same_stem_in_different_source_folders_is_rejected() {
+    fn same_stem_in_different_source_folders_gets_original_sibling_outputs() {
         let root = std::env::temp_dir().join(format!("sb-batch-stem-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let sources = [root.join("one"), root.join("two")];
@@ -1028,15 +1063,12 @@ mod tests {
             fs::write(folder.join("same.3mf"), b"fixture").unwrap();
         }
         fs::create_dir_all(&dest).unwrap();
-        let paths = sources.map(|dir| dir.join("same.3mf"));
-        let err = plan_batch(
-            &paths,
-            &dest,
-            "u1",
-            &[Some("0.4".into()), Some("0.4".into())],
-        )
-        .unwrap_err();
-        assert!(err.contains("collision"), "{err}");
+        let paths = sources.each_ref().map(|dir| dir.join("same.3mf"));
+        let planned = plan_batch(&paths, "u1", &[Some("0.4".into()), Some("0.4".into())]).unwrap();
+        assert_eq!(planned[0].output, sources[0].join("U1-same.3mf"));
+        assert_eq!(planned[1].output, sources[1].join("U1-same.3mf"));
+        assert_ne!(planned[0].output, planned[1].output);
+        assert!(planned.iter().all(|entry| !entry.output.exists()));
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
