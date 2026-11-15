@@ -645,10 +645,12 @@ impl SliceBridgeWindow {
         } else {
             Vec::new()
         };
-        let installed = registry.execute("printers.installed_prusa", &json!({}));
-        let cards = desktop_printer_picker::cards_with_installed_prusa(
+        let installed_orca = registry.execute("printers.installed_orca", &json!({}));
+        let installed_prusa = registry.execute("printers.installed_prusa", &json!({}));
+        let cards = desktop_printer_picker::cards_with_installed_printers(
             &catalogue_cards,
-            &installed["data"],
+            &installed_orca["data"],
+            &installed_prusa["data"],
         );
         let discovered = registry.execute("profiles.discover", &json!({}));
         let read_settings = registry.execute("settings.get", &json!({}));

@@ -165,14 +165,57 @@ pub(super) fn original_catalogue_cards(catalog: &Value) -> Vec<PrinterCard> {
     grouped.into_values().collect()
 }
 
-// Installed PrusaSlicer printers from printers.installed_prusa. Same rules as
-// SliceBridgePicker.prusaDynamicItem and groupDestinations: only structurally
-// valid, non-Bambu targets are listed, each folded into the card of its physical
-// model. Installed rows are never conversion-ready here: the backend reports
-// `ready: false` and per-printer export is unverified, so no ready flag is kept.
-pub(super) fn cards_with_installed_prusa(
+#[derive(Clone, Copy)]
+enum InstalledKind {
+    Orca,
+    Prusa,
+}
+
+impl InstalledKind {
+    fn accepts_id(self, id: &str) -> bool {
+        match self {
+            Self::Orca => is_target_id(id, "orca-"),
+            Self::Prusa => is_target_id(id, "prusa-"),
+        }
+    }
+
+    fn fallback_vendor(self) -> &'static str {
+        match self {
+            Self::Orca => "Orca",
+            Self::Prusa => "Prusa",
+        }
+    }
+}
+
+// Vendor forks bundle other manufacturers' Orca presets, so each fork lists only
+// under its owning maker. Same table as SliceBridgePicker.forkMaker; an unbranded
+// slicer is not restricted. maker_key maps "X 5 Series" to QIDI.
+fn fork_vendor_allowed(slicer: &str, vendor: &str) -> bool {
+    let app: String = slicer
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|ch| !(ch.is_whitespace() || *ch == '-' || *ch == '_'))
+        .collect();
+    let owner = match app.as_str() {
+        "snapmakerorca" => "snapmaker",
+        "flashstudio" | "flashstudiodesktop" => "flashforge",
+        "elegooslicer" => "elegoo",
+        "qidistudio" => "qidi",
+        _ => return true,
+    };
+    maker_key(vendor) == owner
+}
+
+// Installed printers from printers.installed_orca, then printers.installed_prusa.
+// Same rules as SliceBridgePicker.dynamicItem, prusaDynamicItem and
+// groupDestinations: only structurally valid, non-Bambu targets are listed, each
+// folded into the card of its physical model. Installed rows are never
+// conversion-ready here: both backends report `ready: false` and per-printer
+// export is unverified, so no ready flag is kept.
+pub(super) fn cards_with_installed_printers(
     catalogue: &[PrinterCard],
-    reply: &Value,
+    orca_reply: &Value,
+    prusa_reply: &Value,
 ) -> Vec<PrinterCard> {
     let mut cards = catalogue.to_vec();
     let mut by_key: BTreeMap<String, usize> = cards
@@ -182,8 +225,20 @@ pub(super) fn cards_with_installed_prusa(
         .collect();
     // Installed-only cards show their lowest-nozzle target, as defaultVariant does.
     let mut installed_nozzle: BTreeMap<usize, f64> = BTreeMap::new();
-    for target in reply["targets"].as_array().into_iter().flatten() {
-        let Some(card) = installed_prusa_card(target) else {
+    let targets = [
+        (InstalledKind::Orca, orca_reply),
+        (InstalledKind::Prusa, prusa_reply),
+    ]
+    .into_iter()
+    .flat_map(|(kind, reply)| {
+        reply["targets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(move |target| (kind, target))
+    });
+    for (kind, target) in targets {
+        let Some(card) = installed_card(kind, target) else {
             continue;
         };
         if cards.iter().any(|known| known.ids.contains(&card.id)) {
@@ -214,16 +269,21 @@ pub(super) fn cards_with_installed_prusa(
     cards
 }
 
-fn installed_prusa_card(target: &Value) -> Option<PrinterCard> {
+fn installed_card(kind: InstalledKind, target: &Value) -> Option<PrinterCard> {
     let id = target["id"].as_str()?;
-    if !is_prusa_target_id(id) {
+    if !kind.accepts_id(id) {
         return None;
     }
-    let vendor = clean_text(target["vendor"].as_str().unwrap_or(""));
-    let vendor = if vendor.is_empty() {
-        "Prusa".to_owned()
+    let raw_vendor = clean_text(target["vendor"].as_str().unwrap_or(""));
+    if matches!(kind, InstalledKind::Orca)
+        && !fork_vendor_allowed(target["slicer"].as_str().unwrap_or(""), &raw_vendor)
+    {
+        return None;
+    }
+    let vendor = if raw_vendor.is_empty() {
+        kind.fallback_vendor().to_owned()
     } else {
-        vendor
+        raw_vendor
     };
     let title = clean_text(target["title"].as_str().unwrap_or(""));
     let title = if title.is_empty() {
@@ -247,10 +307,10 @@ fn installed_prusa_card(target: &Value) -> Option<PrinterCard> {
     })
 }
 
-// Mirrors prusa-<slug>-<10 lowercase hex>, the shape the backend issues.
-fn is_prusa_target_id(id: &str) -> bool {
+// Mirrors ^<prefix>[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-f]{10}$, the shape both backends issue.
+fn is_target_id(id: &str, prefix: &str) -> bool {
     let Some((slug, hash)) = id
-        .strip_prefix("prusa-")
+        .strip_prefix(prefix)
         .and_then(|rest| rest.rsplit_once('-'))
     else {
         return false;
@@ -431,12 +491,16 @@ impl SliceBridgeWindow {
             .filter_map(Value::as_str)
             .map(str::to_owned)
             .collect();
-        // Installed PrusaSlicer printers are re-read on every open, like printers.get.
-        let installed = self
+        // Installed Orca and PrusaSlicer printers are re-read on every open, like printers.get.
+        let installed_orca = self.commands.execute("printers.installed_orca", &json!({}));
+        let installed_prusa = self
             .commands
             .execute("printers.installed_prusa", &json!({}));
-        self.printers_cards =
-            cards_with_installed_prusa(&self.printers_catalogue_cards, &installed["data"]);
+        self.printers_cards = cards_with_installed_printers(
+            &self.printers_catalogue_cards,
+            &installed_orca["data"],
+            &installed_prusa["data"],
+        );
         self.printers_draft = self.printers_saved.clone();
         self.printers_error.clear();
         self.printers_maker = None;
@@ -977,7 +1041,7 @@ mod tests {
         let catalogue = synthetic_catalogue();
         let expected: Vec<Vec<String>> = catalogue.iter().map(|c| c.ids.clone()).collect();
         for reply in [json!({"targets": []}), Value::Null, json!({"rejected": []})] {
-            let merged = super::cards_with_installed_prusa(&catalogue, &reply);
+            let merged = super::cards_with_installed_printers(&catalogue, &Value::Null, &reply);
             let ids: Vec<Vec<String>> = merged.iter().map(|c| c.ids.clone()).collect();
             assert_eq!(ids, expected);
         }
@@ -988,7 +1052,7 @@ mod tests {
         let catalogue = synthetic_catalogue();
         let reply = json!({"targets": [installed_target(
             "prusa-mk4-0123456789", "MK4 0.4", "Prusa Research", "0.4")]});
-        let merged = super::cards_with_installed_prusa(&catalogue, &reply);
+        let merged = super::cards_with_installed_printers(&catalogue, &Value::Null, &reply);
         assert_eq!(merged.len(), catalogue.len());
         let mk4 = merged.iter().find(|c| c.model == "MK4").unwrap();
         assert_eq!(mk4.id, "prusa-mk4-catalogue");
@@ -1000,7 +1064,7 @@ mod tests {
             ]
         );
         // Refreshing again with the same reply must not add the installed ID twice.
-        let again = super::cards_with_installed_prusa(&merged, &reply);
+        let again = super::cards_with_installed_printers(&merged, &Value::Null, &reply);
         assert_eq!(again.len(), catalogue.len());
         assert_eq!(
             again.iter().find(|c| c.model == "MK4").unwrap().ids.len(),
@@ -1014,7 +1078,7 @@ mod tests {
             installed_target("prusa-mk3s-abcdef0123", "MK3S 0.6 nozzle", "Prusa Research", "0.6"),
             installed_target("prusa-mk3s-0123456789", "MK3S 0.4 nozzle", "Prusa Research", "0.4"),
         ]});
-        let merged = super::cards_with_installed_prusa(&[], &reply);
+        let merged = super::cards_with_installed_printers(&[], &Value::Null, &reply);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].model, "MK3S");
         assert_eq!(merged[0].manufacturer, "Prusa Research");
@@ -1033,7 +1097,7 @@ mod tests {
             installed_target("orca-mk4-0123456789", "MK4", "Prusa Research", "0.4"),
             installed_target("prusa-mk4-0123456789", "  ", "Prusa Research", "0.4"),
         ]});
-        let merged = super::cards_with_installed_prusa(&catalogue, &reply);
+        let merged = super::cards_with_installed_printers(&catalogue, &Value::Null, &reply);
         assert_eq!(merged.len(), catalogue.len());
         assert!(merged
             .iter()
@@ -1047,7 +1111,7 @@ mod tests {
         let catalogue = synthetic_catalogue();
         let installed = "prusa-mk3s-0123456789";
         let reply = json!({"targets": [installed_target(installed, "MK3S 0.4 nozzle", "Prusa Research", "0.4")]});
-        let merged = super::cards_with_installed_prusa(&catalogue, &reply);
+        let merged = super::cards_with_installed_printers(&catalogue, &Value::Null, &reply);
         let saved = vec![installed.to_owned()];
         let rows = cards_for_view(&merged, &saved, "", None, false);
         assert!(rows[0].ids.contains(&installed.to_owned()));
@@ -1059,5 +1123,154 @@ mod tests {
             "qidi".to_owned(),
         ]);
         assert!(super::selected_ready_legacy_rows(&saved, &all_ready).is_empty());
+    }
+
+    // Shaped like a printers.installed_orca target: the backend always sends ready:false.
+    fn installed_orca_target(
+        id: &str,
+        title: &str,
+        vendor: &str,
+        slicer: &str,
+        nozzle: &str,
+    ) -> Value {
+        json!({
+            "id": id, "title": title, "slicer": slicer, "vendor": vendor,
+            "model": title, "nozzle": nozzle, "ready": false,
+            "reason": "dynamic Orca conversion is not verified in Rust",
+        })
+    }
+
+    #[test]
+    fn orca_ids_need_the_exact_shape_and_bambu_is_never_listed() {
+        let reply = json!({"targets": [
+            installed_orca_target("orca-mk4-0123456789", "MK4 0.4 nozzle", "Prusa Research", "OrcaSlicer", "0.4"),
+            installed_orca_target("orca-slicer", "OrcaSlicer", "Prusa Research", "OrcaSlicer", "0.4"),
+            installed_orca_target("orca-mk4-XYZ", "MK4", "Prusa Research", "OrcaSlicer", "0.4"),
+            installed_orca_target("orca--mk4-0123456789", "MK4", "Prusa Research", "OrcaSlicer", "0.4"),
+            installed_orca_target("orca-MK4-0123456789", "MK4", "Prusa Research", "OrcaSlicer", "0.4"),
+            installed_orca_target("orca-mk4-012345678A", "MK4", "Prusa Research", "OrcaSlicer", "0.4"),
+            installed_orca_target("prusa-mk4-0123456789", "MK4", "Prusa Research", "OrcaSlicer", "0.4"),
+            installed_orca_target("orca-p1s-0123456789", "P1S 0.4", "Bambu Lab", "BambuStudio", "0.4"),
+            installed_orca_target("orca-x1c-0123456789", "Bambu X1C", "Prusa Research", "OrcaSlicer", "0.4"),
+            installed_orca_target("orca-a1-0123456789", "A1 0.4", "BBL", "OrcaSlicer", "0.4"),
+        ]});
+        let merged = super::cards_with_installed_printers(&[], &reply, &Value::Null);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].ids, vec!["orca-mk4-0123456789".to_owned()]);
+        assert_eq!(merged[0].manufacturer, "Prusa Research");
+        assert_eq!(merged[0].model, "MK4");
+    }
+
+    #[test]
+    fn forked_orca_slicers_list_only_under_their_owning_maker() {
+        let reply = json!({"targets": [
+            installed_orca_target("orca-u1-0123456789", "Snapmaker U1 0.4 nozzle", "Creality", "SnapmakerOrca", "0.4"),
+            installed_orca_target("orca-u1-1123456789", "Snapmaker U1 0.4 nozzle", "Snapmaker", "SnapmakerOrca", "0.4"),
+            installed_orca_target("orca-c5-0123456789", "Creator 5 0.4 nozzle", "Elegoo", "Flash Studio Desktop", "0.4"),
+            installed_orca_target("orca-c5-1123456789", "Creator 5 0.4 nozzle", "Flashforge", "Flash Studio", "0.4"),
+            installed_orca_target("orca-cc2-0123456789", "Centauri Carbon 2 0.4 nozzle", "Snapmaker", "ElegooSlicer", "0.4"),
+            installed_orca_target("orca-cc2-1123456789", "Centauri Carbon 2 0.4 nozzle", "Elegoo", "ElegooSlicer", "0.4"),
+            installed_orca_target("orca-plus5-0123456789", "Plus5 0.4 nozzle", "Elegoo", "QIDIStudio", "0.4"),
+            installed_orca_target("orca-plus5-1123456789", "QIDI Plus5 0.4 nozzle", "X 5 Series", "QIDIStudio", "0.4"),
+            installed_orca_target("orca-acme-0123456789", "Acme Mini 0.4 nozzle", "Acme", "OrcaSlicer", "0.4"),
+        ]});
+        let merged = super::cards_with_installed_printers(&[], &reply, &Value::Null);
+        let ids: Vec<String> = merged.iter().flat_map(|c| c.ids.clone()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "orca-u1-1123456789",
+                "orca-c5-1123456789",
+                "orca-cc2-1123456789",
+                "orca-plus5-1123456789",
+                "orca-acme-0123456789",
+            ]
+        );
+        assert_eq!(merged[0].manufacturer, "Snapmaker");
+        assert_eq!(merged[1].manufacturer, "Flashforge");
+        assert_eq!(merged[2].manufacturer, "ELEGOO");
+        assert_eq!(merged[3].manufacturer, "QIDI");
+        assert_eq!(merged[3].model, "Plus5");
+    }
+
+    #[test]
+    fn orca_and_prusa_fold_into_one_physical_card_without_duplicate_ids() {
+        let catalogue = synthetic_catalogue();
+        let orca = json!({"targets": [
+            installed_orca_target("orca-mk4-0123456789", "MK4 0.6 nozzle", "Prusa Research", "OrcaSlicer", "0.6"),
+            installed_orca_target("orca-mk4-abcdef0123", "MK4 0.4 nozzle", "Prusa Research", "OrcaSlicer", "0.4"),
+            installed_orca_target("orca-mk4-0123456789", "MK4 0.6 nozzle", "Prusa Research", "OrcaSlicer", "0.6"),
+            installed_orca_target("orca-u1-0123456789", "U1 0.4 nozzle", "Snapmaker", "SnapmakerOrca", "0.4"),
+        ]});
+        let prusa = json!({"targets": [
+            installed_target("prusa-mk4-fedcba9876", "MK4 0.4 nozzle", "Prusa Research", "0.4"),
+        ]});
+        let merged = super::cards_with_installed_printers(&catalogue, &orca, &prusa);
+        assert_eq!(merged.len(), catalogue.len());
+        let mk4 = merged.iter().find(|c| c.model == "MK4").unwrap();
+        assert_eq!(mk4.id, "prusa-mk4-catalogue");
+        assert_eq!(
+            mk4.ids,
+            vec![
+                "prusa-mk4-catalogue".to_owned(),
+                "orca-mk4-0123456789".to_owned(),
+                "orca-mk4-abcdef0123".to_owned(),
+                "prusa-mk4-fedcba9876".to_owned(),
+            ]
+        );
+        let u1 = merged.iter().find(|c| c.model == "U1").unwrap();
+        assert_eq!(
+            u1.ids,
+            vec!["snapmaker-u1".to_owned(), "orca-u1-0123456789".to_owned()]
+        );
+    }
+
+    #[test]
+    fn orca_multiple_nozzles_form_one_card_led_by_lowest_nozzle() {
+        let reply = json!({"targets": [
+            installed_orca_target("orca-k1-0123456789", "K1 0.6 nozzle", "Acme", "OrcaSlicer", "0.6"),
+            installed_orca_target("orca-k1-abcdef0123", "K1 0.4 nozzle", "Acme", "OrcaSlicer", "0.4"),
+            installed_orca_target("orca-k1-fedcba9876", "K1 0.8 nozzle", "Acme", "OrcaSlicer", "0.8"),
+        ]});
+        let merged = super::cards_with_installed_printers(&[], &reply, &Value::Null);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].id, "orca-k1-abcdef0123");
+        assert_eq!(merged[0].ids.len(), 3);
+        // Refreshing the same reply keeps one row per installed ID.
+        let again = super::cards_with_installed_printers(&merged, &reply, &Value::Null);
+        assert_eq!(again.len(), 1);
+        assert_eq!(again[0].ids.len(), 3);
+    }
+
+    #[test]
+    fn selected_orca_target_ranks_by_selection_and_grants_no_conversion() {
+        let catalogue = synthetic_catalogue();
+        let orca = json!({"targets": [installed_orca_target(
+            "orca-k1-0123456789", "K1 0.4 nozzle", "Acme", "OrcaSlicer", "0.4")]});
+        let merged = super::cards_with_installed_printers(&catalogue, &orca, &Value::Null);
+        let saved = vec!["orca-k1-0123456789".to_owned(), "snapmaker-u1".to_owned()];
+        let rows = cards_for_view(&merged, &saved, "", None, false);
+        assert_eq!(rows[0].ids, vec!["orca-k1-0123456789".to_owned()]);
+        assert_eq!(rows[1].id, "snapmaker-u1");
+        // Saved installed Orca IDs are inventory only: only the built-in U1 converts.
+        let all_ready = std::collections::BTreeSet::from(["u1".to_owned()]);
+        assert_eq!(
+            super::selected_ready_legacy_rows(&saved, &all_ready),
+            vec![("u1", "Snapmaker U1")]
+        );
+    }
+
+    #[test]
+    fn installed_orca_card_never_exposes_executable_or_profile_paths() {
+        let reply = json!({"targets": [{
+            "id": "orca-k1-0123456789", "title": "K1 0.4 nozzle", "slicer": "OrcaSlicer",
+            "vendor": "Acme", "machine": "/Applications/OrcaSlicer.app/Contents/x.json",
+            "model": "K1", "nozzle": "0.4", "ready": false,
+            "root": "/Users/example/profiles", "executable": "/Applications/OrcaSlicer.app",
+        }]});
+        let merged = super::cards_with_installed_printers(&[], &reply, &Value::Null);
+        assert_eq!(merged.len(), 1);
+        assert!(!format!("{merged:?}").contains("/Applications"));
+        assert!(!format!("{merged:?}").contains("/Users"));
     }
 }
