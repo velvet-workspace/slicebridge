@@ -125,6 +125,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "Clear staged source files without changing source files",
     ),
     (
+        "batch.remove",
+        "Remove one source from the staged queue without deleting the original file",
+    ),
+    (
         "results.clear",
         "Clear previous conversion results without touching queued sources",
     ),
@@ -364,6 +368,7 @@ impl Registry {
             }
             "batch.stage" => self.batch_stage(params),
             "batch.clear" => self.batch_clear(),
+            "batch.remove" => self.batch_remove(params),
             "results.clear" => {
                 let mut state = self.state.lock().map_err(|e| e.to_string())?;
                 if busy(&state) {

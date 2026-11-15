@@ -1,6 +1,6 @@
 //! Sequential, non-overwriting, cancellable native Rust 3MF batch conversion.
 //! It orchestrates the existing verified Registry/3MF worker; no second converter.
-use crate::{arg, busy, engine_path, oem, printer_settings, Registry, Session};
+use crate::{arg, busy, engine_path, oem, printer_settings, same_path, Registry, Session};
 use serde_json::{json, Value};
 use slicebridge_3mf_probe::{inspect_source_nozzle, validate_native_autonomous_input};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1058,6 +1058,50 @@ impl Registry {
         state.batch = None;
         state.phase = "idle".into();
         Ok(json!({"removed": removed}))
+    }
+
+    // Source-locked native/frontend/dist/app.js::renderQueue() remove action.
+    // It modifies only queue memory and selected-source references, never 3MF
+    // bytes or the existing completed batch receipt.
+    pub(crate) fn batch_remove(&self, params: &Value) -> Result<Value, String> {
+        let path = PathBuf::from(arg(params, "path")?);
+        let mut state = self.state.lock().map_err(|err| err.to_string())?;
+        if busy(&state) {
+            return Err("cannot remove source while conversion is running".into());
+        }
+        let from_queue = state
+            .batch_staged
+            .iter()
+            .position(|entry| entry == &path || same_path(entry, &path));
+        let selected = state
+            .source
+            .as_ref()
+            .is_some_and(|source| source == &path || same_path(source, &path));
+        if from_queue.is_none() && !selected {
+            return Err("source is not in the queue".into());
+        }
+        if let Some(index) = from_queue {
+            state.batch_staged.remove(index);
+        }
+        if selected {
+            state.source = None;
+            state.facts = None;
+            state.bundle_path = None;
+            state.bundle_label = None;
+            state.bundle = None;
+            state.installed_oem = false;
+            state.target = None;
+            state.nozzle = None;
+            state.selected_materials.clear();
+            state.output = None;
+            // Historical result receipts remain readable, while no source
+            // from a deleted queue entry remains selected for a future job.
+        }
+        Ok(json!({
+            "removed":true,
+            "staged":state.batch_staged.len(),
+            "paths":state.batch_staged,
+        }))
     }
 
     pub(crate) fn batch_stage(&self, params: &Value) -> Result<Value, String> {
@@ -2256,6 +2300,99 @@ mod original_queue_parity_tests {
         assert!(parse_sources(&json!({"paths":overflow}))
             .unwrap_err()
             .contains("1..=200"));
+    }
+
+    #[test]
+    fn removing_one_queued_source_preserves_other_sources_and_finished_receipts() {
+        let one = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/bambu-one-color.3mf");
+        let two = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/bambu-nozzle-0.6.3mf");
+        let one_before = fs::read(&one).unwrap();
+        let two_before = fs::read(&two).unwrap();
+        let registry = Registry::new();
+        {
+            let mut state = registry.state.lock().unwrap();
+            state.batch_staged = vec![one.clone(), two.clone()];
+            state.source = Some(one.clone());
+            state.facts = Some(json!({"source":one}));
+            state.bundle = Some(json!({"mock":true}));
+            state.target = Some("u1".to_owned());
+            state.installed_oem = true;
+            state.recent_projects = vec![one.clone(), two.clone()];
+            state.batch = Some(json!({"phase":"completed","successes":1}));
+            state.last_result = Some(json!({"mock":"earlier result"}));
+        }
+        let outcome = registry.execute("batch.remove", &json!({"path":one}));
+        assert_eq!(outcome["ok"], true, "{outcome}");
+        assert_eq!(outcome["data"]["removed"], true);
+        assert_eq!(outcome["data"]["staged"], 1);
+        assert_eq!(outcome["data"]["paths"], json!([two]));
+        let state = registry.snapshot();
+        assert_eq!(state["batch_selection"]["paths"], json!([two]));
+        assert!(state["source"].is_null());
+        assert!(state["facts"].is_null());
+        assert_eq!(state["installed_oem"], false);
+        assert!(state["target"].is_null());
+        assert_eq!(state["batch"]["phase"], "completed");
+        assert_eq!(state["result"]["mock"], "earlier result");
+        assert_eq!(state["projects"], json!([one, two]));
+        assert_eq!(fs::read(&one).unwrap(), one_before);
+        assert_eq!(fs::read(&two).unwrap(), two_before);
+
+        let outcome = registry.execute("batch.remove", &json!({"path":two}));
+        assert_eq!(outcome["ok"], true, "{outcome}");
+        assert_eq!(outcome["data"]["staged"], 0);
+        assert!(registry.snapshot()["batch_selection"]["paths"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(registry.snapshot()["source"].is_null());
+        assert_eq!(fs::read(&one).unwrap(), one_before);
+        assert_eq!(fs::read(&two).unwrap(), two_before);
+    }
+
+    #[test]
+    fn queue_removal_is_denied_if_missing_or_busy_without_mutating_state() {
+        let one = PathBuf::from("/read-only/queued.3mf");
+        let registry = Registry::new();
+        {
+            let mut state = registry.state.lock().unwrap();
+            state.batch_staged = vec![one.clone()];
+            state.source = Some(one.clone());
+            state.phase = "running".into();
+        }
+        let before = registry.snapshot();
+        assert_eq!(
+            registry.execute("batch.remove", &json!({"path":one}))["ok"],
+            false
+        );
+        assert_eq!(registry.snapshot(), before);
+        {
+            let mut state = registry.state.lock().unwrap();
+            state.phase = "idle".into();
+            state.batch = Some(json!({"phase":"running"}));
+        }
+        let before = registry.snapshot();
+        assert_eq!(
+            registry.execute("batch.remove", &json!({"path":one}))["ok"],
+            false
+        );
+        assert_eq!(registry.snapshot(), before);
+        {
+            let mut state = registry.state.lock().unwrap();
+            state.batch = None;
+        }
+        let before = registry.snapshot();
+        for input in [json!({}), json!({"path":"/read-only/other.3mf"})] {
+            assert_eq!(registry.execute("batch.remove", &input)["ok"], false);
+            assert_eq!(registry.snapshot(), before);
+        }
+        assert_eq!(
+            registry.execute("batch.remove", &json!({"path":one}))["ok"],
+            true
+        );
+        assert!(registry.snapshot()["source"].is_null());
     }
 
     #[test]
