@@ -1,11 +1,8 @@
 package bridge
 
 import (
-	"archive/zip"
 	"context"
 	"crypto/sha256"
-	"encoding/xml"
-	"io"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -100,7 +97,7 @@ func TestRustNativeAuthorizedRealProjectsArchiveParity(t *testing.T) {
 					if err != nil || output.triangles != before.triangles || output.vertices != before.vertices || output.sliceCaches != 0 {
 						t.Fatalf("real Rust 3MF changed geometry or retained slicing caches: %+v err=%v", output, err)
 					}
-					t.Logf("REAL_3MF_GO_RUST_PARITY_PASS project=%s target=%s source_bytes=%d triangles=%d plates=%d source_materials=%v go_ms=%.1f rust_ms=%.1f",
+					t.Logf("REAL_3MF_GO_RUST_PARITY_PASS project=%s target=%s source_bytes=%d triangles=%d source_materials=%v go_ms=%.1f rust_ms=%.1f",
 						tc.name, target, stat.Size(), before.triangles, rustReceipt["source_filament_slots"],
 						float64(goElapsed.Microseconds())/1000, float64(rustElapsed.Microseconds())/1000)
 				})
