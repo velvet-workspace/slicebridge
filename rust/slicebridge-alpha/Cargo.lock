@@ -5900,6 +5900,7 @@ version = "0.1.0"
 dependencies = [
  "gpui-kit",
  "percent-encoding",
+ "semver",
  "serde_json",
  "slicebridge-3mf-probe",
  "url",

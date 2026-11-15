@@ -14,6 +14,7 @@ slicebridge-3mf-probe = { path = "../3mf-probe" }
 serde_json = "=1.0.154"
 url = "=2.5.8"
 percent-encoding = "=2.3.2"
+semver = "=1.0.28"
 gpui-kit = { version = "=0.9.1", optional = true }
 
 [[bin]]

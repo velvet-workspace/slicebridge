@@ -6,6 +6,7 @@ pub mod my_printers;
 pub mod oem;
 pub mod printer_settings;
 pub mod protocol;
+pub mod updates;
 use serde_json::{json, Value};
 use slicebridge_3mf_probe::{
     inspect_package, inspect_source_nozzle, validate_native_autonomous_input,
@@ -103,6 +104,18 @@ pub const COMMANDS: &[(&str, &str)] = &[
     (
         "printers.save",
         "Validate and save up to 32 printer memberships in isolated GPUI alpha settings",
+    ),
+    (
+        "updates.version",
+        "Read installed SliceBridge version without network or mutation",
+    ),
+    (
+        "updates.check",
+        "Check only official GitHub Releases on demand, without downloading or installing updates",
+    ),
+    (
+        "updates.page",
+        "Construct allowlisted GitHub release/build page link without opening it",
     ),
     (
         "makerworld.origins",
@@ -281,6 +294,33 @@ impl Registry {
                 .collect::<Vec<_>>()})),
             "app.status" | "conversion.status" => Ok(self.snapshot()),
             "printers.catalog" => my_printers::catalog_snapshot(),
+            "updates.version" => {
+                let (os, arch) = updates::current_platform();
+                Ok(json!({
+                    "version":updates::INSTALLED_VERSION,
+                    "platform":format!("{os}-{arch}")
+                }))
+            }
+            "updates.check" => updates::check_installed(),
+            "updates.page" => {
+                let kind = params
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .ok_or("invalid update page")?;
+                let url = match kind {
+                    "releases" => updates::RELEASES_URL.to_owned(),
+                    "builds" => updates::BUILDS_URL.to_owned(),
+                    "release" => {
+                        let tag = params
+                            .get("tag")
+                            .and_then(Value::as_str)
+                            .ok_or("invalid release tag")?;
+                        updates::release_url(tag)?
+                    }
+                    _ => return Err("invalid update page".into()),
+                };
+                Ok(json!({"url":url}))
+            }
             "makerworld.origins" => {
                 let paths = params
                     .get("paths")
@@ -882,6 +922,40 @@ mod tests {
             result["data"]["commands"].as_array().unwrap().len(),
             COMMANDS.len()
         );
+    }
+
+    #[test]
+    fn update_version_and_allowlisted_pages_have_no_side_effects() {
+        let registry = Registry::new();
+        let baseline = registry.snapshot();
+        let version = registry.execute("updates.version", &json!({}));
+        assert_eq!(version["ok"], true);
+        assert_eq!(version["data"]["version"], updates::INSTALLED_VERSION);
+        let releases = registry.execute("updates.page", &json!({"kind":"releases"}));
+        assert_eq!(releases["data"]["url"], updates::RELEASES_URL);
+        let builds = registry.execute("updates.page", &json!({"kind":"builds"}));
+        assert_eq!(builds["data"]["url"], updates::BUILDS_URL);
+        let release = registry.execute(
+            "updates.page",
+            &json!({
+                "kind":"release","tag":"v0.4.0-beta.7"
+            }),
+        );
+        assert_eq!(
+            release["data"]["url"],
+            "https://github.com/nocturney/slicebridge/releases/tag/v0.4.0-beta.7"
+        );
+        for params in [
+            json!({}),
+            json!({"kind":"release"}),
+            json!({"kind":"release","tag":"v0.4.0-beta.7/../../evil"}),
+            json!({"kind":"https://evil.test"}),
+            json!({"kind":"source"}),
+            json!({"kind":"builds/../../"}),
+        ] {
+            assert_eq!(registry.execute("updates.page", &params)["ok"], false);
+        }
+        assert_eq!(registry.snapshot(), baseline);
     }
 
     #[test]
