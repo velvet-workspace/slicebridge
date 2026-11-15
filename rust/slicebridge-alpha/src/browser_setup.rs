@@ -229,7 +229,15 @@ fn ensure_owned_dir(base: &Path, kind: &str) -> Result<PathBuf, String> {
                 }
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                fs::create_dir(&dir).map_err(|_| "cannot create isolated extension folder")?;
+                let mut builder = fs::DirBuilder::new();
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::DirBuilderExt;
+                    builder.mode(0o700);
+                }
+                builder
+                    .create(&dir)
+                    .map_err(|_| "cannot create isolated extension folder")?;
             }
             Err(_) => return Err("extension output folder unavailable".into()),
         }
@@ -264,9 +272,14 @@ pub fn prepare_in(base: &Path, kind: &str) -> Result<PathBuf, String> {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => return Err("browser extension destination unavailable".into()),
         }
-        let mut output = OpenOptions::new()
-            .create_new(true)
-            .write(true)
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut output = options
             .open(&destination)
             .map_err(|_| "cannot create extension file")?;
         output
@@ -465,7 +478,26 @@ mod tests {
             let folder = prepare_in(&base, kind).unwrap();
             assert!(folder.starts_with(base.join("SliceBridge/GPUI-Alpha/BrowserExtensions")));
             for (name, bytes) in resources(kind).unwrap() {
-                assert_eq!(fs::read(folder.join(name)).unwrap(), bytes);
+                let created = folder.join(name);
+                assert_eq!(fs::read(&created).unwrap(), bytes);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    assert_eq!(
+                        fs::metadata(&created).unwrap().permissions().mode() & 0o777,
+                        0o600,
+                        "Go-equivalent private extension resource permission"
+                    );
+                }
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    fs::metadata(&folder).unwrap().permissions().mode() & 0o777,
+                    0o700,
+                    "Go-equivalent private extension directory permission"
+                );
             }
             assert_eq!(prepare_in(&base, kind).unwrap(), folder);
         }
