@@ -9,6 +9,10 @@ const MAX_PAINT_HEX: usize = 4 << 20;
 const MAX_MODEL_XML: usize = 8 << 20;
 const MAX_RECURSION: usize = 96;
 const MAX_NODES: usize = 1_000_000;
+// A real painted 3MF can repeat the same handful of encoded states millions
+// of times. Cache only short, successfully verified paint attributes.
+const MAX_PAINT_CACHE_ENTRIES: usize = 4096;
+const MAX_PAINT_CACHE_KEY_BYTES: usize = 256;
 
 /// Remap each nonzero leaf state through an explicit 1-based filament mapping.
 /// The hexadecimal encoding is parsed in reverse nibble order, least-significant
@@ -157,6 +161,7 @@ fn remap_node(
 fn rewrite_triangle(
     start: &BytesStart<'_>,
     mapping: &BTreeMap<u32, u32>,
+    cache: &mut BTreeMap<String, String>,
 ) -> Result<BytesStart<'static>, String> {
     let mut rewritten = start.to_owned();
     rewritten.clear_attributes();
@@ -169,7 +174,23 @@ fn rewrite_triangle(
         ) && !attr.value.is_empty()
         {
             let original = attr.value.as_ref();
-            let updated = remap_paint_hex(original, mapping)?;
+            // Decoding an encoded paint tree allocates multiple bounded
+            // buffers, but most 3MF projects repeat identical per-triangle
+            // paint strings. Keep the original remap path and failure on
+            // every cache miss; never cache malformed inputs.
+            let updated = if original.len() <= MAX_PAINT_CACHE_KEY_BYTES {
+                if let Some(hit) = cache.get(original) {
+                    hit.clone()
+                } else {
+                    let value = remap_paint_hex(original, mapping)?;
+                    if cache.len() < MAX_PAINT_CACHE_ENTRIES {
+                        cache.insert(original.to_owned(), value.clone());
+                    }
+                    value
+                }
+            } else {
+                remap_paint_hex(original, mapping)?
+            };
             rewritten.push_attribute((key, updated.as_str()));
         } else {
             // Preserve raw attribute bytes (including entity escaping) exactly.
@@ -204,6 +225,7 @@ pub(crate) fn rewrite_model_paint_stream<R: BufRead, W: Write>(
 ) -> Result<(), String> {
     let mut reader = Reader::from_reader(input);
     let mut writer = Writer::new(output);
+    let mut cache = BTreeMap::new();
     let mut buf = Vec::new();
     loop {
         let event = reader
@@ -212,12 +234,12 @@ pub(crate) fn rewrite_model_paint_stream<R: BufRead, W: Write>(
         match event {
             Event::Start(start) if start.local_name().as_ref() == "triangle" => {
                 writer
-                    .write_event(Event::Start(rewrite_triangle(&start, mapping)?))
+                    .write_event(Event::Start(rewrite_triangle(&start, mapping, &mut cache)?))
                     .map_err(|e| format!("model XML output: {e}"))?;
             }
             Event::Empty(start) if start.local_name().as_ref() == "triangle" => {
                 writer
-                    .write_event(Event::Empty(rewrite_triangle(&start, mapping)?))
+                    .write_event(Event::Empty(rewrite_triangle(&start, mapping, &mut cache)?))
                     .map_err(|e| format!("model XML output: {e}"))?;
             }
             Event::Eof => break,

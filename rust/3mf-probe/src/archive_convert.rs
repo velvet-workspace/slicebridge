@@ -22,6 +22,11 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 const MAX_XML: u64 = 8 << 20;
 const MAX_PRESERVED: usize = 64;
+// The painted-material audit may revisit an identical encoded leaf on millions
+// of triangles. Cache only bounded, successfully decoded references; never
+// memoize parse errors or weaken undeclared-source-ID checks.
+const MAX_AUDIT_PAINT_CACHE_ENTRIES: usize = 4096;
+const MAX_AUDIT_PAINT_KEY_BYTES: usize = 256;
 
 // Match the explicitly bounded process-intent names in Go settings.go.
 // Arbitrary firmware, hardware or material fields must not become override
@@ -311,6 +316,7 @@ fn audit_source_material_references(
 
     let mut missing_painted = BTreeSet::new();
     let mut missing_defaults = BTreeSet::new();
+    let mut checked_paint = BTreeMap::<String, BTreeSet<u32>>::new();
     for index in 0..source.len() {
         let entry = source.by_index(index).map_err(|e| e.to_string())?;
         let name = entry.name().to_owned();
@@ -347,7 +353,20 @@ fn audit_source_material_references(
                         if encoded.is_empty() {
                             continue;
                         }
-                        for painted in crate::paint::inspect_paint_ids(&encoded)? {
+                        let painted_ids = if encoded.len() <= MAX_AUDIT_PAINT_KEY_BYTES {
+                            if let Some(hit) = checked_paint.get(encoded.as_ref()) {
+                                hit.clone()
+                            } else {
+                                let ids = crate::paint::inspect_paint_ids(&encoded)?;
+                                if checked_paint.len() < MAX_AUDIT_PAINT_CACHE_ENTRIES {
+                                    checked_paint.insert(encoded.to_string(), ids.clone());
+                                }
+                                ids
+                            }
+                        } else {
+                            crate::paint::inspect_paint_ids(&encoded)?
+                        };
+                        for painted in painted_ids {
                             if !declared.contains(&painted) {
                                 missing_painted.insert(painted);
                             }
