@@ -293,36 +293,15 @@ fn audit_source_material_references(
     source: &mut ZipArchive<File>,
     mapping: &BTreeMap<u32, u32>,
 ) -> Result<(), String> {
-    let original = source
-        .by_name("Metadata/slice_info.config")
-        .map_err(|_| "input 3MF has no declared slice_info filament palette".to_owned())?;
-    let xml = read_part(original, "source slice-info palette")?;
-    let mut reader = Reader::from_reader(xml.as_slice());
-    let mut declared = BTreeSet::new();
-    loop {
-        let event = reader
-            .read_event()
-            .map_err(|e| format!("source slice-info XML: {e}"))?;
-        match event {
-            Event::Start(ref start) | Event::Empty(ref start)
-                if start.local_name().as_ref() == "filament" =>
-            {
-                if let Some(id) = source_attribute(start, "id")? {
-                    if let Ok(id) = id.parse::<u32>() {
-                        if id > 0 {
-                            declared.insert(id);
-                        }
-                    }
-                }
-            }
-            Event::Eof => break,
-            Event::DocType(_) => return Err("source slice-info DOCTYPE disallowed".into()),
-            _ => {}
-        }
-    }
-    if declared.is_empty() {
-        return Err("input 3MF slice-info contains no positive filament IDs".into());
-    }
+    // Reuse the exact independently audited palette from this captured
+    // source. Bambu's valid unsliced 3MF can have an empty slice_info palette:
+    // derive that case only from the *actual* source project-settings arrays,
+    // never from a requested mapping or invented default materials. The
+    // native planner rechecks both source copies for TOCTOU safety.
+    let declared: BTreeSet<u32> = crate::native_archive::source_palette_from_archive(source)?
+        .keys()
+        .copied()
+        .collect();
     if declared != mapping.keys().copied().collect::<BTreeSet<_>>() {
         return Err(
             "explicit conversion mapping must cover exactly the declared source filament IDs"

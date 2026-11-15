@@ -39,6 +39,69 @@ fn source_palette(source: &Path) -> Result<Palette, String> {
     source_palette_from_archive(&mut archive)
 }
 
+// Go's pinned source inspector accepts a real unsliced Bambu 3MF whose
+// slice_info XML declares no filament elements, provided the source project
+// settings carry a complete material/color array. Validate that secondary
+// palette directly from the actual ZIP, never from caller-supplied settings
+// or invented machine defaults. Incomplete/invalid entries are refused.
+fn fallback_project_palette(archive: &mut ZipArchive<File>) -> Result<Palette, String> {
+    let entry = archive
+        .by_name("Metadata/project_settings.config")
+        .map_err(|_| "unsliced source has no project_settings filament palette".to_owned())?;
+    let mut data = Vec::new();
+    entry
+        .take(MAX_SLICE_INFO_BYTES + 1)
+        .read_to_end(&mut data)
+        .map_err(|e| format!("source project palette read: {e}"))?;
+    if data.len() as u64 > MAX_SLICE_INFO_BYTES {
+        return Err("source project palette exceeds 8 MB limit".into());
+    }
+    let settings: Value =
+        serde_json::from_slice(&data).map_err(|e| format!("source project palette JSON: {e}"))?;
+    project_palette_from_settings(&settings)
+}
+
+fn project_palette_from_settings(settings: &Value) -> Result<Palette, String> {
+    let colors = settings
+        .get("filament_colour")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "unsliced source lacks filament_colour array".to_owned())?;
+    let materials = settings
+        .get("filament_type")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "unsliced source lacks filament_type array".to_owned())?;
+    if colors.is_empty() || colors.len() > 64 || colors.len() != materials.len() {
+        return Err("unsliced source palette lengths must match and contain 1..64 entries".into());
+    }
+    let mut palette = Palette::new();
+    for (index, (color, material)) in colors.iter().zip(materials).enumerate() {
+        let raw = color
+            .as_str()
+            .ok_or_else(|| format!("unsliced source color {} must be a string", index + 1))?
+            .trim()
+            .trim_start_matches('#');
+        if !(raw.len() == 6 || raw.len() == 8) || !raw.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(format!(
+                "unsliced source color {} is not a verified RGB hex",
+                index + 1
+            ));
+        }
+        let material = material
+            .as_str()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| format!("unsliced source material {} is missing", index + 1))?;
+        // Match the pinned Go inspector's hexadecimal uppercasing and
+        // optional source alpha removal without inventing an invalid color.
+        let color = format!("#{}", raw[..6].to_ascii_uppercase());
+        palette
+            .entry((index + 1) as u32)
+            .or_default()
+            .insert((material.to_owned(), color));
+    }
+    Ok(palette)
+}
+
 // Must also run against the archive converter's OWN frozen source snapshot;
 // checking an independently opened source path is vulnerable to source changes
 // between request validation and snapshot capture.
@@ -58,6 +121,7 @@ pub(crate) fn source_palette_from_archive(
     }
     let mut reader = Reader::from_reader(xml.as_slice());
     let mut palette = Palette::new();
+    let mut declared_any_filament = false;
     loop {
         match reader
             .read_event()
@@ -66,6 +130,7 @@ pub(crate) fn source_palette_from_archive(
             Event::Start(ref start) | Event::Empty(ref start)
                 if start.local_name().as_ref() == "filament" =>
             {
+                declared_any_filament = true;
                 let Some(id) = attribute(start, "id")?.and_then(|v| v.parse::<u32>().ok()) else {
                     continue;
                 };
@@ -82,7 +147,12 @@ pub(crate) fn source_palette_from_archive(
         }
     }
     if palette.is_empty() {
-        return Err("input 3MF slice_info contains no positive filament IDs".into());
+        if declared_any_filament {
+            // A present but malformed/zero/undeclared filament is NOT an
+            // unsliced empty palette. Refuse it rather than falling back.
+            return Err("input 3MF slice_info contains no positive filament IDs".into());
+        }
+        return fallback_project_palette(archive);
     }
     Ok(palette)
 }
@@ -172,4 +242,121 @@ pub fn convert_native_archive(
         receipt["preserved"] = plan["preserved"].clone();
     }
     Ok(receipt)
+}
+
+#[cfg(test)]
+mod unsliced_real_source_tests {
+    use super::*;
+    use std::io::Write;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use zip::write::{SimpleFileOptions, ZipWriter};
+
+    static TEST_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    struct ScratchArchive(PathBuf);
+    impl Drop for ScratchArchive {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    fn input(slice_info: &str, settings: &Value) -> ScratchArchive {
+        let name = format!(
+            "slicebridge-unsliced-palette-{}-{}.3mf",
+            std::process::id(),
+            TEST_SEQ.fetch_add(1, Ordering::Relaxed)
+        );
+        let path = std::env::temp_dir().join(name);
+        let mut writer = ZipWriter::new(File::create(&path).unwrap());
+        let options = SimpleFileOptions::default();
+        writer
+            .start_file("Metadata/slice_info.config", options)
+            .unwrap();
+        writer.write_all(slice_info.as_bytes()).unwrap();
+        writer
+            .start_file("Metadata/project_settings.config", options)
+            .unwrap();
+        writer.write_all(settings.to_string().as_bytes()).unwrap();
+        writer.finish().unwrap();
+        ScratchArchive(path)
+    }
+
+    #[test]
+    fn real_unsliced_empty_slice_info_uses_only_verified_project_palette() {
+        let original = json!({
+            "filament_colour": ["#9B9EA0", "#12aBcD88"],
+            "filament_type": ["PETG", "PLA"],
+        });
+        let file = input(
+            "<?xml version=\"1.0\"?><config><header/></config>",
+            &original,
+        );
+        let mut archive = ZipArchive::new(File::open(&file.0).unwrap()).unwrap();
+        let palette = source_palette_from_archive(&mut archive).unwrap();
+        assert_eq!(palette.len(), 2);
+        assert!(palette[&1].contains(&("PETG".to_owned(), "#9B9EA0".to_owned())));
+        assert!(palette[&2].contains(&("PLA".to_owned(), "#12ABCD".to_owned())));
+        let good = json!({"filaments": [
+            {"id":1,"type":"PETG","color":"#9B9EA0"},
+            {"id":2,"type":"PLA","color":"#12ABCD"}
+        ]});
+        match_request_palette(&good, &palette).unwrap();
+        let mut wrong = good.clone();
+        wrong["filaments"][1]["color"] = json!("#FFFFFF");
+        assert!(match_request_palette(&wrong, &palette).is_err());
+        wrong = good.clone();
+        wrong["filaments"][0]["type"] = json!("PLA");
+        assert!(match_request_palette(&wrong, &palette).is_err());
+    }
+
+    #[test]
+    fn malformed_or_zero_slice_palette_never_falls_back_to_project_settings() {
+        let settings = json!({
+            "filament_colour": ["#112233"],
+            "filament_type": ["PETG"]
+        });
+        for xml in [
+            r##"<config><plate><filament id="0" type="PETG" color="#112233"/></plate></config>"##,
+            r##"<config><plate><filament id="garbled" type="PETG" color="#112233"/></plate></config>"##,
+        ] {
+            let file = input(xml, &settings);
+            let mut archive = ZipArchive::new(File::open(&file.0).unwrap()).unwrap();
+            let error = source_palette_from_archive(&mut archive).unwrap_err();
+            assert!(error.contains("no positive filament IDs"), "{error}");
+        }
+    }
+
+    #[test]
+    fn project_settings_fallback_refuses_missing_or_guessed_materials_and_colors() {
+        let valid = json!({"filament_colour":["#112233"],"filament_type":["PETG"]});
+        assert!(project_palette_from_settings(&valid).is_ok());
+        let bad = [
+            json!({"filament_colour":["not-a-color"],"filament_type":["PETG"]}),
+            json!({"filament_colour":["#112233"],"filament_type":[]}),
+            json!({"filament_colour":["#112233"]}),
+            json!({"filament_colour":["#112233"],"filament_type":[""]}),
+            json!({"filament_colour":[],"filament_type":[]}),
+            json!({"filament_colour":["#112233", "#445566"],"filament_type":["PLA"]}),
+        ];
+        for req in bad {
+            assert!(
+                project_palette_from_settings(&req).is_err(),
+                "incomplete unsliced palette accepted: {req}"
+            );
+        }
+    }
+
+    #[test]
+    fn populated_slice_info_cannot_be_overridden_by_foreign_project_settings() {
+        let file = input(
+            r##"<config><plate><filament id="1" type="PLA" color="#FF0000"/></plate></config>"##,
+            &json!({"filament_colour":["#0000FF"],"filament_type":["ABS"]}),
+        );
+        let mut archive = ZipArchive::new(File::open(&file.0).unwrap()).unwrap();
+        let palette = source_palette_from_archive(&mut archive).unwrap();
+        assert!(palette[&1].contains(&("PLA".to_owned(), "#FF0000".to_owned())));
+        let fake = json!({"filaments":[{"id":1,"type":"ABS","color":"#0000FF"}]});
+        assert!(match_request_palette(&fake, &palette).is_err());
+    }
 }
