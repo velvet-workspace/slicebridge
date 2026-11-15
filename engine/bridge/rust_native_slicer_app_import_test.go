@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"testing"
 	"time"
 )
@@ -54,32 +53,41 @@ func TestRustNativeAppReadOnlySlicerMeshImport(t *testing.T) {
 			infoDir := filepath.Join(dir, "prusa-isolated")
 			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 			defer cancel()
-			out, err := exec.CommandContext(ctx, slicer, "--info", "--datadir", infoDir, source, goOut, rustOut).CombinedOutput()
-			if ctx.Err() != nil {
-				t.Fatalf("native 3MF importer timed out: %v", ctx.Err())
-			}
-			if err != nil {
-				t.Fatalf("native importer refused app-generated 3MF: %v\n%s", err, out)
-			}
-			records, err := parsePrusaSlicerInfo(out)
-			if err != nil || len(records) != 3 {
-				t.Fatalf("unexpected native importer receipt: %v (%d)\n%s", err, len(records), out)
-			}
-			originalName := filepath.Base(source)
-			srcFacts, goFacts, rustFacts := records[originalName], records["go.3mf"], records["rust.3mf"]
-			if !reflect.DeepEqual(srcFacts, goFacts) || !reflect.DeepEqual(goFacts, rustFacts) {
-				t.Fatalf("app-generated 3MF mesh import mismatch: source=%v Go=%v Rust=%v", srcFacts, goFacts, rustFacts)
-			}
-			for _, key := range []string{"number_of_facets", "number_of_parts", "size_x", "size_y", "size_z", "volume"} {
-				if srcFacts[key] == "" {
-					t.Fatalf("native slicer imported without %s: %v", key, srcFacts)
+			// One multi-part/plate 3MF can produce many [same-name.3mf]
+			// sections in the real PrusaSlicer --info output. Compare every
+			// imported part, not a map that assumes one section per file.
+			var baseline []byte
+			partCount := 0
+			for index, path := range []string{source, goOut, rustOut} {
+				out, err := exec.CommandContext(ctx, slicer, "--info", "--datadir", infoDir, path).CombinedOutput()
+				if ctx.Err() != nil {
+					t.Fatalf("native 3MF importer timed out: %v", ctx.Err())
+				}
+				if err != nil || len(out) > 8<<20 {
+					t.Fatalf("native importer refused app-generated 3MF or oversized report: %v (%d bytes)\n%s", err, len(out), out)
+				}
+				header := []byte("[" + filepath.Base(path) + "]")
+				start := bytes.Index(out, header)
+				if start < 0 {
+					t.Fatalf("native slicer imported no mesh records for %s:\n%s", path, out)
+				}
+				normalized := bytes.ReplaceAll(out[start:], header, []byte("[MODEL]"))
+				if bytes.Count(normalized, []byte("number_of_facets =")) == 0 ||
+					bytes.Count(normalized, []byte("volume =")) == 0 {
+					t.Fatalf("native slicer missing geometry metrics for %s", path)
+				}
+				if index == 0 {
+					baseline = normalized
+					partCount = bytes.Count(normalized, []byte("[MODEL]"))
+				} else if !bytes.Equal(baseline, normalized) {
+					t.Fatalf("read-only native importer found different part geometry: variant=%s source_parts=%d variant_parts=%d", path, partCount, bytes.Count(normalized, []byte("[MODEL]")))
 				}
 			}
 			after, err := os.ReadFile(source)
 			if err != nil || !bytes.Equal(before, after) {
 				t.Fatalf("real slicer importer/bridge modified original source: %v", err)
 			}
-			t.Logf("READ_ONLY_APP_SLICER_IMPORT_PASS target=%s mesh=%s triangles=%s", target, originalName, srcFacts["number_of_facets"])
+			t.Logf("READ_ONLY_APP_SLICER_IMPORT_PASS target=%s source=%s imported_parts=%d", target, filepath.Base(source), partCount)
 		})
 	}
 }

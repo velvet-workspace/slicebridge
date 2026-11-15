@@ -1,9 +1,12 @@
 package bridge
 
 import (
+	"archive/zip"
 	"context"
 	"crypto/sha256"
+	"encoding/xml"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -26,9 +29,12 @@ func TestRustNativeAuthorizedRealProjectsArchiveParity(t *testing.T) {
 	cases := []struct {
 		name, filename           string
 		expectedMinimumMaterials int
+		expectedPlates           int
 	}{
-		{"multicolor-five", "Mini_Chick_Multicolor_5color_v02_bambu.3mf", 5},
-		{"supports-petg", "Foldable_Hanger+Rounded+105.3mf", 1},
+		{"multicolor-five", "Mini_Chick_Multicolor_5color_v02_bambu.3mf", 5, 1},
+		{"supports-petg", "Foldable_Hanger+Rounded+105.3mf", 1, 1},
+		{"six-plates-four-materials", "SKUNK.3mf", 4, 6},
+		{"six-plates-two-materials", "X_SLIM_DESK___prof_Rs.3mf", 2, 6},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -54,6 +60,10 @@ func TestRustNativeAuthorizedRealProjectsArchiveParity(t *testing.T) {
 			}
 			if before.triangles < 1 {
 				t.Fatal("real source has no model triangles")
+			}
+			sourcePlates := count3MFModelSettingsPlates(t, staged)
+			if sourcePlates != tc.expectedPlates {
+				t.Fatalf("real source plate topology differs from expected: got=%d expected=%d", sourcePlates, tc.expectedPlates)
 			}
 			for _, target := range []string{"u1", "qidi"} {
 				t.Run(target, func(t *testing.T) {
@@ -93,12 +103,17 @@ func TestRustNativeAuthorizedRealProjectsArchiveParity(t *testing.T) {
 						t.Fatalf("real multicolor source unexpectedly lost material slots: %d", count)
 					}
 					compareConverted3MFParts(t, goPath, rustPath)
+					goPlates := count3MFModelSettingsPlates(t, goPath)
+					rustPlates := count3MFModelSettingsPlates(t, rustPath)
+					if goPlates != sourcePlates || rustPlates != sourcePlates {
+						t.Fatalf("plate count changed during Go/Rust conversion: source=%d Go=%d Rust=%d", sourcePlates, goPlates, rustPlates)
+					}
 					output, err := inspectPackage(rustPath)
 					if err != nil || output.triangles != before.triangles || output.vertices != before.vertices || output.sliceCaches != 0 {
 						t.Fatalf("real Rust 3MF changed geometry or retained slicing caches: %+v err=%v", output, err)
 					}
-					t.Logf("REAL_3MF_GO_RUST_PARITY_PASS project=%s target=%s source_bytes=%d triangles=%d source_materials=%v go_ms=%.1f rust_ms=%.1f",
-						tc.name, target, stat.Size(), before.triangles, rustReceipt["source_filament_slots"],
+					t.Logf("REAL_3MF_GO_RUST_PARITY_PASS project=%s target=%s source_bytes=%d triangles=%d plates=%d source_materials=%v go_ms=%.1f rust_ms=%.1f",
+						tc.name, target, stat.Size(), before.triangles, sourcePlates, rustReceipt["source_filament_slots"],
 						float64(goElapsed.Microseconds())/1000, float64(rustElapsed.Microseconds())/1000)
 				})
 			}
@@ -108,4 +123,41 @@ func TestRustNativeAuthorizedRealProjectsArchiveParity(t *testing.T) {
 			}
 		})
 	}
+}
+
+func count3MFModelSettingsPlates(t *testing.T, path string) int {
+	t.Helper()
+	archive, err := zip.OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Close()
+	for _, part := range archive.File {
+		if part.Name != "Metadata/model_settings.config" {
+			continue
+		}
+		if part.UncompressedSize64 > 8<<20 {
+			t.Fatal("model_settings.config plate declaration exceeds 8 MiB test bound")
+		}
+		stream, err := part.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stream.Close()
+		decoder := xml.NewDecoder(io.LimitReader(stream, (8<<20)+1))
+		count := 0
+		for {
+			token, err := decoder.Token()
+			if err == io.EOF {
+				return count
+			}
+			if err != nil {
+				t.Fatalf("3MF model_settings.config XML cannot be parsed: %v", err)
+			}
+			if elem, ok := token.(xml.StartElement); ok && elem.Name.Local == "plate" {
+				count++
+			}
+		}
+	}
+	return 0
 }
