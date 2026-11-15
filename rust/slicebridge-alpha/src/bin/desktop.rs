@@ -42,6 +42,9 @@ use desktop_i18n::Locale;
 mod desktop_printer_picker;
 use desktop_printer_picker::PrinterCard;
 
+#[path = "desktop/printer_settings_ui.rs"]
+mod desktop_printer_settings_ui;
+
 struct SliceBridgeWindow {
     commands: Registry,
     last_message: String,
@@ -60,6 +63,13 @@ struct SliceBridgeWindow {
     printers_error: String,
     printers_search: Entity<InputState>,
     _printer_subscription: Subscription,
+    settings_open: bool,
+    settings_loaded: Value,
+    settings_draft: Value,
+    settings_target: String,
+    settings_material: String,
+    settings_options: Value,
+    settings_error: String,
 }
 
 impl SliceBridgeWindow {
@@ -83,13 +93,17 @@ impl SliceBridgeWindow {
             Vec::new()
         };
         let discovered = registry.execute("profiles.discover", &json!({}));
-        let ready_oem_targets: BTreeSet<String> = discovered["data"]["profiles"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|item| item["ready"] == true && item["nozzle"] == "0.4")
-            .filter_map(|item| item["target"].as_str().map(str::to_owned))
-            .collect();
+        let read_settings = registry.execute("settings.get", &json!({}));
+        let settings_value = if read_settings["ok"] == true {
+            read_settings["data"].clone()
+        } else {
+            Value::Null
+        };
+        let ready_oem_targets: BTreeSet<String> =
+            desktop_printer_settings_ui::ready_from_preferences(
+                &discovered["data"],
+                &settings_value,
+            );
         let prefs = registry.execute("printers.get", &json!({}));
         let saved = prefs["data"]["selectedIds"]
             .as_array()
@@ -118,6 +132,13 @@ impl SliceBridgeWindow {
             printers_error: String::new(),
             printers_search: search,
             _printer_subscription: subscription,
+            settings_open: false,
+            settings_loaded: settings_value,
+            settings_draft: Value::Null,
+            settings_target: "u1".into(),
+            settings_material: "PLA".into(),
+            settings_options: Value::Null,
+            settings_error: String::new(),
         }
     }
 

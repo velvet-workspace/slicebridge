@@ -51,6 +51,21 @@ fn busy(state: &Session) -> bool {
             == Some("running")
 }
 
+// Saving preferences for the active target invalidates the old resolved bundle.
+// Conversion cannot proceed until profile selection validates the new preferences.
+fn invalidate_active_settings_target(state: &mut Session, target: &str) {
+    if state.target.as_deref() != Some(target) {
+        return;
+    }
+    state.bundle_path = None;
+    state.bundle_label = None;
+    state.bundle = None;
+    state.installed_oem = false;
+    state.target = None;
+    state.nozzle = None;
+    state.selected_materials.clear();
+}
+
 #[derive(Clone, Default)]
 pub struct Registry {
     state: Arc<Mutex<Session>>,
@@ -275,11 +290,13 @@ impl Registry {
                 let preference = params
                     .get("pref")
                     .ok_or("printer preferences are required")?;
-                let state = self.state.lock().map_err(|err| err.to_string())?;
+                let mut state = self.state.lock().map_err(|err| err.to_string())?;
                 if busy(&state) {
                     return Err("cannot modify printer settings during conversion".into());
                 }
-                printer_settings::save(target, preference)
+                let persisted = printer_settings::save(target, preference)?;
+                invalidate_active_settings_target(&mut state, target);
+                Ok(persisted)
             }
             "printers.get" => my_printers::read(
                 &my_printers::experimental_path()?,
@@ -393,10 +410,10 @@ impl Registry {
             "profiles.discover" => Ok(oem::discover()),
             "profiles.select" => {
                 let target = arg(params, "target")?.to_string();
-                let nozzle = params
+                let requested_nozzle = params
                     .get("nozzle")
                     .and_then(Value::as_str)
-                    .unwrap_or("0.4")
+                    .unwrap_or("auto")
                     .to_string();
                 let source = {
                     let state = self.state.lock().map_err(|e| e.to_string())?;
@@ -408,7 +425,12 @@ impl Registry {
                         .clone()
                         .ok_or("select source 3MF before OEM profile")?
                 };
-                let bundle = oem::resolve(&target, &nozzle, &BTreeMap::new())?;
+                // Resolve only from actual saved physical nozzle/material preferences.
+                // A request for auto selects saved fixed nozzle, or the existing 0.4mm fallback.
+                let saved = printer_settings::current()?;
+                let (nozzle, overrides) =
+                    printer_settings::profile_choice(&saved, &target, &requested_nozzle)?;
+                let bundle = oem::resolve(&target, &nozzle, &overrides)?;
                 let verified = validate_native_autonomous_input(&bundle, &source)?;
                 let label = verified["printer"]
                     .as_str()
@@ -423,6 +445,11 @@ impl Registry {
                 let mut state = self.state.lock().map_err(|e| e.to_string())?;
                 if busy(&state) || state.source.as_ref() != Some(&source) {
                     return Err("source or job changed while verifying installed profile".into());
+                }
+                // A Settings save may have invalidated this OEM while disk profiles
+                // were being resolved. Recheck before committing the verified bundle.
+                if printer_settings::current()? != saved {
+                    return Err("printer settings changed during OEM profile verification".into());
                 }
                 state.bundle_path = None;
                 state.bundle_label = Some(label.clone());
@@ -789,6 +816,31 @@ mod tests {
         let result = registry.execute("conversion.start", &json!({"output": "out.3mf"}));
         assert_eq!(result["ok"], false);
         assert_eq!(registry.snapshot()["phase"], "idle");
+    }
+
+    #[test]
+    fn saving_active_printer_settings_invalidates_old_oem_without_deleting_results() {
+        let mut state = Session::default();
+        state.target = Some("u1".into());
+        state.nozzle = Some("0.4".into());
+        state.installed_oem = true;
+        state.bundle = Some(json!({"verified":true}));
+        state.bundle_label = Some("Snapmaker U1".into());
+        state
+            .selected_materials
+            .insert("PLA".into(), "Old PLA".into());
+        state.output = Some("previous-result.3mf".into());
+        invalidate_active_settings_target(&mut state, "qidi");
+        assert_eq!(state.target.as_deref(), Some("u1"));
+        assert!(state.installed_oem);
+        invalidate_active_settings_target(&mut state, "u1");
+        assert!(state.target.is_none() && state.nozzle.is_none());
+        assert!(state.bundle.is_none() && state.bundle_label.is_none());
+        assert!(!state.installed_oem && state.selected_materials.is_empty());
+        assert_eq!(
+            state.output.as_deref(),
+            Some(Path::new("previous-result.3mf"))
+        );
     }
 
     #[test]

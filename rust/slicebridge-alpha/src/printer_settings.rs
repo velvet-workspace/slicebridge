@@ -345,6 +345,65 @@ fn replace_atomic(from: &Path, to: &Path) -> Result<(), String> {
     result.map_err(|err| format!("replace settings atomically: {err}"))
 }
 
+// Translate the original fixed physical-nozzle and installed-filament preferences
+// into an OEM profile request. Explicit agent nozzle choices remain explicit.
+pub fn profile_choice(
+    settings: &Value,
+    target: &str,
+    requested_nozzle: &str,
+) -> Result<(String, std::collections::BTreeMap<String, String>), String> {
+    let (_, valid_nozzles, _) = TARGETS
+        .iter()
+        .find(|entry| entry.0 == target)
+        .ok_or("unknown selected target")?;
+    let pref = &settings["printers"][target];
+    let saved_nozzle = pref["nozzle"].as_str().unwrap_or("auto");
+    let slicer = pref["slicer"].as_str().unwrap_or("auto");
+    if slicer != "auto" {
+        let native = match target {
+            "u1" => "snapmaker-orca",
+            "qidi" => "qidi-studio",
+            _ => {
+                return Err(format!(
+                    "{target} selected slicer has no verified Rust resolver yet"
+                ))
+            }
+        };
+        if slicer != native {
+            return Err(format!(
+                "saved slicer {slicer} does not have a verified installed Rust resolver"
+            ));
+        }
+    }
+    if requested_nozzle != "auto" && saved_nozzle != "auto" && requested_nozzle != saved_nozzle {
+        return Err(format!("requested {requested_nozzle}mm nozzle differs from saved physical {saved_nozzle}mm nozzle"));
+    }
+    let effective = if saved_nozzle != "auto" {
+        saved_nozzle
+    } else if requested_nozzle != "auto" {
+        requested_nozzle
+    } else {
+        "0.4"
+    };
+    if !valid_nozzles.contains(&effective) {
+        return Err(format!(
+            "{target} does not have a verified {effective}mm nozzle"
+        ));
+    }
+    let mut materials = std::collections::BTreeMap::new();
+    if let Some(overrides) = pref["filaments"].as_object() {
+        for (material, preset) in overrides {
+            if let Some(name) = preset.as_str().filter(|name| !name.is_empty()) {
+                materials.insert(material.clone(), name.to_owned());
+            }
+        }
+    }
+    if saved_nozzle == "auto" && !materials.is_empty() {
+        return Err("saved filament presets require a fixed physical nozzle".into());
+    }
+    Ok((effective.to_owned(), materials))
+}
+
 pub fn save(target: &str, preference: &Value) -> Result<Value, String> {
     save_in_context(
         &experiment_path()?,
@@ -438,6 +497,30 @@ mod tests {
         ] {
             assert!(parse(raw.as_bytes()).is_err(), "unexpectedly parsed {raw}");
         }
+    }
+    #[test]
+    fn profile_selection_applies_fixed_nozzle_and_filament_and_fails_closed() {
+        let mut saved = defaults();
+        saved["printers"]["u1"] = json!({
+            "nozzle":"0.6","slicer":"snapmaker-orca",
+            "filaments":{"PLA":"Compatible custom PLA","PETG":""}
+        });
+        let (nozzle, overrides) = profile_choice(&saved, "u1", "auto").unwrap();
+        assert_eq!(nozzle, "0.6");
+        assert_eq!(overrides.len(), 1);
+        assert_eq!(overrides.get("PLA").unwrap(), "Compatible custom PLA");
+        assert!(profile_choice(&saved, "u1", "0.4").is_err());
+        assert_eq!(profile_choice(&saved, "u1", "0.6").unwrap().0, "0.6");
+        saved["printers"]["u1"]["slicer"] = json!("wrong-slicer");
+        assert!(profile_choice(&saved, "u1", "auto").is_err());
+        saved["printers"]["u1"] = json!({
+            "nozzle":"auto","slicer":"auto","filaments":{"PLA":"Unpinned"}
+        });
+        assert!(profile_choice(&saved, "u1", "auto").is_err());
+        saved["printers"]["u1"]["filaments"] = json!({});
+        assert_eq!(profile_choice(&saved, "u1", "auto").unwrap().0, "0.4");
+        assert_eq!(profile_choice(&saved, "u1", "0.8").unwrap().0, "0.8");
+        assert!(profile_choice(&saved, "unknown", "auto").is_err());
     }
     #[test]
     fn writes_only_to_alpha_and_retains_all_other_preferences() {

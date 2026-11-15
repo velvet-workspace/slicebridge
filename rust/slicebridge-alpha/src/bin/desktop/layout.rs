@@ -202,11 +202,9 @@ pub(super) fn render_window(
                 )
                 .child(
                     Button::new("settings")
-                        .disabled(true) // Do not expose a nonfunctional settings dialog.
+                        .disabled(running)
                         .label(label(locale, "settings"))
-                        .on_click(
-                            cx.listener(|this, _, _, cx| unavailable(this, "Printer settings", cx)),
-                        ),
+                        .on_click(cx.listener(|this, _, _, cx| this.open_settings(cx))),
                 )
                 .child(
                     Button::new("integrations")
@@ -472,7 +470,7 @@ pub(super) fn render_window(
                         .disabled(running)
                         .label(if selected { "☑" } else { "☐" })
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.select_oem(id, "0.4", cx);
+                            this.select_oem(id, "auto", cx);
                         })),
                 )
                 .child(
@@ -846,6 +844,9 @@ pub(super) fn render_window(
         .child(progress);
     if view.printers_open {
         root = root.child(view.render_printers(cx));
+    }
+    if view.settings_open {
+        root = root.child(view.render_settings(cx));
     }
     root
 }
