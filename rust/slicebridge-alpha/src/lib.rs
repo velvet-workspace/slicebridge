@@ -70,16 +70,24 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "batch.stage",
-        "Stage up to 32 source 3MF files for GUI and agent batch",
+        "Stage up to 200 source 3MF files, matching the stable queue",
     ),
     ("batch.directory", "Select existing batch output folder"),
+    (
+        "batch.clear",
+        "Clear staged source files without changing source files",
+    ),
+    (
+        "results.clear",
+        "Clear previous conversion results without touching queued sources",
+    ),
     (
         "batch.selection",
         "Read staged batch files and output folder",
     ),
     (
         "batch.start",
-        "Convert up to 32 verified 3MF sources sequentially using the selected OEM",
+        "Convert up to 200 verified 3MF sources sequentially using the selected OEM",
     ),
     (
         "batch.status",
@@ -234,6 +242,19 @@ impl Registry {
                 Ok(json!({"removed":removed}))
             }
             "batch.stage" => self.batch_stage(params),
+            "batch.clear" => self.batch_clear(),
+            "results.clear" => {
+                let mut state = self.state.lock().map_err(|e| e.to_string())?;
+                if busy(&state) {
+                    return Err("cannot clear results during conversion".into());
+                }
+                state.last_result = None;
+                state.batch = None;
+                if state.phase != "idle" {
+                    state.phase = "idle".into();
+                }
+                Ok(json!({"cleared":true}))
+            }
             "batch.directory" => self.batch_directory(params),
             "batch.selection" => self.batch_selection(),
             "batch.start" => self.batch_start(params),
@@ -772,5 +793,45 @@ mod tests {
     fn unknown_command_rejected() {
         let result = Registry::new().execute("printer.print", &json!({}));
         assert_eq!(result["ok"], false);
+    }
+}
+
+#[cfg(test)]
+mod original_result_parity_tests {
+    use super::*;
+
+    #[test]
+    fn clear_results_preserves_queued_source_and_printer_state() {
+        let registry = Registry::new();
+        {
+            let mut state = registry.state.lock().unwrap();
+            state.source = Some(PathBuf::from("kept-source.3mf"));
+            state.batch_staged = vec![PathBuf::from("kept-source.3mf")];
+            state.target = Some("qidi".into());
+            state.phase = "completed".into();
+            state.last_result = Some(json!({"success":true}));
+            state.batch = Some(json!({"phase":"completed","total":1}));
+        }
+        let result = registry.execute("results.clear", &json!({}));
+        assert_eq!(result["ok"], true);
+        let state = registry.snapshot();
+        assert_eq!(state["source"], "kept-source.3mf");
+        assert_eq!(state["batch_selection"]["paths"][0], "kept-source.3mf");
+        assert_eq!(state["target"], "qidi");
+        assert!(state["result"].is_null());
+        assert!(state["batch"].is_null());
+        assert_eq!(state["phase"], "idle");
+    }
+
+    #[test]
+    fn clear_results_refuses_to_interrupt_running_work() {
+        let registry = Registry::new();
+        {
+            let mut state = registry.state.lock().unwrap();
+            state.phase = "running".into();
+            state.last_result = Some(json!({"progress":20}));
+        }
+        assert_eq!(registry.execute("results.clear", &json!({}))["ok"], false);
+        assert_eq!(registry.snapshot()["result"]["progress"], 20);
     }
 }

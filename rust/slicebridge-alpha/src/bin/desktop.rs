@@ -4,22 +4,107 @@ use gpui_kit::*;
 use serde_json::{json, Value};
 use slicebridge_alpha::{protocol, Registry};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
-const TEXT: &str = "en"; // Localization slot: UI text is English-first.
+const MAX_SOURCE_FILES: usize = 200;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum WorkspacePage {
-    Project,
-    Batch,
+fn output_folder(status: &Value) -> Option<PathBuf> {
+    let batch_output = status["batch"]["items"]
+        .as_array()
+        .and_then(|items| {
+            items
+                .iter()
+                .rev()
+                .find(|entry| entry["phase"] == "completed")
+        })
+        .and_then(|entry| entry["output"].as_str());
+    let single_output = if status["phase"] == "completed" {
+        status["output"].as_str()
+    } else {
+        None
+    };
+    batch_output
+        .or(single_output)
+        .and_then(|path| Path::new(path).parent())
+        .map(Path::to_path_buf)
 }
+
+fn collect_source_files(inputs: Vec<PathBuf>) -> Result<Vec<PathBuf>, String> {
+    let mut files = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut pending: Vec<PathBuf> = inputs.into_iter().rev().collect();
+    while let Some(path) = pending.pop() {
+        let metadata = std::fs::symlink_metadata(&path)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            let mut children = std::fs::read_dir(&path)
+                .map_err(|error| format!("{}: {error}", path.display()))?
+                .map(|entry| entry.map(|item| item.path()).map_err(|e| e.to_string()))
+                .collect::<Result<Vec<_>, _>>()?;
+            children.sort();
+            pending.extend(children.into_iter().rev());
+            continue;
+        }
+        if !metadata.is_file()
+            || !path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("3mf"))
+        {
+            continue;
+        }
+        let canonical = path.canonicalize().map_err(|error| error.to_string())?;
+        if seen.insert(canonical) {
+            files.push(path);
+            if files.len() > MAX_SOURCE_FILES {
+                return Err(format!(
+                    "You can queue a maximum of {MAX_SOURCE_FILES} 3MF files"
+                ));
+            }
+        }
+    }
+    Ok(files)
+}
+
+#[cfg(test)]
+mod source_file_tests {
+    use super::collect_source_files;
+
+    #[test]
+    fn folder_sources_are_recursive_filtered_and_deduplicated() {
+        static ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "slicebridge-queue-{}-{}",
+            std::process::id(),
+            ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(dir.join("nested")).unwrap();
+        let first = dir.join("first.3MF");
+        let second = dir.join("nested").join("second.3mf");
+        std::fs::write(&first, b"fixture").unwrap();
+        std::fs::write(&second, b"fixture").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"skip").unwrap();
+        let items = collect_source_files(vec![dir.clone(), first.clone()]).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items, vec![first, second]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[path = "desktop/i18n.rs"]
+mod desktop_i18n;
+use desktop_i18n::Locale;
 
 struct SliceBridgeWindow {
     commands: Registry,
     last_message: String,
     destination: Option<String>,
     destination_source: Option<String>,
-    active_page: WorkspacePage,
+    locale: Locale,
 }
 
 impl SliceBridgeWindow {
@@ -31,7 +116,7 @@ impl SliceBridgeWindow {
                     .into(),
             destination: None,
             destination_source: None,
-            active_page: WorkspacePage::Project,
+            locale: Locale::load(),
         }
     }
 
@@ -98,20 +183,81 @@ impl SliceBridgeWindow {
             files: true,
             directories: false,
             multiple: true,
-            prompt: Some("Choose up to 32 3MF files for a batch".into()),
+            prompt: Some("Add 3MF source files".into()),
         });
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = picker.await {
                 let _ = this.update(cx, |view, cx| {
-                    let paths: Vec<String> = paths
-                        .iter()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .collect();
-                    view.run("batch.stage", json!({"paths":paths}), cx);
+                    view.queue_add(paths, cx);
                 });
             }
         })
         .detach();
+    }
+
+    fn choose_source_folder(&mut self, cx: &mut Context<Self>) {
+        let picker = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Add folder containing 3MF projects".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = picker.await {
+                let _ = this.update(cx, |view, cx| view.queue_add(paths, cx));
+            }
+        })
+        .detach();
+    }
+
+    fn queue_add(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let snap = self.commands.snapshot();
+        let mut existing: Vec<PathBuf> = snap["batch_selection"]["paths"]
+            .as_array()
+            .into_iter()
+            .flat_map(|items| items.iter())
+            .filter_map(|value| value.as_str().map(PathBuf::from))
+            .collect();
+        if existing.is_empty() {
+            if let Some(source) = snap["source"].as_str() {
+                existing.push(PathBuf::from(source));
+            }
+        }
+        existing.extend(paths);
+        match collect_source_files(existing) {
+            Ok(files) if !files.is_empty() => {
+                let encoded: Vec<String> = files
+                    .iter()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect();
+                let reply = self
+                    .commands
+                    .execute("batch.stage", &json!({"paths":encoded}));
+                if reply["ok"] == true {
+                    if snap["source"].is_null() {
+                        self.run(
+                            "source.select",
+                            json!({"path":files[0].to_string_lossy()}),
+                            cx,
+                        );
+                    }
+                    self.last_message =
+                        format!("{}: {}", self.locale.text("queuedFiles"), files.len());
+                } else {
+                    self.last_message = reply["error"]
+                        .as_str()
+                        .unwrap_or("Could not stage sources")
+                        .to_owned();
+                }
+            }
+            Ok(_) => {
+                self.last_message = self.locale.text("queueEmpty");
+            }
+            Err(error) => {
+                self.last_message = error;
+            }
+        }
+        cx.notify();
     }
 
     fn choose_batch_directory(&mut self, cx: &mut Context<Self>) {
@@ -134,31 +280,51 @@ impl SliceBridgeWindow {
         .detach();
     }
 
+    fn set_locale(&mut self, locale: Locale, cx: &mut Context<Self>) {
+        self.locale = locale;
+        if let Err(error) = locale.save() {
+            self.last_message = format!("Could not remember language selection: {error}");
+        }
+        cx.notify();
+    }
+
     fn start_batch(&mut self, cx: &mut Context<Self>) {
-        self.active_page = WorkspacePage::Batch;
         self.run("batch.start", json!({}), cx);
     }
 
-    fn navigate(&mut self, page: WorkspacePage, cx: &mut Context<Self>) {
-        self.active_page = page;
+    fn open_output_folder(&mut self, cx: &mut Context<Self>) {
+        let snapshot = self.commands.snapshot();
+        let Some(folder) = output_folder(&snapshot) else {
+            self.last_message = self.locale.text("failedHint");
+            cx.notify();
+            return;
+        };
+        if !folder.is_dir() {
+            self.last_message = "Output folder no longer exists".into();
+            cx.notify();
+            return;
+        }
+        let executable = if cfg!(windows) {
+            "explorer.exe"
+        } else if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
+        match Command::new(executable).arg(&folder).spawn() {
+            Ok(_) => {
+                self.last_message = folder.to_string_lossy().into_owned();
+            }
+            Err(error) => {
+                self.last_message = format!("Could not open output folder: {error}");
+            }
+        }
         cx.notify();
     }
 
     fn handle_dropped_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
-        // Native OS file drops, not an HTML/WebView surrogate.
-        // Validation and all resulting state changes belong to the Registry.
-        match paths.as_slice() {
-            [single] => {
-                self.run("source.select", json!({"path":single}), cx);
-            }
-            [] => {
-                self.last_message = "Drop a .3mf file or up to 32 files for batch.".into();
-                cx.notify();
-            }
-            many => {
-                self.run("batch.stage", json!({"paths":many}), cx);
-            }
-        }
+        // Same source queue path for file selection, folder selection and native OS drops.
+        self.queue_add(paths, cx);
     }
 
     fn choose_destination(&mut self, cx: &mut Context<Self>) {
@@ -305,4 +471,33 @@ fn main() {
         })
         .expect("SliceBridge GPUI window failed to open");
     });
+}
+
+#[cfg(test)]
+mod original_output_folder_tests {
+    use super::output_folder;
+    use serde_json::json;
+    use std::path::PathBuf;
+
+    #[test]
+    fn only_successful_conversion_exposes_output_folder() {
+        let status = json!({
+            "phase":"idle",
+            "batch":{"items":[
+                {"phase":"failed","output":"failed/part.3mf"},
+                {"phase":"completed","output":"outputs/part.3mf"}
+            ]}
+        });
+        assert_eq!(output_folder(&status), Some(PathBuf::from("outputs")));
+        assert!(output_folder(&json!({
+            "phase":"failed","output":"outputs/failed.3mf","batch":null
+        }))
+        .is_none());
+        assert_eq!(
+            output_folder(&json!({
+                "phase":"completed","output":"converted/file.3mf","batch":null
+            })),
+            Some(PathBuf::from("converted"))
+        );
+    }
 }

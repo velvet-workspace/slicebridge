@@ -11,7 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-const MAX_BATCH: usize = 32;
+// Match the stable SliceBridge queue limit, not the experimental 32-file UI.
+const MAX_BATCH: usize = 200;
 
 #[derive(Clone, Debug)]
 struct Item {
@@ -254,6 +255,32 @@ fn run_batch(
 }
 
 impl Registry {
+    pub(crate) fn batch_clear(&self) -> Result<Value, String> {
+        let mut state = self.state.lock().map_err(|e| e.to_string())?;
+        if busy(&state) {
+            return Err("cannot clear sources during conversion".into());
+        }
+        let removed = state
+            .batch_staged
+            .len()
+            .max(usize::from(state.source.is_some()));
+        state.batch_staged.clear();
+        state.source = None;
+        state.facts = None;
+        state.bundle_path = None;
+        state.bundle_label = None;
+        state.bundle = None;
+        state.installed_oem = false;
+        state.target = None;
+        state.nozzle = None;
+        state.selected_materials.clear();
+        state.output = None;
+        state.last_result = None;
+        state.batch = None;
+        state.phase = "idle".into();
+        Ok(json!({"removed": removed}))
+    }
+
     pub(crate) fn batch_stage(&self, params: &Value) -> Result<Value, String> {
         let paths = parse_sources(params)?;
         let mut canonical = BTreeSet::new();
@@ -495,13 +522,72 @@ mod tests {
             json!({}),
             json!({"paths":[],"output_dir":"."}),
             json!({"paths":[null],"output_dir":"."}),
-            json!({"paths":(0..33).map(|_|"x.3mf").collect::<Vec<_>>(),"output_dir":"."}),
+            json!({"paths":(0..201).map(|_|"x.3mf").collect::<Vec<_>>(),"output_dir":"."}),
         ] {
             assert_eq!(r.execute("batch.start", &v)["ok"], false);
         }
         assert_eq!(
             r.execute("batch.cancel", &json!({}))["data"]["cancel_requested"],
             false
+        );
+    }
+}
+
+#[cfg(test)]
+mod original_queue_parity_tests {
+    use super::*;
+
+    #[test]
+    fn source_queue_has_the_stable_main_200_file_limit() {
+        let paths: Vec<String> = (0..200)
+            .map(|index| format!("fixture-{index}.3mf"))
+            .collect();
+        assert_eq!(parse_sources(&json!({"paths": paths})).unwrap().len(), 200);
+        let overflow: Vec<String> = (0..201)
+            .map(|index| format!("fixture-{index}.3mf"))
+            .collect();
+        assert!(parse_sources(&json!({"paths":overflow}))
+            .unwrap_err()
+            .contains("1..=200"));
+    }
+
+    #[test]
+    fn clearing_source_queue_preserves_files_and_does_not_start_conversion() {
+        let registry = Registry::new();
+        {
+            let mut state = registry.state.lock().unwrap();
+            state.source = Some(PathBuf::from("source.3mf"));
+            state.batch_staged = vec![PathBuf::from("source.3mf")];
+            state.facts = Some(json!({"triangles": 8}));
+            state.phase = "idle".into();
+        }
+        let reply = registry.execute("batch.clear", &json!({}));
+        assert_eq!(reply["ok"], true);
+        assert_eq!(reply["data"]["removed"], 1);
+        assert!(registry.snapshot()["source"].is_null());
+        assert!(registry.snapshot()["facts"].is_null());
+        assert!(registry.snapshot()["batch_selection"]["paths"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(registry.snapshot()["batch"].is_null());
+    }
+
+    #[test]
+    fn clearing_is_rejected_while_conversion_is_running() {
+        let registry = Registry::new();
+        {
+            let mut state = registry.state.lock().unwrap();
+            state.phase = "running".into();
+            state.batch_staged = vec![PathBuf::from("source.3mf")];
+        }
+        assert_eq!(registry.execute("batch.clear", &json!({}))["ok"], false);
+        assert_eq!(
+            registry.snapshot()["batch_selection"]["paths"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
         );
     }
 }
