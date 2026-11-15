@@ -166,20 +166,9 @@ pub(super) fn render_window(
     let rtl = locale.rtl();
     let status = view.commands.snapshot();
     let source = status["source"].as_str().map(str::to_owned);
-    let queued = status["batch_selection"]["paths"]
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|v| v.as_str().map(str::to_owned))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let display_files: Vec<String> = if queued.is_empty() {
-        source.clone().into_iter().collect()
-    } else {
-        queued
-    };
+    let display_files = queue_display_paths(&status, view.suppressed_source.as_deref());
+    // Both staged files and the lone directly selected 3MF are removable.
+    // The Registry handles either without ever deleting a source file.
     let file_count = display_files.len();
     let phase = status["phase"].as_str().unwrap_or("idle");
     let result = status["result"].clone();
@@ -340,8 +329,9 @@ pub(super) fn render_window(
                 .child(label(locale, "queueEmpty")),
         );
     }
-    for (index, path) in display_files.iter().enumerate() {
+    for path in display_files.iter() {
         let open_path = path.clone();
+        let remove_path = path.clone();
         let active = source.as_deref() == Some(path.as_str());
         queue_items = queue_items.child(
             line(rtl)
@@ -383,7 +373,7 @@ pub(super) fn render_window(
                         ),
                 )
                 .child({
-                    let button = Button::new(format!("source-open-{index}"))
+                    let button = Button::new(file_button_id("source-open", path))
                         .label(if active {
                             if rtl {
                                 "פעיל"
@@ -403,7 +393,24 @@ pub(super) fn render_window(
                     } else {
                         button
                     }
-                }),
+                })
+                // A peer of the open button, not nested in it. Disabled during a conversion, as in app.js.
+                .child(
+                    Button::new(file_button_id("source-remove", path))
+                        .disabled(running)
+                        .label("×")
+                        .tooltip(if rtl {
+                            "הסר מהתור"
+                        } else {
+                            "Remove from queue"
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if snapshot_running(&this.commands.snapshot()) {
+                                return;
+                            }
+                            this.run("batch.remove", json!({"path":remove_path.clone()}), cx);
+                        })),
+                ),
         );
     }
 

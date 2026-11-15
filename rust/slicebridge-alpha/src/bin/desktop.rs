@@ -4,10 +4,56 @@ use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::*;
 use serde_json::{json, Value};
 use slicebridge_alpha::{protocol, Registry};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeSet;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
+
+// Staged files, in queue order, as the Registry reports them.
+fn staged_paths(status: &Value) -> Vec<String> {
+    status["batch_selection"]["paths"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
+}
+
+// Mirrors app.js renderQueue: the staged files are the list. With nothing staged, the active
+// source stands in for one file, unless the user just removed that source and the Registry
+// has not cleared it yet.
+fn queue_display_paths(status: &Value, suppressed_source: Option<&str>) -> Vec<String> {
+    let staged = staged_paths(status);
+    if !staged.is_empty() {
+        return staged;
+    }
+    status["source"]
+        .as_str()
+        .filter(|source| Some(*source) != suppressed_source)
+        .map(str::to_owned)
+        .into_iter()
+        .collect()
+}
+
+// Same definition the layout uses for disabling queue controls during a conversion.
+fn snapshot_running(status: &Value) -> bool {
+    status["phase"] == "running" || status["batch"]["phase"] == "running"
+}
+
+// `batch.remove` answers {"removed":true,...} on success; anything else leaves the queue unchanged.
+fn remove_reply_ok(reply: &Value) -> bool {
+    reply["ok"] == true && reply["data"]["removed"] == true
+}
+
+// Stable per file: the same path keeps its button id when other rows are added or removed.
+fn file_button_id(prefix: &str, path: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    format!("{prefix}-{:016x}", hasher.finish())
+}
 
 fn output_folder(status: &Value) -> Option<PathBuf> {
     let batch_output = status["batch"]["items"].as_array().and_then(|items| {
@@ -58,6 +104,8 @@ struct SliceBridgeWindow {
     last_message: String,
     destination: Option<String>,
     destination_source: Option<String>,
+    // Set by `batch.remove` so a removed source is not shown again while the Registry still reports it.
+    suppressed_source: Option<String>,
     locale: Locale,
     printers_open: bool,
     printers_first_run: bool,
@@ -171,6 +219,7 @@ impl SliceBridgeWindow {
                     .into(),
             destination: None,
             destination_source: None,
+            suppressed_source: None,
             locale,
             printers_open: false,
             printers_first_run: prefs["data"]["onboardingPending"] == true,
@@ -226,10 +275,12 @@ impl SliceBridgeWindow {
     }
 
     fn run(&mut self, name: &str, args: Value, cx: &mut Context<Self>) {
+        let source_before = self.commands.snapshot()["source"].clone();
         let result = self.commands.execute(name, &args);
         if name == "source.select" && result["ok"] == true {
             self.destination = None;
             self.destination_source = None;
+            self.suppressed_source = None;
             self.source_nozzle = result["data"]["source_nozzle"].as_str().map(str::to_owned);
             self.ready_oem_targets = desktop_printer_settings_ui::ready_from_preferences(
                 &self.ready_profiles,
@@ -243,6 +294,17 @@ impl SliceBridgeWindow {
                 &self.settings_loaded,
                 None,
             );
+        } else if name == "batch.remove" && remove_reply_ok(&result) {
+            self.suppressed_source = args["path"].as_str().map(str::to_owned);
+            // Removing the active file makes the Registry clear the source; drop the source-tied state too.
+            if self.commands.snapshot()["source"] != source_before {
+                self.source_nozzle = None;
+                self.ready_oem_targets = desktop_printer_settings_ui::ready_from_preferences(
+                    &self.ready_profiles,
+                    &self.settings_loaded,
+                    None,
+                );
+            }
         }
         self.last_message = if result["ok"] == true {
             format!("{name}: {}", result["data"])
@@ -347,17 +409,11 @@ impl SliceBridgeWindow {
 
     fn queue_add(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
         let snap = self.commands.snapshot();
-        let mut existing: Vec<PathBuf> = snap["batch_selection"]["paths"]
-            .as_array()
-            .into_iter()
-            .flat_map(|items| items.iter())
-            .filter_map(|value| value.as_str().map(PathBuf::from))
-            .collect();
-        if existing.is_empty() {
-            if let Some(source) = snap["source"].as_str() {
-                existing.push(PathBuf::from(source));
-            }
-        }
+        let mut existing: Vec<PathBuf> =
+            queue_display_paths(&snap, self.suppressed_source.as_deref())
+                .into_iter()
+                .map(PathBuf::from)
+                .collect();
         existing.extend(paths);
         match collect_source_files(existing) {
             Ok(files) if !files.is_empty() => {
@@ -369,6 +425,7 @@ impl SliceBridgeWindow {
                     .commands
                     .execute("batch.stage", &json!({"paths":encoded}));
                 if reply["ok"] == true {
+                    self.suppressed_source = None;
                     if snap["source"].is_null() {
                         self.run(
                             "source.select",
@@ -461,18 +518,7 @@ impl SliceBridgeWindow {
 
     fn start_batch(&mut self, cx: &mut Context<Self>) {
         let snapshot = self.commands.snapshot();
-        let mut paths = snapshot["batch_selection"]["paths"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-        if paths.is_empty() {
-            if let Some(source) = snapshot["source"].as_str() {
-                paths.push(source.to_owned());
-            }
-        }
+        let paths = queue_display_paths(&snapshot, self.suppressed_source.as_deref());
         let targets = desktop_printer_picker::selected_ready_legacy_rows(
             &self.printers_saved,
             &self.ready_oem_targets,
@@ -842,5 +888,75 @@ mod about_tests {
         assert_eq!(Locale::He.text("aboutOpen"), "אודות");
         assert_eq!(Locale::En.text("aboutTitle"), "About SliceBridge");
         assert_eq!(Locale::En.text("aboutDevOff"), "Off");
+    }
+}
+
+#[cfg(test)]
+mod queue_remove_tests {
+    use super::{file_button_id, queue_display_paths, remove_reply_ok, snapshot_running};
+    use serde_json::json;
+
+    #[test]
+    fn staged_files_are_the_list_and_source_stands_in_only_when_nothing_is_staged() {
+        let staged = json!({"source":"a.3mf","batch_selection":{"paths":["a.3mf","b.3mf"]}});
+        assert_eq!(queue_display_paths(&staged, None), vec!["a.3mf", "b.3mf"]);
+        let source_only = json!({"source":"a.3mf","batch_selection":{"paths":[]}});
+        assert_eq!(queue_display_paths(&source_only, None), vec!["a.3mf"]);
+        assert!(queue_display_paths(&json!({"source":null}), None).is_empty());
+    }
+
+    #[test]
+    fn removed_source_is_not_reinserted_while_registry_still_reports_it() {
+        let lagging = json!({"source":"a.3mf","batch_selection":{"paths":[]}});
+        assert!(queue_display_paths(&lagging, Some("a.3mf")).is_empty());
+        // A different active source is not hidden by an earlier removal.
+        assert_eq!(
+            queue_display_paths(&json!({"source":"c.3mf"}), Some("a.3mf")),
+            vec!["c.3mf"]
+        );
+        // Staged files still show even when the removed path is still the source.
+        let staged = json!({"source":"a.3mf","batch_selection":{"paths":["b.3mf"]}});
+        assert_eq!(queue_display_paths(&staged, Some("a.3mf")), vec!["b.3mf"]);
+    }
+
+    #[test]
+    fn only_a_successful_remove_reply_counts() {
+        assert!(remove_reply_ok(
+            &json!({"ok":true,"data":{"removed":true,"staged":1,"paths":["b.3mf"]}})
+        ));
+        assert!(!remove_reply_ok(&json!({"ok":false,"error":"busy"})));
+        assert!(!remove_reply_ok(
+            &json!({"ok":true,"data":{"removed":false}})
+        ));
+        assert!(!remove_reply_ok(&json!({"ok":true,"data":{}})));
+    }
+
+    #[test]
+    fn file_button_ids_are_stable_unique_and_prefixed() {
+        assert_eq!(
+            file_button_id("source-remove", "a.3mf"),
+            file_button_id("source-remove", "a.3mf")
+        );
+        assert_ne!(
+            file_button_id("source-remove", "a.3mf"),
+            file_button_id("source-remove", "b.3mf")
+        );
+        assert_ne!(
+            file_button_id("source-remove", "a.3mf"),
+            file_button_id("source-open", "a.3mf")
+        );
+        assert!(file_button_id("source-remove", "a.3mf").starts_with("source-remove-"));
+    }
+
+    #[test]
+    fn conversion_phase_blocks_queue_removal() {
+        assert!(snapshot_running(&json!({"phase":"running"})));
+        assert!(snapshot_running(
+            &json!({"phase":"idle","batch":{"phase":"running"}})
+        ));
+        assert!(!snapshot_running(
+            &json!({"phase":"completed","batch":{"phase":"completed"}})
+        ));
+        assert!(!snapshot_running(&json!({"batch":null})));
     }
 }
