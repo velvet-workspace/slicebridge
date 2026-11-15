@@ -99,11 +99,12 @@ func verifyRustNativeHandshake(binary string) error {
 		OK            bool   `json:"ok"`
 		Engine        string `json:"engine"`
 		NativeArchive bool   `json:"native_archive"`
+		SourceOwned   bool   `json:"source_owned"`
 	}
 	if err := json.Unmarshal(bytes.TrimSpace(stdout.buffer.Bytes()), &identity); err != nil {
 		return fmt.Errorf("packaged Rust-native worker returned invalid identity: %w", err)
 	}
-	if !identity.OK || !identity.NativeArchive || identity.Engine != "slicebridge-3mf-probe" {
+	if !identity.OK || !identity.NativeArchive || !identity.SourceOwned || identity.Engine != "slicebridge-3mf-probe" {
 		return fmt.Errorf("packaged Rust-native worker did not identify a supported converter")
 	}
 	return nil

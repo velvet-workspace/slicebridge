@@ -14,4 +14,5 @@ fn packaged_native_worker_exposes_bounded_read_only_identity() {
     assert_eq!(reply["ok"], true);
     assert_eq!(reply["engine"], "slicebridge-3mf-probe");
     assert_eq!(reply["native_archive"], true);
+    assert_eq!(reply["source_owned"], true);
 }

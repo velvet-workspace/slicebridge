@@ -482,3 +482,106 @@ fn two_plate_native_archive_preserves_independent_usage_and_removes_both_caches(
     assert!(!plates[0].contains_key("7"));
     assert!(!plates[1].contains_key("7"));
 }
+
+#[test]
+fn autonomous_rust_source_discovery_matches_verified_native_request() {
+    let fixture = Fixture::new("autonomous-source");
+    let original = fs::read(&fixture.source).unwrap();
+    let baseline = fixture.output("baseline.3mf");
+    let autonomous = fixture.output("autonomous.3mf");
+    let mut request = request_value();
+    request["include_receipt_details"] = json!(true);
+    let expected = convert_native_archive(&request, &fixture.source, &baseline).unwrap();
+    let actual = slicebridge_3mf_probe::convert_native_autonomous(
+        &request["bundle"],
+        &fixture.source,
+        &autonomous,
+    )
+    .unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(members(&baseline), members(&autonomous));
+    assert_eq!(fs::read(&fixture.source).unwrap(), original);
+    assert_eq!(inspect_package(&autonomous).unwrap().slice_caches, 0);
+
+    // The same output cannot be silently replaced after a successful run.
+    let saved = fs::read(&autonomous).unwrap();
+    let error = slicebridge_3mf_probe::convert_native_autonomous(
+        &request["bundle"],
+        &fixture.source,
+        &autonomous,
+    )
+    .unwrap_err();
+    assert!(error.contains("exists"), "{error}");
+    assert_eq!(fs::read(&autonomous).unwrap(), saved);
+}
+
+#[test]
+fn autonomous_rejects_untrusted_palette_and_incomplete_oem_before_output() {
+    let fixture = Fixture::new("autonomous-refusals");
+    let valid = request_value();
+    let out = fixture.output("refused.3mf");
+    assert!(
+        slicebridge_3mf_probe::convert_native_autonomous(&Value::Null, &fixture.source, &out)
+            .is_err()
+    );
+    assert!(!out.exists());
+
+    // An invalid declaration in the original ZIP must not be silently
+    // "corrected" by a target material default or Go-supplied settings.
+    let before = members(&fixture.source);
+    let mut writer = ZipWriter::new(File::create(&fixture.source).unwrap());
+    let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    for (name, bytes) in &before {
+        writer.start_file(name, opts).unwrap();
+        if name == "Metadata/slice_info.config" {
+            writer
+                .write_all(
+                    String::from_utf8_lossy(bytes)
+                        .replace("color=\"#123456\"", "color=\"not-a-hex\"")
+                        .as_bytes(),
+                )
+                .unwrap();
+        } else {
+            writer.write_all(bytes).unwrap();
+        }
+    }
+    writer.finish().unwrap();
+    let source_before = fs::read(&fixture.source).unwrap();
+    let error =
+        slicebridge_3mf_probe::convert_native_autonomous(&valid["bundle"], &fixture.source, &out)
+            .unwrap_err();
+    assert!(error.contains("valid material/color"), "{error}");
+    assert!(!out.exists());
+    assert_eq!(fs::read(&fixture.source).unwrap(), source_before);
+}
+
+#[test]
+fn autonomous_cli_accepts_only_a_resolved_bundle_and_real_source_archive() {
+    let fixture = Fixture::new("autonomous-cli");
+    let bundle = fixture.output("oem-bundle.json");
+    fs::write(&bundle, request_value()["bundle"].to_string()).unwrap();
+    let source_before = fs::read(&fixture.source).unwrap();
+    let out = fixture.output("native-cli.3mf");
+    let cli = env!("CARGO_BIN_EXE_slicebridge-3mf-probe");
+    let result = Command::new(cli)
+        .arg("--convert-native-autonomous")
+        .arg(&bundle)
+        .arg(&fixture.source)
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "CLI failed: stdout={}, stderr={}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let receipt: Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(receipt["ok"], true);
+    assert_eq!(receipt["planner"], "rust-native");
+    assert_eq!(receipt["experimental"], true);
+    assert_eq!(receipt["mapping"]["7"], 5);
+    assert_eq!(receipt["slots"].as_array().unwrap().len(), 5);
+    assert_eq!(inspect_package(&out).unwrap().slice_caches, 0);
+    assert_eq!(fs::read(&fixture.source).unwrap(), source_before);
+}

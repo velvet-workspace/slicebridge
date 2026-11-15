@@ -195,6 +195,80 @@ pub(crate) fn match_request_palette(request: &Value, palette: &Palette) -> Resul
     Ok(())
 }
 
+/// Construct a Rust-owned conversion request from the ACTUAL source archive.
+///
+/// Unlike the legacy Go-driven request, the caller passes only the verified
+/// installed OEM bundle; source colors, material IDs, and process settings
+/// are not supplied by the caller or guessed from the target. This is a step
+/// toward an independent Rust engine, not an OEM filesystem/profile resolver.
+/// A complete profile bundle remains mandatory, and no installed file is
+/// modified by this operation.
+fn source_owned_native_request(bundle: &Value, source: &Path) -> Result<Value, String> {
+    let file = File::open(source).map_err(|e| format!("source open: {e}"))?;
+    let mut archive = ZipArchive::new(file).map_err(|e| format!("input 3MF ZIP: {e}"))?;
+    let palette = source_palette_from_archive(&mut archive)?;
+    if palette.is_empty() || palette.len() > 64 {
+        return Err("source must declare between 1 and 64 material identities".into());
+    }
+    let mut filaments = Vec::with_capacity(palette.len());
+    for (id, declarations) in palette {
+        if id == 0 || id > i32::MAX as u32 || declarations.len() != 1 {
+            return Err(format!("ambiguous or unsupported source filament ID {id}"));
+        }
+        let (material, color) = declarations.iter().next().expect("exactly one declaration");
+        let color_hex = color.trim().strip_prefix('#').unwrap_or(color.trim());
+        if material.trim().is_empty()
+            || !(color_hex.len() == 6 || color_hex.len() == 8)
+            || !color_hex.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(format!("source filament {id} lacks a valid material/color"));
+        }
+        filaments.push(json!({"id":id,"type":material,"color":color}));
+    }
+
+    let settings_entry = archive
+        .by_name("Metadata/project_settings.config")
+        .map_err(|_| "source lacks original project_settings.config".to_owned())?;
+    let mut data = Vec::new();
+    settings_entry
+        .take(MAX_SLICE_INFO_BYTES + 1)
+        .read_to_end(&mut data)
+        .map_err(|e| format!("source settings read: {e}"))?;
+    if data.len() as u64 > MAX_SLICE_INFO_BYTES {
+        return Err("source project settings exceed 8 MB limit".into());
+    }
+    let settings: Value =
+        serde_json::from_slice(&data).map_err(|e| format!("source project settings JSON: {e}"))?;
+    if !settings.as_object().is_some_and(|map| !map.is_empty()) {
+        return Err("source project settings must be a nonempty JSON object".into());
+    }
+    // No trust in caller-supplied source metadata: the request is constructed
+    // exclusively from the read-only source ZIP and verified OEM bundle.
+    Ok(json!({
+        "bundle": bundle,
+        "filaments": filaments,
+        "source_settings": settings,
+        "include_receipt_details": true
+    }))
+}
+
+/// Full native 3MF conversion with source-driven material discovery in Rust.
+/// The caller must provide a complete, already-resolved installed OEM bundle
+/// (not a source filament map, Go plan, guessed nozzle, or startup script).
+/// The existing bounded converter independently recaptures the source bytes
+/// and checks the same palette and settings against its own snapshot.
+pub fn convert_native_autonomous(
+    bundle: &Value,
+    source: &Path,
+    destination: &Path,
+) -> Result<Value, String> {
+    if destination.exists() {
+        return Err("destination already exists; refusing overwrite".into());
+    }
+    let request = source_owned_native_request(bundle, source)?;
+    convert_native_archive(&request, source, destination)
+}
+
 /// Converts a source 3MF using an explicit, verified OEM request.
 ///
 /// Ordering is deliberate: refuse existing destinations, require an explicit

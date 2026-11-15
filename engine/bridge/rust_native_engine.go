@@ -16,9 +16,10 @@ import (
 
 // convertWithNativeRust is an opt-in *application* path. Go resolves the
 // approved installed machine, captures the source, and independently audits
-// the published archive. Rust alone plans slots/materials/process settings and
-// writes the converted 3MF; buildPlan, sourceSlotPlan, preservedProfile and
-// converter.Convert are intentionally NOT called here.
+// the published archive. Rust discovers source colors/filaments/settings from
+// the captured 3MF and plans and writes the complete archive. Go never sends a
+// prebuilt source mapping or print process plan. buildPlan, sourceSlotPlan,
+// preservedProfile and converter.Convert are intentionally NOT called here.
 func convertWithNativeRust(ctx context.Context, source, destination string, resolve profileResolver) (map[string]any, error) {
 	src, dst, err := resolvePaths(source, destination)
 	if err != nil {
@@ -68,10 +69,6 @@ func convertWithNativeRust(ctx context.Context, source, destination string, reso
 	if err := validateSourceMaterialReferences(src, inspection.Filaments); err != nil {
 		return nil, err
 	}
-	sourceSettings, err := readRustSourceSettings(src)
-	if err != nil {
-		return nil, fail("SOURCE_INVALID", "%v", err)
-	}
 	binary, err := resolveRustNativeBinary()
 	if err != nil {
 		return nil, fail("RUST_ENGINE_FAILED", "%v", err)
@@ -85,22 +82,17 @@ func convertWithNativeRust(ctx context.Context, source, destination string, reso
 	} else if !os.IsNotExist(err) {
 		return nil, fail("OUTPUT_INVALID", "%v", err)
 	}
-	// Deliberately omit Go mapping, process-preservation policy and conversion
-	// plan. This request supplies only the independently verified OEM bundle,
-	// literal source declarations and an immutable source settings snapshot.
+	// Deliberately omit Go source material declarations, project settings,
+	// process-preservation policy and conversion plan. The Rust worker derives
+	// all source-owned data from its captured 3MF, and independently verifies
+	// the material palette against its own immutable source snapshot.
 	bundle := any(resolved.bundle)
 	if orcaPilot {
 		// Preserve the independently verified physical-tool count from the
 		// installed Orca bundle; do not derive it from source color slots.
 		bundle = resolved.orca
 	}
-	payload, err := json.Marshal(map[string]any{
-		"bundle":                  bundle,
-		"filaments":               inspection.Filaments,
-		"source_settings":         sourceSettings,
-		"requested_nozzle":        resolved.Nozzle,
-		"include_receipt_details": true,
-	})
+	payload, err := json.Marshal(bundle)
 	if err != nil || len(payload) > 8<<20 {
 		return nil, fail("RUST_ENGINE_FAILED", "cannot encode bounded Rust-native request: %v", err)
 	}
@@ -119,7 +111,7 @@ func convertWithNativeRust(ctx context.Context, source, destination string, reso
 	}
 	bounded, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
-	command := exec.CommandContext(bounded, binary, "--convert-native-archive", requestPath, src, output)
+	command := exec.CommandContext(bounded, binary, "--convert-native-autonomous", requestPath, src, output)
 	command.WaitDelay = 2 * time.Second
 	stdout := &cappedRustTranscript{limit: 64 << 10}
 	stderr := &cappedRustTranscript{limit: 64 << 10}

@@ -1,9 +1,10 @@
 use serde_json::{json, Value};
 use slicebridge_3mf_probe::{
     build_native_conversion_plan, compose_project_settings, convert_archive_experimental,
-    convert_native_archive, inspect_package, map_native_material_settings, remap_paint_hex,
-    rewrite_model_paint_xml, rewrite_model_settings, rewrite_slice_info_xml, source_slot_plan,
-    strip_slice_cache_preserving, validate_native_bundle, SliceInfoSlot,
+    convert_native_archive, convert_native_autonomous, inspect_package,
+    map_native_material_settings, remap_paint_hex, rewrite_model_paint_xml, rewrite_model_settings,
+    rewrite_slice_info_xml, source_slot_plan, strip_slice_cache_preserving, validate_native_bundle,
+    SliceInfoSlot,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -16,7 +17,7 @@ use std::process;
 const MAX_JSON_INPUT_BYTES: u64 = 8 << 20;
 
 fn usage() -> String {
-    "usage: slicebridge-3mf-probe <file.3mf> | --strip-cache [--preserve KEY]... <source.3mf> <output.3mf> | --plan-slots <request.json> | --map-materials <request.json> | --validate-native-bundle <request.json> | --plan-native-conversion <request.json> | --remap-paint <request.json> | --remap-model <request.json> | --rewrite-model-settings <request.json> | --compose-project-settings <request.json> | --rewrite-slice-info <request.json> | --convert-archive <plan.json> <source.3mf> <output.3mf> | --convert-native-archive <verified-request.json> <source.3mf> <new-output.3mf> | --convert-archive-stdio | --convert-native-archive-stdio"
+    "usage: slicebridge-3mf-probe <file.3mf> | --strip-cache [--preserve KEY]... <source.3mf> <output.3mf> | --plan-slots <request.json> | --map-materials <request.json> | --validate-native-bundle <request.json> | --plan-native-conversion <request.json> | --remap-paint <request.json> | --remap-model <request.json> | --rewrite-model-settings <request.json> | --compose-project-settings <request.json> | --rewrite-slice-info <request.json> | --convert-archive <plan.json> <source.3mf> <output.3mf> | --convert-native-archive <verified-request.json> <source.3mf> <new-output.3mf> | --convert-native-autonomous <verified-oem-bundle.json> <source.3mf> <new-output.3mf> | --convert-archive-stdio | --convert-native-archive-stdio"
         .to_owned()
 }
 
@@ -97,6 +98,12 @@ fn run(args: &[OsString]) -> Result<Value, String> {
         [flag, request, source, destination] if flag == OsStr::new("--convert-native-archive") => {
             let value = read_request(request)?;
             convert_native_archive(&value, &PathBuf::from(source), &PathBuf::from(destination))
+        }
+        [flag, bundle_file, source, destination]
+            if flag == OsStr::new("--convert-native-autonomous") =>
+        {
+            let bundle = read_request(bundle_file)?;
+            convert_native_autonomous(&bundle, &PathBuf::from(source), &PathBuf::from(destination))
         }
         [flag, source] if flag == OsStr::new("--plan-slots") => {
             let value = read_request(source)?;
@@ -352,7 +359,8 @@ fn main() {
             json!({
                 "ok": true,
                 "engine": "slicebridge-3mf-probe",
-                "native_archive": true
+                "native_archive": true,
+                "source_owned": true
             })
         );
         return;

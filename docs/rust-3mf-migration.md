@@ -27,12 +27,17 @@ The output undergoes the production Go inspections (geometry, target identity,
 stale G-code and atomic exclusive publication). Rust failures fail closed;
 there is no silent Go fallback.
 
-**Go policy has NOT moved:** Go still resolves installed OEM machine/nozzle and
-material inheritance, validates the complete native target and safety-critical
-temperature/flow settings, plans source slots and approved process overrides,
-and publishes/reports the output. Rust consumes that validated snapshot; it
-does not independently resolve manufacturer profiles. The Wails UI has no
-Rust toggle and the installed release does not bundle this binary.
+**Go policy has NOT fully moved:** Go still resolves installed OEM machine/nozzle
+and material inheritance, validates the target, audits the converted output,
+and safely publishes/reports the result. The Rust-native engine now derives
+source filament IDs, colors, material types, project settings, safe print
+parameter preservation, and its own full 3MF conversion plan directly from
+the captured source ZIP. Go sends only the resolved installed OEM bundle,
+not source settings or a mapping. The Rust binary also has a standalone
+--convert-native-autonomous <verified-oem-bundle.json> <source.3mf> <output.3mf>
+mode; this requires an independently authenticated and resolved OEM bundle.
+The app has only a developer-gated Rust opt-in, not a production selector,
+and existing installed Go/Wails remains unchanged.
 
 ## Developer-only opt-in, scratch files only
 

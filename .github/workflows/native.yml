@@ -73,6 +73,14 @@ jobs:
         shell: pwsh
         working-directory: engine
         run: go test -count=1 ./...
+      - name: Verify Rust-owned source planning in complete Go host conversion (Windows)
+        shell: pwsh
+        working-directory: engine
+        env:
+          SLICEBRIDGE_RUST_PROBE: ${{ github.workspace }}\rust\3mf-probe\target\release\slicebridge-3mf-probe.exe
+        run: |
+          go test -count=1 ./bridge -run '^TestRustAutonomousGoHostParitySynthetic$' -v
+          if ($LASTEXITCODE -ne 0) { throw 'Rust autonomous host conversion parity failed' }
       - name: Test native UI and browser handoff
         run: node --test ../browser-extension/build.test.cjs ../browser-extension/setup-flow.test.cjs tests/update-ui.test.js tests/brand-ui.test.js tests/my-printers-ui.test.js tests/manufacturer-slicer-ui.test.js tests/prusa-target-ui.test.js tests/printer-cards-ui.test.js tests/printer-release-dates-ui.test.js tests/printer-catalog-selection-ui.test.js tests/supported-targets-ui.test.js tests/main-destinations-ui.test.js
       - name: Verify short-window frontend interactions (headless Chromium/WebView2)
@@ -221,6 +229,11 @@ jobs:
       - name: Test standalone conversion engine and synthetic printer matrix
         working-directory: engine
         run: go test -count=1 ./...
+      - name: Verify Rust-owned source planning in complete Go host conversion (macOS)
+        working-directory: engine
+        env:
+          SLICEBRIDGE_RUST_PROBE: ${{ github.workspace }}/rust/3mf-probe/target/release/slicebridge-3mf-probe
+        run: go test -count=1 ./bridge -run '^TestRustAutonomousGoHostParitySynthetic$' -v
       - name: Test native UI and browser handoff
         run: node --test ../browser-extension/build.test.cjs ../browser-extension/setup-flow.test.cjs tests/update-ui.test.js tests/brand-ui.test.js tests/my-printers-ui.test.js tests/manufacturer-slicer-ui.test.js tests/prusa-target-ui.test.js tests/printer-cards-ui.test.js tests/printer-release-dates-ui.test.js tests/printer-catalog-selection-ui.test.js tests/supported-targets-ui.test.js tests/main-destinations-ui.test.js
       - name: Verify 3MF compatibility and MakerWorld-style fixture integrity
