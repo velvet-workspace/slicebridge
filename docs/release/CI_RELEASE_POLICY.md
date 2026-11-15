@@ -1,37 +1,36 @@
-# Experimental GitHub Releases for every internal CI build
+# Experimental CI and local build Release policy
 
-Owner decision: **2026-11-15**. GitHub Release publication is approved as a normal documentation and archiving operation; **it is not permission to merge PRs, install builds, deploy, print, or mark binaries production-ready**.
+Owner decision (2026-11-15): every distributable internal SliceBridge build, including failed-QA or experimental builds, is archived in GitHub Releases. Release publication is authorized and is not production approval, permission to install, a merge to main, or permission to print.
 
-## Scope
+## Coverage
 
-Every completed **internal artifact-producing build** in these workflows must be reflected in a published, explicitly labeled **Pre-release** with an immutable commit SHA, original workflow/run links, and the original Actions artifact ZIP byte stream preserved in GitHub Release assets:
+The current artifact-producing distribution workflows are:
 
-- Native WebView Windows and macOS
-- Windows portable beta
-- Printer profile registry QA
+- Native WebView Windows and macOS — native Windows/macOS packages
+- Windows portable beta — Windows portable package
+- Printer profile registry QA — printer catalog package
 
-Source review and security checks retain their original authority. CI failure is disclosed in the Release log; a failed workflow can still produce an archive-worthy experimental artifact. Never represent an unknown or failed QA state as success. Fork-originated workflows are excluded from privileged publication because they are untrusted.
+The only other workflow currently uploading an Actions artifact, release-preflight.yml, creates a source/evidence package, not a distribution build. The publisher's contract test inventories every workflow YAML with actions/upload-artifact, so a new build producer must be registered or classified as evidence-only. Build code added by another mechanism still requires review.
 
-## Design
+## Security and integrity
 
-The trusted default-branch `.github/workflows/auto-release-builds.yml` subscribes to completed build workflows via `workflow_run`. It checks out **main only**, with persisted Git credentials disabled, and does **not** execute source code, install software or extract artifacts from the triggering branch. The script `tools/publish_ci_artifacts.py` verifies an internal head repository, downloads the original ZIP by artifact ID, verifies its size, ZIP CRC, and SHA-256, then uploads that exact ZIP and a matching checksum sidecar.
+The workflow_run subscriber on protected main checks out only trusted main; it does not execute triggering-branch code or unpack uploaded artifacts. It rejects forks and needs only actions:read plus contents:write. Artifacts are archived as the exact Actions ZIP byte stream after size, ZIP CRC and SHA-256 verification. GitHub Release asset digests, sizes and names are independently read back. All Releases are Pre-release / Experimental with latest=false.
 
-One pre-release is created per source SHA (tag `ci-build-<sha16>`) unless an existing pre-release already targets that SHA. The release body contains the original run ID, result, artifact ID and checksum. Repeated builds for the same commit are appended as distinct immutable artifact IDs. Every Release write is checked by GitHub readback; mismatched assets fail closed instead of being overwritten. The GitHub Actions artifact expiry is not used as permanent storage.
+Each new CI run attempt has a unique tag of the form ci-run-RUNID-aATTEMPT-SHA12, targeted at the full source commit SHA. An individual manifest, CI-run-RUNID-aATTEMPT-manifest.json, records the source branch/SHA, run/attempt, build start time, CI conclusion, original artifact IDs/names, sizes, hashes, final archive names and unavailable assets; it has a SHA-256 sidecar. Failed runs that produced artifacts are archived with the failure disclosed. A missing or expired original is a recorded gap and a non-successful publication outcome, never an invented archive.
 
-This workflow intentionally has `contents: write` / `actions: read` only; it never uses arbitrary fork artifacts or checks out PR code. Releases are always `--prerelease --latest=false`.
+Idempotency: exact duplicate artifact IDs are recognized, legacy releases containing those IDs are reused, and mismatched remote SHA, prerelease state or asset hashes abort without overwrite. All 2026-11-15 historical backfill records are already archived and are not replayed.
 
-## Retroactive inventory
+## Locally built binary pathway
 
-On 2026-11-15, 317 Actions artifacts on 139 distinct source SHAs were audited. The repo already contained 29 historical Releases; one additional manually validated RC was published as `v0.4.0-beta.6-rc.1`; 131 other previously undocumented build commits were backfilled as `v0.4.0-ci.<UTC-timestamp>.<sha10>` Releases. Source-commit and prerelease status were verified live on all 131 backfills. Release asset migration is separate and must not be called complete for any tag until GitHub digests, sizes, metadata and notes have been independently verified.
+Use tools/publish_local_build.py. Example dry run:
 
-## Operations and recovery
+    python3 tools/publish_local_build.py --source-dir /path/to/clean/slicebridge --asset /path/to/SliceBridge-macOS.zip --platform macos --build-id macmini-20261115-01 --build-at 2026-11-15T08:00:00+02:00 --builder MacMiniOffice --dry-run
 
-For a single run, inspect without writing:
+After validating the proposed manifest, remove --dry-run to publish. The tool requires a clean Git repository of the expected origin, with the exact commit independently found on GitHub. Every explicitly supplied asset is verified by SHA-256, file size and GitHub digest readback. The unique local-build-BUILDID-SHA12 prerelease stores original files, a LOCAL_BUILD_MANIFEST JSON and a checksum. A changed asset with an existing name is rejected. Uncommitted source cannot be misrepresented as a clean source SHA. Exact reproducibility and native execution are NOT certified by this archive process.
 
-```bash
-python3 tools/publish_ci_artifacts.py --repo velvet-workspace/slicebridge --run-id <RUN_ID> --dry-run
-```
+## Checks and activation
 
-After the workflow is merged into protected `main`, the automatic publisher becomes active for **new completed runs**. Existing releases are never deleted, main is not changed by the publisher, and missed or expired assets are recorded as gaps rather than fabricated. GitHub tag and Release publication history remains publicly visible. Run `python3 -m unittest discover -s tests -p 'test_publish_ci_artifacts.py' -v` for offline contract tests.
+    python3 -m unittest discover -s tests -p 'test_publish_*.py' -v
+    python3 tools/publish_ci_artifacts.py --repo velvet-workspace/slicebridge --run-id RUN_ID --dry-run
 
-**Activation state:** A PR/branch containing these files is *not* enough; only a reviewed merge into `main` activates the GitHub workflow. Do not claim it was installed while pending review.
+Separate read-only Actions contract tests run on related pull requests. PR #122 is not active on main until owner-approved merge and the first genuine automatic workflow_run, Release publication and readback succeeds. Merge permission is separate from the standing Release publication approval.
