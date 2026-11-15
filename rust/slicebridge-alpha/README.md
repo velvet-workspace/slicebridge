@@ -10,6 +10,12 @@ G-code, initiate slicing, or contact a printer.
   cycle through installed PLA/PETG material presets, choose destination,
   convert, cancel, read status and open converted output in an OEM slicer.
 - One Rust Registry drives the GUI, JSONL CLI, MCP stdio and local attach.
+- Native GPUI workspace presentation: dedicated Project Studio and Batch Queue
+  navigation, dark project sidebar, source/geometry summary, printer and material
+  cards, separate conversion controls, a file-level progress bar, and a vertically
+  scrollable 32-row batch results table. The tabs are presentation-only; source
+  selection, configuration, conversion, progress and cancellation still use
+  the single Rust Registry across all transports.
 - Native OS drag-and-drop zone selects one 3MF project or stages 2-32 files
   for batch; the GPUI window also provides recent-project open/forget controls
   and a scrollable per-file batch table with phases, receipts and errors.
@@ -40,7 +46,10 @@ G-code, initiate slicing, or contact a printer.
     cargo build --manifest-path rust/slicebridge-alpha/Cargo.toml --features desktop --bins
 
 Keep slicebridge-desktop, slicebridge-alpha and slicebridge-3mf-probe together.
-For a Windows executable add .exe to each name.
+For a Windows executable add .exe to each name. The Windows-only Rust
+build.rs reserves an 8 MiB UI-thread stack for slicebridge-desktop, preventing
+a native GPUI scene-tree stack overflow; it is not committed physical memory.
+It has no effect on other binaries or non-Windows platforms.
 
 ## Agent CLI and MCP
 
@@ -129,11 +138,19 @@ overwrite an existing output, source selection while active and live
 batch cancellation. The running native GPUI window showed an agent-triggered
 completed 2/2 batch without manual UI clicks.
 
-Still incomplete: broader vendor models and Orca forks, deep slicer UI
-acceptance at 0.2/0.8 mm, advanced tables and docking, actual drag-and-drop,
-precise per-mesh progress percentages, localization, Linux, and printed-part
-qualification. macOS requires this branch's next independent build/GUI QA
-after the latest batch work.
+Windows post-layout QA passed 32/32 authorized test-source copies in the
+Rust agent CLI and a separate 32/32 live native GPUI session through local
+attach. The Batch Queue navigation control was invoked via Windows
+UI Automation, with a real 1552x1134 GPUI screenshot showing 32/32,
+100% complete, and a scrollable per-file status table. All conversions
+were local to temporary QA folders. Source hashes, vertex coordinates,
+triangle indices and non-overwrite behavior were separately verified.
+
+Still incomplete: a true 3D geometry viewport, persistent project history,
+broader verified OEM vendors, deep slicer UI acceptance at 0.2/0.8 mm,
+docking, native OS drag gesture acceptance, per-mesh progress percentages,
+localization, Linux, and printed-part qualification. macOS requires
+independent rebuild / GUI QA for the new workspace layout.
 
 Do not merge main, replace stable installation, slice, generate G-code or
 control printers without applicable user authorization.

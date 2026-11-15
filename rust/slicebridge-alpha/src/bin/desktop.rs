@@ -8,11 +8,18 @@ use std::time::Duration;
 
 const TEXT: &str = "en"; // Localization slot: UI text is English-first.
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WorkspacePage {
+    Project,
+    Batch,
+}
+
 struct SliceBridgeWindow {
     commands: Registry,
     last_message: String,
     destination: Option<String>,
     destination_source: Option<String>,
+    active_page: WorkspacePage,
 }
 
 impl SliceBridgeWindow {
@@ -24,6 +31,7 @@ impl SliceBridgeWindow {
                     .into(),
             destination: None,
             destination_source: None,
+            active_page: WorkspacePage::Project,
         }
     }
 
@@ -127,7 +135,13 @@ impl SliceBridgeWindow {
     }
 
     fn start_batch(&mut self, cx: &mut Context<Self>) {
+        self.active_page = WorkspacePage::Batch;
         self.run("batch.start", json!({}), cx);
+    }
+
+    fn navigate(&mut self, page: WorkspacePage, cx: &mut Context<Self>) {
+        self.active_page = page;
+        cx.notify();
     }
 
     fn handle_dropped_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
@@ -264,274 +278,12 @@ impl SliceBridgeWindow {
     }
 }
 
+#[path = "desktop/layout.rs"]
+mod desktop_layout;
+
 impl Render for SliceBridgeWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let status = self.commands.snapshot();
-        let source = status["source"]
-            .as_str()
-            .unwrap_or("No 3MF selected")
-            .to_string();
-        let printer = status["printer"]
-            .as_str()
-            .unwrap_or("No OEM profile loaded")
-            .to_string();
-        let bundle = status["bundle_path"]
-            .as_str()
-            .map(str::to_string)
-            .unwrap_or_else(|| {
-                if status["installed_oem"] == true {
-                    "Live installed OEM inheritance".into()
-                } else {
-                    "None".into()
-                }
-            });
-        let phase = status["phase"].as_str().unwrap_or("idle").to_string();
-        let triangles = status["facts"]["triangles"]
-            .as_u64()
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "-".into());
-        let vertices = status["facts"]["vertices"]
-            .as_u64()
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "-".into());
-        let output = if self.destination_source.as_deref() == status["source"].as_str() {
-            self.destination.clone().unwrap_or("Not chosen".into())
-        } else {
-            "Not chosen for this source".into()
-        };
-        let batch = &status["batch"];
-        let batch_phase = batch["phase"].as_str().unwrap_or("idle");
-        let batch_total = batch["total"].as_u64().unwrap_or(0);
-        let batch_completed = batch["completed"].as_u64().unwrap_or(0);
-        let batch_percent = batch["progress_percent"].as_u64().unwrap_or(0);
-        let batch_summary = format!(
-            "Batch: {batch_phase} · {batch_completed}/{batch_total} files · {batch_percent}% of files"
-        );
-        let batch_error = batch["error"].as_str().unwrap_or("");
-        let staged = &status["batch_selection"];
-        let batch_dir = staged["output_dir"]
-            .as_str()
-            .unwrap_or("No output folder chosen");
-        let batch_source_count = staged["paths"].as_array().map(|v| v.len()).unwrap_or(0);
-
-        let mut recent_projects = div().flex().flex_col().gap_1();
-        if let Some(paths) = status["projects"].as_array() {
-            for (index, path) in paths.iter().take(16).enumerate() {
-                let Some(path) = path.as_str() else { continue };
-                let open_path = path.to_string();
-                let forget_path = path.to_string();
-                let filename = Path::new(path)
-                    .file_name()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_else(|| path.to_string());
-                recent_projects = recent_projects.child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .gap_2()
-                        .p_1()
-                        .child(
-                            Button::new(format!("recent-open-{index}"))
-                                .label("Open")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.run(
-                                        "source.select",
-                                        json!({"path":open_path.clone()}),
-                                        cx,
-                                    );
-                                })),
-                        )
-                        .child(div().w_64().child(filename))
-                        .child(
-                            Button::new(format!("recent-forget-{index}"))
-                                .label("Forget")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.run(
-                                        "projects.forget",
-                                        json!({"path":forget_path.clone()}),
-                                        cx,
-                                    );
-                                })),
-                        ),
-                );
-            }
-        }
-
-        let mut batch_table = div().flex().flex_col().gap_1();
-        if let Some(items) = batch["items"].as_array() {
-            batch_table = batch_table.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap_2()
-                    .p_1()
-                    .child(div().w_8().child("#"))
-                    .child(div().w_64().child("Source 3MF"))
-                    .child(div().w_24().child("State"))
-                    .child(div().flex_1().child("Receipt / error")),
-            );
-            for (index, item) in items.iter().enumerate() {
-                let file = item["source"].as_str().unwrap_or("unknown");
-                let filename = Path::new(file)
-                    .file_name()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|| file.to_string());
-                let phase = item["phase"].as_str().unwrap_or("queued");
-                let detail = if let Some(error) = item["receipt"]["error"].as_str() {
-                    error.to_string()
-                } else if let Some(bytes) = item["receipt"]["bytes"].as_u64() {
-                    format!("Converted {bytes} bytes")
-                } else if phase == "running" {
-                    "Converting via Rust OEM engine...".into()
-                } else {
-                    String::new()
-                };
-                batch_table = batch_table.child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .gap_2()
-                        .p_1()
-                        .child(div().w_8().child(format!("{}", index + 1)))
-                        .child(div().w_64().child(filename))
-                        .child(div().w_24().child(phase.to_string()))
-                        .child(div().flex_1().child(detail)),
-                );
-            }
-        }
-        let columns = [
-            ("3MF source", source),
-            ("OEM printer", printer),
-            ("OEM bundle", bundle),
-            (
-                "Printer target",
-                status["target"].as_str().unwrap_or("None").into(),
-            ),
-            (
-                "Nozzle diameter",
-                status["nozzle"].as_str().unwrap_or("None").into(),
-            ),
-            (
-                "PLA OEM preset",
-                status["materials"]["PLA"].as_str().unwrap_or("None").into(),
-            ),
-            (
-                "PETG OEM preset",
-                status["materials"]["PETG"]
-                    .as_str()
-                    .unwrap_or("None")
-                    .into(),
-            ),
-            ("Triangles", triangles),
-            ("Vertices", vertices),
-            ("Save target", output),
-            ("Job state", phase),
-        ];
-        let mut table = div().flex().flex_col().gap_0().p_1();
-        for (label, value) in columns {
-            table = table.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap_3()
-                    .p_1()
-                    .child(div().w_32().child(label))
-                    .child(div().flex_1().child(value)),
-            );
-        }
-
-        div().id("slicebridge-workspace").size_full().overflow_y_scroll()
-            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
-                this.handle_dropped_paths(paths.paths().to_vec(), cx);
-            }))
-            .flex().flex_col().gap_2().p_4()
-            .child(div().text_2xl().child("SliceBridge  /  Rust Native Alpha"))
-            .child(div().id("3mf-native-file-drop").p_2().border_1()
-                .child("Drop .3mf anywhere in the workspace: one opens, multiple stage a batch"))
-            .child(div().child("GPUI + GPUI Kit  |  Agent-first command registry  |  English"))
-            .child(
-                div().flex().flex_row().gap_2()
-                    .child(Button::new("choose-source").primary().label("Open 3MF")
-                        .on_click(cx.listener(|this, _, _, cx| this.choose_file("source.select", cx))))
-                    .child(Button::new("discover-oem").label("Scan installed OEM")
-                        .on_click(cx.listener(|this, _, _, cx| this.run("profiles.discover", json!({}), cx))))
-                    .child(Button::new("choose-target").label("Save as...")
-                        .on_click(cx.listener(|this, _, _, cx| this.choose_destination(cx))))
-            )
-            .child(div().flex().flex_row().gap_2()
-                .child(div().text_lg().child("Recent 3MF projects · session"))
-                .child(Button::new("recent-clear").label("Clear recent")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.run("projects.clear", json!({}), cx);
-                    }))))
-            .child(recent_projects)
-            .child(div().text_lg().child("Snapmaker U1 — installed nozzle presets"))
-            .child(
-                div().flex().flex_row().gap_2()
-                    .child(Button::new("u1-02").label("0.2 mm")
-                        .on_click(cx.listener(|this, _, _, cx| this.select_oem("u1", "0.2", cx))))
-                    .child(Button::new("u1-04").label("0.4 mm")
-                        .on_click(cx.listener(|this, _, _, cx| this.select_oem("u1", "0.4", cx))))
-                    .child(Button::new("u1-06").label("0.6 mm")
-                        .on_click(cx.listener(|this, _, _, cx| this.select_oem("u1", "0.6", cx))))
-                    .child(Button::new("u1-08").label("0.8 mm")
-                        .on_click(cx.listener(|this, _, _, cx| this.select_oem("u1", "0.8", cx))))
-            )
-            .child(div().text_lg().child("QIDI X-Plus 5 — installed nozzle presets"))
-            .child(
-                div().flex().flex_row().gap_2()
-                    .child(Button::new("qidi-02").label("0.2 mm")
-                        .on_click(cx.listener(|this, _, _, cx| this.select_oem("qidi", "0.2", cx))))
-                    .child(Button::new("qidi-04").label("0.4 mm")
-                        .on_click(cx.listener(|this, _, _, cx| this.select_oem("qidi", "0.4", cx))))
-                    .child(Button::new("qidi-06").label("0.6 mm")
-                        .on_click(cx.listener(|this, _, _, cx| this.select_oem("qidi", "0.6", cx))))
-                    .child(Button::new("qidi-08").label("0.8 mm")
-                        .on_click(cx.listener(|this, _, _, cx| this.select_oem("qidi", "0.8", cx))))
-            )
-            .child(div().text_lg().child("Project / Printer / Materials"))
-            .child(table)
-            .child(
-                div().flex().flex_row().gap_2()
-                    .child(Button::new("material-pla").label("Next verified PLA preset")
-                        .on_click(cx.listener(|this, _, _, cx| this.next_material("PLA", cx))))
-                    .child(Button::new("material-petg").label("Next verified PETG preset")
-                        .on_click(cx.listener(|this, _, _, cx| this.next_material("PETG", cx))))
-            )
-            .child(div().child("Material changes rebuild the live installed OEM profile; they affect the Rust conversion."))
-            .child(
-                div().flex().flex_row().gap_2()
-                    .child(Button::new("convert").primary().label("Convert 3MF")
-                        .on_click(cx.listener(|this, _, _, cx| this.start_conversion(cx))))
-                    .child(Button::new("cancel").label("Cancel")
-                        .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))))
-                    .child(Button::new("open-selected").label("Open in OEM slicer")
-                        .on_click(cx.listener(|this, _, _, cx| this.run("slicer.open_selected", json!({}), cx))))
-                    .child(Button::new("open-in-slicer").label("Other slicer...")
-                        .on_click(cx.listener(|this, _, _, cx| this.choose_slicer(cx))))
-                    .child(Button::new("refresh").label("Refresh status")
-                        .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))))
-            )
-            .child(div().text_lg().child("Batch 3MF conversion · sequential, non-overwriting"))
-            .child(
-                div().flex().flex_row().gap_2()
-                    .child(Button::new("batch-sources").label("Choose batch 3MF...")
-                        .on_click(cx.listener(|this, _, _, cx| this.choose_batch_sources(cx))))
-                    .child(Button::new("batch-folder").label("Output folder...")
-                        .on_click(cx.listener(|this, _, _, cx| this.choose_batch_directory(cx))))
-                    .child(Button::new("batch-start").primary().label("Start batch")
-                        .on_click(cx.listener(|this, _, _, cx| this.start_batch(cx))))
-                    .child(Button::new("batch-cancel").label("Cancel batch")
-                        .on_click(cx.listener(|this, _, _, cx| this.run("batch.cancel", json!({}), cx))))
-            )
-            .child(div().child(format!("{batch_source_count} selected sources · {batch_dir}")))
-            .child(div().child(batch_summary))
-            .child(div().child(batch_error.to_string()))
-            .child(batch_table)
-            .child(div().text_lg().child("Last UI action"))
-            .child(div().p_2().child(self.last_message.clone()))
-            .child(div().child("Local attach: 127.0.0.1:48637  •  MCP: slicebridge-alpha --mcp"))
-            .child(div().child(format!("Locale: {TEXT}")))
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        desktop_layout::render_window(self, window, cx)
     }
 }
 
