@@ -190,14 +190,14 @@ pub(super) fn render_window(
                 .gap_2()
                 .child(
                     Button::new("my-printers")
-                        .disabled(true) // Saved-printer library is not ported yet.
+                        .disabled(running || view.printers_cards.is_empty())
                         .label(if rtl {
                             "המדפסות שלי"
                         } else {
                             "My printers"
                         })
                         .on_click(
-                            cx.listener(|this, _, _, cx| unavailable(this, "My printers", cx)),
+                            cx.listener(|this, _, window, cx| this.open_printers(window, cx)),
                         ),
                 )
                 .child(
@@ -229,9 +229,12 @@ pub(super) fn render_window(
                         .rounded_md()
                         .p_1()
                         .child({
-                            let button = Button::new("locale-he").label("עברית").on_click(
-                                cx.listener(|this, _, _, cx| this.set_locale(Locale::He, cx)),
-                            );
+                            let button =
+                                Button::new("locale-he")
+                                    .label("עברית")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.set_locale(Locale::He, window, cx)
+                                    }));
                             if locale == Locale::He {
                                 button.primary()
                             } else {
@@ -239,9 +242,10 @@ pub(super) fn render_window(
                             }
                         })
                         .child({
-                            let button = Button::new("locale-en").label("EN").on_click(
-                                cx.listener(|this, _, _, cx| this.set_locale(Locale::En, cx)),
-                            );
+                            let button =
+                                Button::new("locale-en").label("EN").on_click(cx.listener(
+                                    |this, _, window, cx| this.set_locale(Locale::En, window, cx),
+                                ));
                             if locale == Locale::En {
                                 button.primary()
                             } else {
@@ -450,7 +454,11 @@ pub(super) fn render_window(
     let mut targets = div().flex().flex_col().gap_2().px_3().py_2();
     // The stable app uses the "My printers" library and installed OEM resolver.
     // Until that is ported, these only select targets supported by this Rust Registry.
-    for (id, title) in [("u1", "Snapmaker U1"), ("qidi", "QIDI Plus5")] {
+    let ready_rows = desktop_printer_picker::selected_ready_legacy_rows(
+        &view.printers_saved,
+        &view.ready_oem_targets,
+    );
+    for &(id, title) in &ready_rows {
         let selected = target == id;
         targets = targets.child(
             line(rtl)
@@ -481,6 +489,13 @@ pub(super) fn render_window(
                         })),
                 ),
         );
+    }
+    if ready_rows.is_empty() {
+        targets = targets.child(div().p_3().text_sm().text_color(rgb(MUTED)).child(if rtl {
+            "לא נבחרו מדפסות יעד זמינות. אפשר להוסיף דרך סמל המדפסת בראש החלון."
+        } else {
+            "No target printers selected. Use the printer icon at the top to add them."
+        }));
     }
     let targets_panel = panel()
         .h(px(230.))
@@ -690,7 +705,12 @@ pub(super) fn render_window(
                 )
                 .child(
                     Button::new("convert-main")
-                        .disabled(running || file_count == 0 || target.is_empty())
+                        .disabled(
+                            running
+                                || file_count == 0
+                                || target.is_empty()
+                                || !ready_rows.iter().any(|(id, _)| *id == target),
+                        )
                         .primary()
                         .label(label(locale, "convert"))
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -808,8 +828,9 @@ pub(super) fn render_window(
                 ),
         );
 
-    div()
+    let mut root = div()
         .id("slicebridge-workspace")
+        .relative()
         .size_full()
         .flex()
         .flex_col()
@@ -822,5 +843,9 @@ pub(super) fn render_window(
         .child(workspace)
         .child(actionbar)
         .child(brand_banner)
-        .child(progress)
+        .child(progress);
+    if view.printers_open {
+        root = root.child(view.render_printers(cx));
+    }
+    root
 }

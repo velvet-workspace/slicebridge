@@ -1,8 +1,10 @@
 //! Native GPUI pilot: never embeds a browser or calls Go/Wails.
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::*;
 use serde_json::{json, Value};
 use slicebridge_alpha::{protocol, Registry};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -36,16 +38,66 @@ use source_queue::collect_source_files;
 mod desktop_i18n;
 use desktop_i18n::Locale;
 
+#[path = "desktop/printer_picker.rs"]
+mod desktop_printer_picker;
+use desktop_printer_picker::PrinterCard;
+
 struct SliceBridgeWindow {
     commands: Registry,
     last_message: String,
     destination: Option<String>,
     destination_source: Option<String>,
     locale: Locale,
+    printers_open: bool,
+    printers_first_run: bool,
+    printers_cards: Vec<PrinterCard>,
+    ready_oem_targets: BTreeSet<String>,
+    printers_saved: Vec<String>,
+    printers_draft: Vec<String>,
+    printers_maker: Option<String>,
+    printers_maker_menu: bool,
+    printers_show_all: bool,
+    printers_error: String,
+    printers_search: Entity<InputState>,
+    _printer_subscription: Subscription,
 }
 
 impl SliceBridgeWindow {
-    fn new(registry: Registry) -> Self {
+    fn new(registry: Registry, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let locale = Locale::load();
+        let placeholder = if locale.rtl() {
+            "שם יצרן או דגם"
+        } else {
+            "Manufacturer or model"
+        };
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
+        let subscription = cx.subscribe(&search, |_, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        });
+        let catalog = registry.execute("printers.catalog", &json!({}));
+        let cards = if catalog["ok"] == true {
+            desktop_printer_picker::original_catalogue_cards(&catalog["data"])
+        } else {
+            Vec::new()
+        };
+        let discovered = registry.execute("profiles.discover", &json!({}));
+        let ready_oem_targets: BTreeSet<String> = discovered["data"]["profiles"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|item| item["ready"] == true && item["nozzle"] == "0.4")
+            .filter_map(|item| item["target"].as_str().map(str::to_owned))
+            .collect();
+        let prefs = registry.execute("printers.get", &json!({}));
+        let saved = prefs["data"]["selectedIds"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect();
         Self {
             commands: registry,
             last_message:
@@ -53,7 +105,19 @@ impl SliceBridgeWindow {
                     .into(),
             destination: None,
             destination_source: None,
-            locale: Locale::load(),
+            locale,
+            printers_open: false,
+            printers_first_run: prefs["data"]["onboardingPending"] == true,
+            printers_cards: cards,
+            ready_oem_targets,
+            printers_saved: saved,
+            printers_draft: Vec::new(),
+            printers_maker: None,
+            printers_maker_menu: false,
+            printers_show_all: false,
+            printers_error: String::new(),
+            printers_search: search,
+            _printer_subscription: subscription,
         }
     }
 
@@ -217,8 +281,16 @@ impl SliceBridgeWindow {
         .detach();
     }
 
-    fn set_locale(&mut self, locale: Locale, cx: &mut Context<Self>) {
+    fn set_locale(&mut self, locale: Locale, window: &mut Window, cx: &mut Context<Self>) {
         self.locale = locale;
+        let placeholder = if locale.rtl() {
+            "שם יצרן או דגם"
+        } else {
+            "Manufacturer or model"
+        };
+        self.printers_search.update(cx, |input, cx| {
+            input.set_placeholder(placeholder, window, cx)
+        });
         if let Err(error) = locale.save() {
             self.last_message = format!("Could not remember language selection: {error}");
         }
@@ -399,9 +471,9 @@ fn main() {
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
         let commands = registry.clone();
-        gpui_kit::open_window(WindowOptions::default(), cx, move |_, cx| {
+        gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
             cx.new(|cx| {
-                let mut view = SliceBridgeWindow::new(commands);
+                let mut view = SliceBridgeWindow::new(commands, window, cx);
                 view.start_live_refresh(cx);
                 view
             })
