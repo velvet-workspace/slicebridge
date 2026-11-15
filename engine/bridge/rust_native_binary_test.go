@@ -88,3 +88,20 @@ func TestRustNativeExplicitOverrideFailsClosedInsteadOfFallingBack(t *testing.T)
 		t.Fatalf("absolute explicit runtime not honored: %q %v", got, err)
 	}
 }
+
+func TestRustNativeHandshakeRejectsFakeAndAcceptsRealConverter(t *testing.T) {
+	fake := filepath.Join(t.TempDir(), "not-a-rust-worker")
+	if err := os.WriteFile(fake, []byte("not an executable"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyRustNativeHandshake(fake); err == nil {
+		t.Fatal("accepted a sidecar without the Rust-native identity")
+	}
+	actual := os.Getenv("SLICEBRIDGE_RUST_PROBE")
+	if actual == "" {
+		t.Skip("requires opt-in freshly built Rust-native RC executable")
+	}
+	if err := verifyRustNativeHandshake(actual); err != nil {
+		t.Fatalf("real built Rust-native RC failed its app handshake: %v", err)
+	}
+}

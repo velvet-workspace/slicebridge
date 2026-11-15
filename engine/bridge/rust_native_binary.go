@@ -1,10 +1,15 @@
 package bridge
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"time"
 )
 
 const rustNativeBinaryEnv = "SLICEBRIDGE_RUST_ENGINE_BIN"
@@ -54,4 +59,52 @@ func resolveRustNativeBinary() (string, error) {
 		return "", fmt.Errorf("cannot identify current app executable: %w", err)
 	}
 	return bundledRustBinaryAt(executable)
+}
+
+// VerifyRustNativeBundle is invoked by the actual packaged Wails executable's
+// headless release smoke. It verifies the exact adjacent worker that will be
+// launched when a user explicitly opts into Rust-native conversion; neither
+// an environment override nor PATH may spoof this package check.
+func VerifyRustNativeBundle() error {
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("cannot locate packaged Wails executable: %w", err)
+	}
+	rust, err := bundledRustBinaryAt(executable)
+	if err != nil {
+		return err
+	}
+	return verifyRustNativeHandshake(rust)
+}
+
+func verifyRustNativeHandshake(binary string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, binary, "--identify-native-engine")
+	command.WaitDelay = 1 * time.Second
+	stdout := &cappedRustTranscript{limit: 4096}
+	stderr := &cappedRustTranscript{limit: 4096}
+	command.Stdout = stdout
+	command.Stderr = stderr
+	if err := command.Run(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("packaged Rust-native worker handshake timed out: %w", ctx.Err())
+		}
+		return fmt.Errorf("packaged Rust-native worker refused handshake: %w", err)
+	}
+	if stdout.truncated || stderr.truncated {
+		return fmt.Errorf("packaged Rust-native worker produced oversized handshake")
+	}
+	var identity struct {
+		OK            bool   `json:"ok"`
+		Engine        string `json:"engine"`
+		NativeArchive bool   `json:"native_archive"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(stdout.buffer.Bytes()), &identity); err != nil {
+		return fmt.Errorf("packaged Rust-native worker returned invalid identity: %w", err)
+	}
+	if !identity.OK || !identity.NativeArchive || identity.Engine != "slicebridge-3mf-probe" {
+		return fmt.Errorf("packaged Rust-native worker did not identify a supported converter")
+	}
+	return nil
 }

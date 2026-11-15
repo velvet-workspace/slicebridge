@@ -344,6 +344,19 @@ fn run_jsonl_worker(mut handle: impl FnMut(&Value) -> Result<Value, String>) -> 
 
 fn main() {
     let args: Vec<_> = env::args_os().skip(1).collect();
+    // Read-only packaging handshake for the opt-in Wails RC. It is not a
+    // print/slice command and cannot alter the machine or source projects.
+    if args.as_slice() == [OsStr::new("--identify-native-engine")] {
+        println!(
+            "{}",
+            json!({
+                "ok": true,
+                "engine": "slicebridge-3mf-probe",
+                "native_archive": true
+            })
+        );
+        return;
+    }
     if args.as_slice() == [OsStr::new("--convert-archive-stdio")] {
         if let Err(error) = run_stdio() {
             eprintln!("experimental stdio worker terminated: {error}");

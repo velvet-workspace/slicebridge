@@ -171,6 +171,8 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or !$result.ok -or $result.facts.triangles -le 0) { throw 'Extracted RC Rust-native worker failed real 3MF inspection' }
           $appProbe = Start-Process -FilePath (Resolve-Path $packedApp).Path -ArgumentList '--verify-bundled-prusa' -Wait -PassThru
           if ($appProbe.ExitCode -ne 0) { throw 'Extracted RC lost default Go/Prusa rollback functionality' }
+          $rustProbe = Start-Process -FilePath (Resolve-Path $packedApp).Path -ArgumentList '--verify-bundled-rust' -Wait -PassThru
+          if ($rustProbe.ExitCode -ne 0) { throw 'Actual extracted Wails executable failed its Rust-native sidecar handshake' }
           Write-Output "Experimental Windows RC ready: $(Get-Item $zip | Select-Object -ExpandProperty Length) bytes"
       - name: Upload experimental Rust-native Windows RC (not production)
         uses: actions/upload-artifact@v4
@@ -280,6 +282,7 @@ jobs:
           EXTRACTED='build/rc/extracted-rust-native-macos/SliceBridge-Rust-Native-RC.app'
           test -x "$EXTRACTED/Contents/MacOS/SliceBridge"
           "$EXTRACTED/Contents/MacOS/slicebridge-3mf-probe" ../tests/fixtures/bambu-one-color.3mf | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["ok"] and data["facts"]["triangles"] > 0'
+          "$EXTRACTED/Contents/MacOS/SliceBridge" --verify-bundled-rust
           codesign --verify --deep --verbose=2 "$EXTRACTED"
           du -sh "$APP" "$ZIP"
       - name: Upload experimental Rust-native macOS RC (not production)
