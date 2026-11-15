@@ -1,5 +1,37 @@
 # SliceBridge: experimental Rust 3MF components
 
+**Rust-native experimental release candidate exists for Windows and macOS.**
+The *installed* Go/Wails application is unchanged; an isolated opt-in Wails
+release candidate packages this Rust worker and exercises its real full-archive
+conversion path. Neither the experimental RC nor a green CI run establishes
+full target-slicer/print readiness.
+
+### Delivery decision (15 November 2026)
+
+Deliver a working **Rust-native 3MF engine with the existing Wails/Go desktop
+shell**, rather than rewriting the entire UI as a prerequisite. The existing
+released and proven Go versions are the **single stable return point**. Do not
+build per-revision rollback routes, redundant recovery frameworks or feature
+flags for minor Rust changes. Preserve Go as a frozen reference, touching it
+only for essential Rust integration or a demonstrated defect.
+
+Prioritize real Rust conversion coverage, material/tool and multi-plate
+correctness, target-native slicer inspection, and final cross-platform release
+acceptance. Run focused tests per change and complete CI before issuing an RC.
+Do not merge to main, replace the installed app, slice or print without the
+separate applicable approval.
+
+Current reference: PR #117, commit `7043a606c57af8fc46e1b0d1c7da1b673dbb669c`,
+[experimental Windows/macOS RC](https://github.com/velvet-workspace/slicebridge/releases/tag/ci-run-43690312150-a1-7043a606c57a).
+The Windows app-to-Rust host already passed synthetic OEM U1 five-material and
+QIDI single-material conversions. QA of actual target-slicer UI behavior remains
+a separate acceptance gate.
+
+### Historical implementation notes
+
+This document retains earlier experiment reports below as dated evidence;
+superseded "next steps" are not standing instructions to re-engineer Go.
+
 **Development only. Not integrated with the installed SliceBridge application.**
 
 This small Rust crate incrementally ports bounded 3MF archive, source-slot
@@ -1000,7 +1032,9 @@ Rust integration before choosing a runtime architecture.
   PrusaSlicer geometry-only import has passed but cannot validate tool changes.
 - Consider Tauri 2 as a separate UI decision after compatibility testing.
 
-Do not enable this crate in the current application, remove Go/Wails, or
-publish release builds based solely on these tests. Dependency versions
-are recorded in `Cargo.lock`; release licensing and platform verification
-remain separate.
+Do not replace the installed application's default conversion engine,
+remove Go/Wails, merge to main, or declare general print readiness based
+solely on these tests. Experimental opt-in Rust-native RC bundles are
+permitted and already published with SHA256 manifests. Dependency versions
+are recorded in `Cargo.lock`; final release licensing, target-native GUI
+acceptance and platform verification remain separate.
