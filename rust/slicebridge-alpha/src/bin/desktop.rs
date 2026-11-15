@@ -81,6 +81,39 @@ struct SliceBridgeWindow {
     settings_material: String,
     settings_options: Value,
     settings_error: String,
+    about_open: bool,
+    about_developer_mode: bool,
+    about_document: Option<AboutDocument>,
+}
+
+// Matches the installed-version string the stable Go app shows (`appVersion` in native/updates_bridge.go).
+const ABOUT_INSTALLED_VERSION: &str = "0.4.0-beta.6.dev.3";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AboutDocument {
+    License,
+    Credits,
+}
+
+impl AboutDocument {
+    // The same files Go embeds from frontend/dist/legal, so the About text works offline.
+    fn text(self) -> &'static str {
+        match self {
+            Self::License => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../native/frontend/dist/legal/LICENSE.txt"
+            )),
+            Self::Credits => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../native/frontend/dist/legal/THIRD_PARTY_NOTICES.md"
+            )),
+        }
+    }
+}
+
+// Mirrors about.js: developer mode reads as On only for an explicit native `true`; anything else is Off.
+fn developer_mode_enabled(reply: &Value) -> bool {
+    reply["ok"] == true && reply["data"]["developerMode"] == true
 }
 
 impl SliceBridgeWindow {
@@ -160,6 +193,9 @@ impl SliceBridgeWindow {
             settings_material: "PLA".into(),
             settings_options: Value::Null,
             settings_error: String::new(),
+            about_open: false,
+            about_developer_mode: false,
+            about_document: None,
         }
     }
 
@@ -210,6 +246,30 @@ impl SliceBridgeWindow {
             format!("{name}: {}", result["data"])
         } else {
             format!("Error: {}", result["error"].as_str().unwrap_or("unknown"))
+        };
+        cx.notify();
+    }
+
+    fn open_about(&mut self, cx: &mut Context<Self>) {
+        // Read the preference on each open: CLI or MCP may have changed it while the window was running.
+        let reply = self.commands.execute("settings.get", &json!({}));
+        self.about_developer_mode = developer_mode_enabled(&reply);
+        self.about_document = None;
+        self.about_open = true;
+        cx.notify();
+    }
+
+    fn close_about(&mut self, cx: &mut Context<Self>) {
+        self.about_open = false;
+        self.about_document = None;
+        cx.notify();
+    }
+
+    fn toggle_about_document(&mut self, document: AboutDocument, cx: &mut Context<Self>) {
+        self.about_document = if self.about_document == Some(document) {
+            None
+        } else {
+            Some(document)
         };
         cx.notify();
     }
@@ -685,5 +745,83 @@ mod layout_helper_tests {
         selected.insert("qidi".to_string());
         assert!(!empty_target_notice_visible(&rows, &selected));
         assert!(empty_target_notice_visible(&[], &BTreeSet::new()));
+    }
+}
+
+#[cfg(test)]
+mod about_tests {
+    use super::desktop_i18n::Locale;
+    use super::{developer_mode_enabled, AboutDocument, ABOUT_INSTALLED_VERSION};
+    use serde_json::json;
+
+    const ABOUT_KEYS: &[&str] = &[
+        "aboutOpen",
+        "aboutTitle",
+        "aboutSubtitle",
+        "aboutVersion",
+        "aboutDevTitle",
+        "aboutDevWarning",
+        "aboutDevButton",
+        "aboutDevOn",
+        "aboutDevOff",
+        "aboutDevUnavailable",
+        "aboutLicense",
+        "aboutLicenseSummary",
+        "aboutCredits",
+        "aboutCreditBl",
+        "aboutCreditWails",
+        "aboutCreditVendor",
+        "aboutFullLicense",
+        "aboutFullCredits",
+        "aboutHideDocument",
+        "aboutSource",
+        "aboutReleases",
+        "aboutLinksUnavailable",
+        "aboutOffline",
+        "aboutClose",
+    ];
+
+    #[test]
+    fn developer_mode_is_on_only_for_explicit_native_true() {
+        assert!(developer_mode_enabled(
+            &json!({"ok":true,"data":{"developerMode":true}})
+        ));
+        assert!(!developer_mode_enabled(
+            &json!({"ok":true,"data":{"developerMode":"true"}})
+        ));
+        assert!(!developer_mode_enabled(&json!({"ok":true,"data":{}})));
+        assert!(!developer_mode_enabled(
+            &json!({"ok":false,"data":{"developerMode":true}})
+        ));
+        assert!(!developer_mode_enabled(&json!({"ok":true,"data":null})));
+    }
+
+    #[test]
+    fn installed_version_matches_stable_go_app_version() {
+        let go = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../native/updates_bridge.go"
+        ));
+        assert!(go.contains(&format!("var appVersion = \"{ABOUT_INSTALLED_VERSION}\"")));
+    }
+
+    #[test]
+    fn bundled_documents_are_the_embedded_license_and_notices() {
+        assert!(AboutDocument::License
+            .text()
+            .contains("GNU GENERAL PUBLIC LICENSE"));
+        assert!(AboutDocument::Credits.text().contains("bl2std"));
+        assert!(AboutDocument::Credits.text().contains("Wails"));
+    }
+
+    #[test]
+    fn about_copy_exists_in_both_locales() {
+        for key in ABOUT_KEYS {
+            assert_ne!(Locale::He.text(key), *key, "he {key}");
+            assert_ne!(Locale::En.text(key), *key, "en {key}");
+        }
+        assert_eq!(Locale::He.text("aboutOpen"), "אודות");
+        assert_eq!(Locale::En.text("aboutTitle"), "About SliceBridge");
+        assert_eq!(Locale::En.text("aboutDevOff"), "Off");
     }
 }

@@ -255,9 +255,8 @@ pub(super) fn render_window(
                 )
                 .child(
                     Button::new("about")
-                        .disabled(true) // About dialog is still awaiting 1:1 port.
-                        .label(if rtl { "אודות" } else { "About" })
-                        .on_click(cx.listener(|this, _, _, cx| unavailable(this, "About", cx))),
+                        .label(label(locale, "aboutOpen"))
+                        .on_click(cx.listener(|this, _, _, cx| this.open_about(cx))),
                 )
                 .child(
                     line(false)
@@ -941,5 +940,294 @@ pub(super) fn render_window(
     if view.settings_open {
         root = root.child(view.render_settings(cx));
     }
+    if view.about_open {
+        root = root.child(render_about(view, cx));
+    }
     root
+}
+
+// Mirrors index.html #aboutDialog and about.js: same copy, sections and order, with
+// developer mode shown read-only and links disabled until those native paths are ported.
+fn render_about(view: &SliceBridgeWindow, cx: &mut Context<SliceBridgeWindow>) -> impl IntoElement {
+    let locale = view.locale;
+    let rtl = locale.rtl();
+    let shown = view.about_document;
+    let version = format!("v{ABOUT_INSTALLED_VERSION}");
+    let developer_state = label(
+        locale,
+        if view.about_developer_mode {
+            "aboutDevOn"
+        } else {
+            "aboutDevOff"
+        },
+    );
+
+    let header = line(rtl)
+        .items_center()
+        .justify_between()
+        .px_5()
+        .py_4()
+        .border_b_1()
+        .border_color(rgb(0xEBEFED))
+        .child(
+            align_text(div().flex().flex_col().gap_1(), rtl)
+                .child(
+                    div()
+                        .text_lg()
+                        .text_color(rgb(INK))
+                        .child(label(locale, "aboutTitle")),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(MUTED))
+                        .child(label(locale, "aboutSubtitle")),
+                ),
+        )
+        .child(
+            Button::new("close-about-x")
+                .label("×")
+                .on_click(cx.listener(|this, _, _, cx| this.close_about(cx))),
+        );
+
+    let identity = line(rtl)
+        .items_center()
+        .gap_3()
+        .child(
+            img(brand_mark())
+                .w(px(50.))
+                .h(px(50.))
+                .object_fit(ObjectFit::Contain),
+        )
+        .child(div().text_sm().text_color(rgb(INK)).child("SliceBridge"));
+
+    let version_card = panel()
+        .p_4()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .text_sm()
+                .text_color(rgb(INK))
+                .child(label(locale, "aboutVersion")),
+        )
+        .child(div().text_sm().text_color(rgb(MUTED)).child(version));
+
+    let developer_card = panel()
+        .p_4()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            line(rtl)
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .child(
+                    align_text(div().flex().flex_col().gap_1(), rtl)
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(rgb(INK))
+                                .child(label(locale, "aboutDevTitle")),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(MUTED))
+                                .child(label(locale, "aboutDevWarning")),
+                        ),
+                )
+                .child(
+                    Button::new("about-developer-toggle")
+                        .disabled(true)
+                        .label(format!(
+                            "{} · {}",
+                            label(locale, "aboutDevButton"),
+                            developer_state
+                        )),
+                ),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(rgb(MUTED))
+                .child(label(locale, "aboutDevUnavailable")),
+        );
+
+    let mut license_card = panel()
+        .p_4()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .text_sm()
+                .text_color(rgb(INK))
+                .child(label(locale, "aboutLicense")),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(rgb(MUTED))
+                .child(label(locale, "aboutLicenseSummary")),
+        )
+        .child(
+            div()
+                .text_sm()
+                .text_color(rgb(INK))
+                .child(label(locale, "aboutCredits")),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(rgb(MUTED))
+                .child(label(locale, "aboutCreditBl")),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(rgb(MUTED))
+                .child(label(locale, "aboutCreditWails")),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(rgb(MUTED))
+                .child(label(locale, "aboutCreditVendor")),
+        )
+        .child(
+            line(rtl)
+                .gap_2()
+                .child(
+                    Button::new("about-license-document")
+                        .label(label(
+                            locale,
+                            if shown == Some(AboutDocument::License) {
+                                "aboutHideDocument"
+                            } else {
+                                "aboutFullLicense"
+                            },
+                        ))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.toggle_about_document(AboutDocument::License, cx);
+                        })),
+                )
+                .child(
+                    Button::new("about-credits-document")
+                        .label(label(
+                            locale,
+                            if shown == Some(AboutDocument::Credits) {
+                                "aboutHideDocument"
+                            } else {
+                                "aboutFullCredits"
+                            },
+                        ))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.toggle_about_document(AboutDocument::Credits, cx);
+                        })),
+                ),
+        );
+    if let Some(document) = shown {
+        let mut text = div()
+            .id("about-legal-document")
+            .max_h(px(260.))
+            .overflow_y_scroll()
+            .p_3()
+            .rounded_md()
+            .bg(rgb(PANEL_MUTED))
+            .flex()
+            .flex_col();
+        for text_line in document.text().lines() {
+            let text_line = if text_line.is_empty() { " " } else { text_line };
+            text = text.child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(INK))
+                    .child(text_line.to_string()),
+            );
+        }
+        license_card = license_card.child(text);
+    }
+
+    let links = line(rtl)
+        .gap_2()
+        .child(
+            Button::new("about-source")
+                .disabled(true)
+                .label(label(locale, "aboutSource")),
+        )
+        .child(
+            Button::new("about-releases")
+                .disabled(true)
+                .label(label(locale, "aboutReleases")),
+        );
+
+    let body = div()
+        .id("about-scroll")
+        .flex_1()
+        .min_h(px(0.))
+        .overflow_y_scroll()
+        .p_5()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .child(identity)
+        .child(version_card)
+        .child(developer_card)
+        .child(license_card)
+        .child(links)
+        .child(
+            div()
+                .text_xs()
+                .text_color(rgb(MUTED))
+                .child(label(locale, "aboutLinksUnavailable")),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(rgb(MUTED))
+                .child(label(locale, "aboutOffline")),
+        );
+
+    let footer = line(rtl)
+        .justify_end()
+        .px_5()
+        .py_3()
+        .border_t_1()
+        .border_color(rgb(STROKE))
+        .child(
+            Button::new("close-about")
+                .primary()
+                .label(label(locale, "aboutClose"))
+                .on_click(cx.listener(|this, _, _, cx| this.close_about(cx))),
+        );
+
+    div()
+        .id("aboutDialog")
+        .absolute()
+        .inset_0()
+        .occlude()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(rgba(0x193F387F))
+        .child(
+            div()
+                .id("aboutFrame")
+                .w(px(760.))
+                .max_w(relative(0.94))
+                .h(relative(0.86))
+                .bg(rgb(WHITE))
+                .rounded_lg()
+                .border_1()
+                .border_color(rgb(STROKE))
+                .overflow_hidden()
+                .flex()
+                .flex_col()
+                .child(header)
+                .child(body)
+                .child(footer),
+        )
 }
