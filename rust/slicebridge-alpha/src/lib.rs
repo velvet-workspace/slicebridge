@@ -444,7 +444,10 @@ impl Registry {
                     &requested_nozzle,
                     source_diameter,
                 )?;
-                let bundle = oem::resolve(&target, &nozzle, &overrides)?;
+                let slicer = saved["printers"][&target]["slicer"]
+                    .as_str()
+                    .unwrap_or("auto");
+                let bundle = oem::resolve_configured(&target, &nozzle, slicer, &overrides)?;
                 let verified = validate_native_autonomous_input(&bundle, &source)?;
                 let label = verified["printer"]
                     .as_str()
@@ -547,7 +550,7 @@ impl Registry {
             "material.select" => {
                 let material = arg(params, "material")?.to_string();
                 let preset = arg(params, "preset")?.to_string();
-                let (target, nozzle, source, mut overrides) = {
+                let (target, nozzle, source, mut overrides, slicer_id) = {
                     let state = self.state.lock().map_err(|e| e.to_string())?;
                     if busy(&state) {
                         return Err("cannot change materials while converting".into());
@@ -563,12 +566,18 @@ impl Registry {
                         state.nozzle.clone().ok_or("no installed nozzle")?,
                         state.source.clone().ok_or("no selected source")?,
                         state.selected_materials.clone(),
+                        state
+                            .bundle
+                            .as_ref()
+                            .and_then(|bundle| bundle["slicer_id"].as_str())
+                            .ok_or("installed source slicer missing")?
+                            .to_owned(),
                     )
                 };
                 overrides.insert(material.clone(), preset.clone());
-                // Rebuild the entire bundle from the same installed OEM inheritance;
-                // no display-only state or copied vendor material constants.
-                let bundle = oem::resolve(&target, &nozzle, &overrides)?;
+                // Rebuild from the SAME installed slicer that owns the selected
+                // OEM. Another vendor/fork may expose a different preset leaf.
+                let bundle = oem::resolve_configured(&target, &nozzle, &slicer_id, &overrides)?;
                 let verified = validate_native_autonomous_input(&bundle, &source)?;
                 let mut state = self.state.lock().map_err(|e| e.to_string())?;
                 if busy(&state)
@@ -635,7 +644,12 @@ impl Registry {
                 if !output.is_file() {
                     return Err("converted output is missing".into());
                 }
-                let slicer = oem::installed_executable(target, nozzle)?;
+                let slicer_id = state
+                    .bundle
+                    .as_ref()
+                    .and_then(|bundle| bundle["slicer_id"].as_str())
+                    .ok_or("selected OEM slicer identity missing")?;
+                let slicer = oem::installed_executable_configured(target, nozzle, slicer_id)?;
                 drop(state);
                 launch_slicer(&slicer, &output)?;
                 Ok(json!({"launched":true,"slicer":slicer.to_string_lossy(),

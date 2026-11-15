@@ -1002,7 +1002,17 @@ impl Registry {
             }
         }
         let settings = printer_settings::current()?;
-        let items = prepare_multi_batch(&sources, &targets, &settings, oem::resolve)?;
+        let items = prepare_multi_batch(
+            &sources,
+            &targets,
+            &settings,
+            |target, nozzle, overrides| {
+                let slicer = settings["printers"][target]["slicer"]
+                    .as_str()
+                    .unwrap_or("auto");
+                oem::resolve_configured(target, nozzle, slicer, overrides)
+            },
+        )?;
         let cancel = Arc::new(AtomicBool::new(false));
         {
             let mut session = self.state.lock().map_err(|e| e.to_string())?;
@@ -1134,7 +1144,17 @@ impl Registry {
         // No writes or converter process here. The original Go batch resolves
         // each file's source nozzle independently, not just the first source.
         let settings = printer_settings::current()?;
-        let items = prepare_batch(&sources, &target, &settings, oem::resolve)?;
+        let items = prepare_batch(
+            &sources,
+            &target,
+            &settings,
+            |printer, nozzle, overrides| {
+                let slicer = settings["printers"][printer]["slicer"]
+                    .as_str()
+                    .unwrap_or("auto");
+                oem::resolve_configured(printer, nozzle, slicer, overrides)
+            },
+        )?;
         let batch_nozzle = if items
             .iter()
             .all(|ready| ready.item.nozzle == items[0].item.nozzle)

@@ -215,30 +215,14 @@ fn native_profile_verifier(
     slicer: &str,
     preset: Option<(&str, &str)>,
 ) -> Result<(), String> {
-    let verified_owner = match target {
-        "u1" => "snapmaker-orca",
-        "qidi" => "qidi-studio",
-        _ => {
-            return Err(format!(
-                "installed profile validation for {target} has not been ported"
-            ))
-        }
-    };
-    if slicer != "auto" && slicer != verified_owner {
-        return Err(format!(
-            "slicer {slicer} has no verified Rust installed-profile resolver"
-        ));
+    let mut selected = std::collections::BTreeMap::new();
+    if let Some((material, name)) = preset {
+        selected.insert(material.to_owned(), name.to_owned());
     }
-    match preset {
-        Some((material, name)) => {
-            let installed = crate::oem::choices(target, nozzle, material)?;
-            if !installed.iter().any(|item| item == name) {
-                return Err(format!("{material} preset {name:?} is not a verified installed {target} {nozzle}mm preset"));
-            }
-            Ok(())
-        }
-        None => crate::oem::resolve(target, nozzle, &std::collections::BTreeMap::new()).map(|_| ()),
-    }
+    // Validate through the selected installed vendor/fork, never through a
+    // different source chosen by auto. This also covers Creator5, CC2 and
+    // genuine OrcaSlicer fallback without any generated profiles.
+    crate::oem::resolve_configured(target, nozzle, slicer, &selected).map(|_| ())
 }
 
 fn validate_for_save(
@@ -396,28 +380,26 @@ pub fn profile_choice(
     target: &str,
     requested_nozzle: &str,
 ) -> Result<(String, std::collections::BTreeMap<String, String>), String> {
-    let (_, valid_nozzles, _) = TARGETS
+    let (_, valid_nozzles, valid_slicers) = TARGETS
         .iter()
         .find(|entry| entry.0 == target)
         .ok_or("unknown selected target")?;
     let pref = &settings["printers"][target];
     let saved_nozzle = pref["nozzle"].as_str().unwrap_or("auto");
     let slicer = pref["slicer"].as_str().unwrap_or("auto");
-    if slicer != "auto" {
-        let native = match target {
-            "u1" => "snapmaker-orca",
-            "qidi" => "qidi-studio",
-            _ => {
-                return Err(format!(
-                    "{target} selected slicer has no verified Rust resolver yet"
-                ))
-            }
-        };
-        if slicer != native {
-            return Err(format!(
-                "saved slicer {slicer} does not have a verified installed Rust resolver"
-            ));
-        }
+    if !valid_slicers.contains(&slicer) {
+        return Err(format!("saved slicer {slicer} is not valid for {target}"));
+    }
+    if slicer == "system"
+        && std::env::var_os(format!(
+            "BRIDGE_SLICER_PROFILE_{}",
+            target.to_ascii_uppercase()
+        ))
+        .is_none()
+    {
+        return Err(format!(
+            "{target}: system slicer override is not configured"
+        ));
     }
     if requested_nozzle != "auto" && saved_nozzle != "auto" && requested_nozzle != saved_nozzle {
         return Err(format!("requested {requested_nozzle}mm nozzle differs from saved physical {saved_nozzle}mm nozzle"));
@@ -474,24 +456,16 @@ pub fn options(target: &str, nozzle: &str, slicer: &str, material: &str) -> Resu
     if !["PLA", "PETG", "ABS", "ASA", "TPU"].contains(&material) {
         return Err(format!("invalid material {material}"));
     }
-    // The original frontend renders all known choices and disables absent ones.
-    // Here installed=true is issued only by the existing Rust OEM validator.
-    let candidates: &[(&str, &str)] = match target {
-        "u1" => &[("snapmaker-orca", "Snapmaker Orca")],
-        "qidi" => &[("qidi-studio", "QIDIStudio"), ("orca-slicer", "OrcaSlicer")],
-        "c5" => &[("flash-studio", "Flash Studio Desktop")],
-        "cc2" => &[("elegoo-slicer", "ElegooSlicer")],
-        _ => &[],
-    };
-    let slicers: Vec<Value> = candidates.iter().map(|(id,name)| {
-        json!({"id":id, "name":name, "installed":native_profile_verifier(target,current_nozzle,id,None).is_ok()})
-    }).collect();
+    // Source-locked installed slicer identities, including a trusted
+    // BRIDGE_SLICER_PROFILE_* "system" choice when it replaces app discovery.
+    // Never advertise a different app while an explicit override is active.
+    let slicers = crate::oem::slicer_options(target, current_nozzle)?;
     let usable = slicer == "auto"
-        || candidates.iter().any(|(id, _)| {
-            *id == slicer && native_profile_verifier(target, current_nozzle, slicer, None).is_ok()
-        });
+        || slicers
+            .iter()
+            .any(|row| row["id"] == slicer && row["installed"] == true);
     let filaments = if usable && nozzle != "auto" && !nozzle.is_empty() {
-        crate::oem::choices(target, current_nozzle, material).unwrap_or_default()
+        crate::oem::choices_configured(target, current_nozzle, slicer, material).unwrap_or_default()
     } else {
         Vec::new()
     };
@@ -736,16 +710,43 @@ mod tests {
         );
     }
     #[test]
-    fn options_do_not_claim_uninstalled_or_unported_profile_support() {
+    fn options_report_installed_profile_readiness_without_inventing_slicers() {
         let c5 = options("c5", "0.4", "auto", "PLA").unwrap();
-        assert!(c5["slicers"]
-            .as_array()
-            .unwrap()
+        let slicers = c5["slicers"].as_array().unwrap();
+        assert!(slicers
             .iter()
-            .all(|item| item["installed"] == false));
-        assert_eq!(c5["filaments"], json!([]));
+            .all(|row| { row["id"] == "flash-studio" || row["id"] == "system" }));
+        for row in slicers {
+            let id = row["id"].as_str().unwrap();
+            assert_eq!(
+                row["installed"] == true,
+                native_profile_verifier("c5", "0.4", id, None).is_ok()
+            );
+        }
+        if !slicers.iter().any(|row| row["installed"] == true) {
+            assert_eq!(c5["filaments"], json!([]));
+        }
         assert!(options("u1", "0.25", "auto", "PLA").is_err());
         assert!(options("qidi", "0.4", "auto", "RESIN").is_err());
+    }
+
+    #[test]
+    fn explicit_saved_slicer_selection_keeps_valid_source_nozzle_mapping() {
+        let mut saved = defaults();
+        saved["printers"]["qidi"]["slicer"] = json!("orca-slicer");
+        saved["printers"]["qidi"]["nozzle"] = json!("auto");
+        let chosen = profile_choice_for_source(&saved, "qidi", "auto", "0.25").unwrap();
+        assert_eq!(chosen.0, "0.2");
+        assert_eq!(saved["printers"]["qidi"]["slicer"], "orca-slicer");
+        saved["printers"]["c5"]["slicer"] = json!("flash-studio");
+        assert_eq!(
+            profile_choice_for_source(&saved, "c5", "auto", "0.2")
+                .unwrap()
+                .0,
+            "0.25"
+        );
+        saved["printers"]["qidi"]["slicer"] = json!("invented");
+        assert!(profile_choice_for_source(&saved, "qidi", "auto", "0.4").is_err());
     }
 
     #[test]

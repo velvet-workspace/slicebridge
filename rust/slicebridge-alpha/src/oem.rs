@@ -15,8 +15,6 @@ struct Target {
     machine: &'static str,
     process: &'static str,
     vendor: &'static str,
-    app: &'static str,
-    exe: &'static str,
     slicer: &'static str,
 }
 const TARGETS: [Target; 16] = [
@@ -28,8 +26,6 @@ const TARGETS: [Target; 16] = [
         machine: "Flashforge Creator 5 0.25 nozzle",
         process: "0.12mm Standard @FF C5 0.25 nozzle",
         vendor: "Flashforge",
-        app: "Flashforge/Flash Studio Desktop",
-        exe: "flash studio.exe",
         slicer: "Flash Studio Desktop",
     },
     Target {
@@ -40,8 +36,6 @@ const TARGETS: [Target; 16] = [
         machine: "Flashforge Creator 5 0.4 nozzle",
         process: "0.20mm Standard @FF C5",
         vendor: "Flashforge",
-        app: "Flashforge/Flash Studio Desktop",
-        exe: "flash studio.exe",
         slicer: "Flash Studio Desktop",
     },
     Target {
@@ -52,8 +46,6 @@ const TARGETS: [Target; 16] = [
         machine: "Flashforge Creator 5 0.6 nozzle",
         process: "0.30mm Standard @FF C5 0.6 nozzle",
         vendor: "Flashforge",
-        app: "Flashforge/Flash Studio Desktop",
-        exe: "flash studio.exe",
         slicer: "Flash Studio Desktop",
     },
     Target {
@@ -64,8 +56,6 @@ const TARGETS: [Target; 16] = [
         machine: "Flashforge Creator 5 0.8 nozzle",
         process: "0.32mm Standard @FF C5 0.8 nozzle",
         vendor: "Flashforge",
-        app: "Flashforge/Flash Studio Desktop",
-        exe: "flash studio.exe",
         slicer: "Flash Studio Desktop",
     },
     Target {
@@ -76,8 +66,6 @@ const TARGETS: [Target; 16] = [
         machine: "Elegoo Centauri Carbon 2 0.2 nozzle",
         process: "0.10mm Standard @Elegoo CC2 0.2 nozzle",
         vendor: "Elegoo",
-        app: "ElegooSlicer",
-        exe: "elegoo-slicer.exe",
         slicer: "ElegooSlicer",
     },
     Target {
@@ -88,8 +76,6 @@ const TARGETS: [Target; 16] = [
         machine: "Elegoo Centauri Carbon 2 0.4 nozzle",
         process: "0.20mm Standard @Elegoo CC2 0.4 nozzle",
         vendor: "Elegoo",
-        app: "ElegooSlicer",
-        exe: "elegoo-slicer.exe",
         slicer: "ElegooSlicer",
     },
     Target {
@@ -100,8 +86,6 @@ const TARGETS: [Target; 16] = [
         machine: "Elegoo Centauri Carbon 2 0.6 nozzle",
         process: "0.30mm Standard @Elegoo CC2 0.6 nozzle",
         vendor: "Elegoo",
-        app: "ElegooSlicer",
-        exe: "elegoo-slicer.exe",
         slicer: "ElegooSlicer",
     },
     Target {
@@ -112,8 +96,6 @@ const TARGETS: [Target; 16] = [
         machine: "Elegoo Centauri Carbon 2 0.8 nozzle",
         process: "0.40mm Standard @Elegoo CC2 0.8 nozzle",
         vendor: "Elegoo",
-        app: "ElegooSlicer",
-        exe: "elegoo-slicer.exe",
         slicer: "ElegooSlicer",
     },
     Target {
@@ -124,8 +106,6 @@ const TARGETS: [Target; 16] = [
         machine: "Snapmaker U1 (0.2 nozzle)",
         process: "0.12mm Standard @Snapmaker U1 (0.2 nozzle)",
         vendor: "Snapmaker",
-        app: "Snapmaker_Orca",
-        exe: "snapmaker-orca.exe",
         slicer: "Snapmaker Orca",
     },
     Target {
@@ -136,8 +116,6 @@ const TARGETS: [Target; 16] = [
         machine: "Snapmaker U1 (0.4 nozzle)",
         process: "0.20mm Standard @Snapmaker U1 (0.4 nozzle)",
         vendor: "Snapmaker",
-        app: "Snapmaker_Orca",
-        exe: "snapmaker-orca.exe",
         slicer: "Snapmaker Orca",
     },
     Target {
@@ -148,8 +126,6 @@ const TARGETS: [Target; 16] = [
         machine: "Snapmaker U1 (0.6 nozzle)",
         process: "0.30mm Standard @Snapmaker U1 (0.6 nozzle)",
         vendor: "Snapmaker",
-        app: "Snapmaker_Orca",
-        exe: "snapmaker-orca.exe",
         slicer: "Snapmaker Orca",
     },
     Target {
@@ -160,8 +136,6 @@ const TARGETS: [Target; 16] = [
         machine: "Snapmaker U1 (0.8 nozzle)",
         process: "0.40mm Standard @Snapmaker U1 (0.8 nozzle)",
         vendor: "Snapmaker",
-        app: "Snapmaker_Orca",
-        exe: "snapmaker-orca.exe",
         slicer: "Snapmaker Orca",
     },
     Target {
@@ -172,8 +146,6 @@ const TARGETS: [Target; 16] = [
         machine: "X-Plus 5 0.2 nozzle",
         process: "0.10mm Standard @X-Plus 5 0.2 nozzle",
         vendor: "X 5 Series",
-        app: "QIDIStudio",
-        exe: "qidi-studio.exe",
         slicer: "QIDIStudio",
     },
     Target {
@@ -184,8 +156,6 @@ const TARGETS: [Target; 16] = [
         machine: "X-Plus 5 0.4 nozzle",
         process: "0.20mm Standard @X-Plus 5",
         vendor: "X 5 Series",
-        app: "QIDIStudio",
-        exe: "qidi-studio.exe",
         slicer: "QIDIStudio",
     },
     Target {
@@ -196,8 +166,6 @@ const TARGETS: [Target; 16] = [
         machine: "X-Plus 5 0.6 nozzle",
         process: "0.30mm Standard @X-Plus 5 0.6 nozzle",
         vendor: "X 5 Series",
-        app: "QIDIStudio",
-        exe: "qidi-studio.exe",
         slicer: "QIDIStudio",
     },
     Target {
@@ -208,8 +176,6 @@ const TARGETS: [Target; 16] = [
         machine: "X-Plus 5 0.8 nozzle",
         process: "0.40mm Standard @X-Plus 5 0.8 nozzle",
         vendor: "X 5 Series",
-        app: "QIDIStudio",
-        exe: "qidi-studio.exe",
         slicer: "QIDIStudio",
     },
 ];
@@ -226,69 +192,167 @@ fn spec(target: &str, nozzle: &str) -> Result<Target, String> {
         })
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Location {
+    id: &'static str,
+    name: &'static str,
     root: PathBuf,
     executable: PathBuf,
 }
 
-fn locations(item: Target) -> Vec<Location> {
+type AppInstall = (&'static str, &'static str, &'static str, &'static str);
+
+// Read-only, deterministic port of native/presets/options.go::appGroups +
+// slicerLocationsForOS. Every vendor app across ALL trusted installation bases
+// precedes a generic Orca fallback. Never scan arbitrary disks or Bambu Studio
+// for destination profiles.
+fn candidate_locations(
+    target: &str,
+    platform: &str,
+    bases: &[PathBuf],
+    override_root: Option<&Path>,
+) -> Vec<Location> {
+    if !["u1", "c5", "cc2", "qidi"].contains(&target) {
+        return Vec::new();
+    }
+    if let Some(root) = override_root {
+        return vec![Location {
+            id: "system",
+            name: "Custom local profile",
+            root: root.to_path_buf(),
+            executable: PathBuf::new(),
+        }];
+    }
+    let groups: Vec<Vec<AppInstall>> = match (platform, target) {
+        ("windows", "u1") => vec![vec![(
+            "snapmaker-orca",
+            "Snapmaker Orca",
+            "Snapmaker_Orca",
+            "snapmaker-orca.exe",
+        )]],
+        ("windows", "c5") => vec![vec![(
+            "flash-studio",
+            "Flash Studio Desktop",
+            "Flashforge/Flash Studio Desktop",
+            "flash studio.exe",
+        )]],
+        ("windows", "cc2") => vec![vec![(
+            "elegoo-slicer",
+            "ElegooSlicer",
+            "ElegooSlicer",
+            "elegoo-slicer.exe",
+        )]],
+        ("windows", "qidi") => vec![
+            vec![("qidi-studio", "QIDIStudio", "QIDIStudio", "QIDIStudio.exe")],
+            vec![("orca-slicer", "OrcaSlicer", "OrcaSlicer", "orca-slicer.exe")],
+        ],
+        ("macos", "u1") => vec![vec![(
+            "snapmaker-orca",
+            "Snapmaker Orca",
+            "Snapmaker Orca",
+            "",
+        )]],
+        ("macos", "c5") => vec![vec![
+            ("flash-studio", "Flash Studio", "Flash Studio", ""),
+            (
+                "flash-studio",
+                "Flash Studio Desktop",
+                "Flash Studio Desktop",
+                "",
+            ),
+        ]],
+        ("macos", "cc2") => vec![vec![("elegoo-slicer", "ElegooSlicer", "ElegooSlicer", "")]],
+        ("macos", "qidi") => vec![
+            vec![("qidi-studio", "QIDIStudio", "QIDIStudio", "")],
+            vec![("orca-slicer", "OrcaSlicer", "OrcaSlicer", "")],
+        ],
+        _ => vec![],
+    };
     let mut result = Vec::new();
-    if cfg!(windows) {
-        let mut bases: Vec<PathBuf> = [
-            std::env::var_os("ProgramFiles"),
-            std::env::var_os("ProgramFiles(x86)"),
-        ]
-        .into_iter()
-        .flatten()
-        .map(PathBuf::from)
-        .collect();
-        if bases.is_empty() {
-            bases.push(PathBuf::from(r"C:\Program Files"));
-        }
-        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-            bases.push(PathBuf::from(local).join("Programs"));
-        }
+    for group in groups {
         for base in bases {
-            let app = base.join(item.app);
-            result.push(Location {
-                executable: app.join(item.exe),
-                root: app.join("resources").join("profiles"),
-            });
-        }
-    } else if cfg!(target_os = "macos") {
-        let applications = [PathBuf::from("/Applications"), dirs_user_applications()];
-        let apps: &[&str] = match item.id {
-            "u1" => &["Snapmaker Orca.app"],
-            "c5" => &["Flash Studio.app", "Flash Studio Desktop.app"],
-            "cc2" => &["ElegooSlicer.app"],
-            "qidi" => &["QIDIStudio.app", "OrcaSlicer.app"],
-            _ => &[],
-        };
-        // Go checks each alternate install name within each trusted base.
-        // These are profile reads only; no launcher/process is started.
-        for base in applications {
-            for app in apps {
-                let bundle = base.join(app);
+            for (id, name, folder, exe) in &group {
+                let app = base.join(folder);
+                let (root, executable) = if platform == "windows" {
+                    (app.join("resources").join("profiles"), app.join(exe))
+                } else {
+                    let bundle = base.join(format!("{folder}.app"));
+                    (
+                        bundle.join("Contents").join("Resources").join("profiles"),
+                        bundle,
+                    )
+                };
                 result.push(Location {
-                    executable: bundle.clone(),
-                    root: bundle.join("Contents").join("Resources").join("profiles"),
+                    id,
+                    name,
+                    root,
+                    executable,
                 });
             }
         }
     }
     result
 }
-#[cfg(target_os = "macos")]
-fn dirs_user_applications() -> PathBuf {
-    std::env::var_os("HOME")
+
+fn locations(item: Target) -> Vec<Location> {
+    let (platform, bases) = if cfg!(windows) {
+        let mut bases: Vec<PathBuf> = [
+            std::env::var_os("ProgramFiles"),
+            std::env::var_os("ProgramFiles(x86)"),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_default()
-        .join("Applications")
+        .collect();
+        if bases.is_empty() {
+            bases.push(PathBuf::from(r"C:\Program Files"));
+        }
+        if let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|x| !x.is_empty()) {
+            bases.push(PathBuf::from(local).join("Programs"));
+        }
+        ("windows", bases)
+    } else if cfg!(target_os = "macos") {
+        let mut bases = vec![PathBuf::from("/Applications")];
+        if let Some(home) = std::env::var_os("HOME").filter(|x| !x.is_empty()) {
+            bases.push(PathBuf::from(home).join("Applications"));
+        }
+        ("macos", bases)
+    } else {
+        ("unsupported", vec![])
+    };
+    let override_root = std::env::var_os(format!(
+        "BRIDGE_SLICER_PROFILE_{}",
+        item.id.to_ascii_uppercase()
+    ))
+    .filter(|path| !path.is_empty())
+    .map(PathBuf::from);
+    candidate_locations(item.id, platform, &bases, override_root.as_deref())
 }
-#[cfg(not(target_os = "macos"))]
-fn dirs_user_applications() -> PathBuf {
-    PathBuf::new()
+
+// The original QIDIStudio Windows install can contain either of these two
+// fixed executable names. No arbitrary executable lookup or shell execution.
+fn candidate_executable(location: &Location) -> Option<PathBuf> {
+    if location.id == "system" {
+        return None;
+    }
+    let trusted = |path: &Path| {
+        fs::symlink_metadata(path).is_ok_and(|metadata| {
+            !metadata.file_type().is_symlink()
+                && ((metadata.is_file() && metadata.len() > 0)
+                    || (cfg!(target_os = "macos") && metadata.is_dir()))
+        })
+    };
+    if trusted(&location.executable) {
+        return Some(location.executable.clone());
+    }
+    if cfg!(windows) && location.id == "qidi-studio" {
+        let alternate = location.executable.with_file_name("qidi-studio.exe");
+        if trusted(&alternate) {
+            return Some(alternate);
+        }
+    }
+    None
 }
 
 // Go "auto" attempts the next trusted OEM location if an earlier
@@ -296,23 +360,58 @@ fn dirs_user_applications() -> PathBuf {
 // machine/process/PLA inheritance. Never fall back to generated profiles.
 fn resolved_location(
     item: Target,
+    slicer_id: &str,
     overrides: &BTreeMap<String, String>,
 ) -> Result<(Location, Value), String> {
+    resolve_from_locations(item, slicer_id, overrides, locations(item))
+}
+
+fn resolve_from_locations(
+    item: Target,
+    slicer_id: &str,
+    overrides: &BTreeMap<String, String>,
+    locations: Vec<Location>,
+) -> Result<(Location, Value), String> {
+    // Unlike auto, an explicit saved slicer MUST NOT silently fall back to
+    // QIDIStudio, Orca, or another user's application. A custom system root
+    // replaces the full location list, exactly as Go does.
+    if slicer_id != "auto" && !locations.iter().any(|loc| loc.id == slicer_id) {
+        return Err(format!(
+            "selected slicer {slicer_id:?} is not a trusted installed profile source for {}",
+            item.id
+        ));
+    }
     let mut failures = Vec::new();
-    for location in locations(item) {
-        if !location.executable.exists() || !location.root.join(item.vendor).is_dir() {
+    for location in locations
+        .into_iter()
+        .filter(|loc| slicer_id == "auto" || loc.id == slicer_id)
+    {
+        if !location.root.is_absolute() {
+            failures.push(format!("invalid relative OEM root for {}", location.name));
+            continue;
+        }
+        if location.id != "system" && candidate_executable(&location).is_none() {
+            continue;
+        }
+        if !location.root.join(item.vendor).is_dir() {
             continue;
         }
         match load_index(&location.root, item.vendor)
             .and_then(|index| resolve_with_index(item, &index, &location.root, overrides))
         {
-            Ok(bundle) => return Ok((location, bundle)),
-            Err(error) => failures.push(error),
+            Ok(mut bundle) => {
+                // The actual vendor-fork identity belongs in the receipt, not
+                // the target's default slicer label.
+                bundle["slicer"] = json!(location.name);
+                bundle["slicer_id"] = json!(location.id);
+                return Ok((location, bundle));
+            }
+            Err(error) => failures.push(format!("{}: {error}", location.name)),
         }
     }
     if failures.is_empty() {
         Err(format!(
-            "installed {} executable and OEM profiles not found",
+            "installed {} source profile {slicer_id:?} not found",
             item.slicer
         ))
     } else {
@@ -674,25 +773,74 @@ pub fn resolve(
     nozzle: &str,
     overrides: &BTreeMap<String, String>,
 ) -> Result<Value, String> {
+    resolve_configured(target, nozzle, "auto", overrides)
+}
+
+pub fn resolve_configured(
+    target: &str,
+    nozzle: &str,
+    slicer_id: &str,
+    overrides: &BTreeMap<String, String>,
+) -> Result<Value, String> {
     let item = spec(target, nozzle)?;
-    let (_, bundle) = resolved_location(item, overrides)?;
+    let (_, bundle) = resolved_location(item, slicer_id, overrides)?;
     Ok(bundle)
 }
+
 pub fn installed_executable(target: &str, nozzle: &str) -> Result<PathBuf, String> {
+    installed_executable_configured(target, nozzle, "auto")
+}
+
+pub fn installed_executable_configured(
+    target: &str,
+    nozzle: &str,
+    slicer_id: &str,
+) -> Result<PathBuf, String> {
     let item = spec(target, nozzle)?;
-    let (location, _) = resolved_location(item, &BTreeMap::new())?;
-    Ok(location.executable)
+    let (location, _) = resolved_location(item, slicer_id, &BTreeMap::new())?;
+    // An owner-supplied profile-root override is NOT an executable.
+    candidate_executable(&location)
+        .ok_or_else(|| "selected system profile has no trusted slicer executable".into())
 }
 
 pub fn choices(target: &str, nozzle: &str, kind: &str) -> Result<Vec<String>, String> {
+    choices_configured(target, nozzle, "auto", kind)
+}
+
+pub fn choices_configured(
+    target: &str,
+    nozzle: &str,
+    slicer_id: &str,
+    kind: &str,
+) -> Result<Vec<String>, String> {
     let item = spec(target, nozzle)?;
     if !["PLA", "PETG", "ABS", "ASA", "TPU"].contains(&kind) {
         return Err("material type unsupported".into());
     }
-    let (location, _) = resolved_location(item, &BTreeMap::new())?;
+    let (location, _) = resolved_location(item, slicer_id, &BTreeMap::new())?;
     let index = load_index(&location.root, item.vendor)?;
     Ok(material_choices(&index, item, kind))
 }
+// Expose the exact trusted slicer IDs and their installed readiness to GPUI.
+// With BRIDGE_SLICER_PROFILE_* set, 'system' is the ONLY valid installed source
+// (there is deliberately no executable path in that override).
+pub fn slicer_options(target: &str, nozzle: &str) -> Result<Vec<Value>, String> {
+    let item = spec(target, nozzle)?;
+    let mut seen = BTreeSet::new();
+    let mut rows = Vec::new();
+    for loc in locations(item) {
+        if seen.insert(loc.id) {
+            let installed = resolve_configured(target, nozzle, loc.id, &BTreeMap::new()).is_ok();
+            rows.push(json!({
+                "id": loc.id,
+                "name": loc.name,
+                "installed": installed
+            }));
+        }
+    }
+    Ok(rows)
+}
+
 pub fn discover() -> Value {
     let mut rows = Vec::new();
     for t in TARGETS {
@@ -727,6 +875,144 @@ mod tests {
         fs::create_dir_all(&path).unwrap();
         path
     }
+    #[test]
+    fn qidi_installed_slicer_candidate_order_matches_go_across_bases() {
+        let windows = [
+            PathBuf::from("C:/Program Files"),
+            PathBuf::from("C:/Program Files (x86)"),
+            PathBuf::from("C:/Users/Tester/AppData/Local/Programs"),
+        ];
+        let candidates = candidate_locations("qidi", "windows", &windows, None);
+        let ids = candidates.iter().map(|loc| loc.id).collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![
+                "qidi-studio",
+                "qidi-studio",
+                "qidi-studio",
+                "orca-slicer",
+                "orca-slicer",
+                "orca-slicer",
+            ]
+        );
+        assert_eq!(
+            candidates[0].root,
+            windows[0].join("QIDIStudio/resources/profiles")
+        );
+        assert_eq!(
+            candidates[3].root,
+            windows[0].join("OrcaSlicer/resources/profiles")
+        );
+        let bases = [
+            PathBuf::from("/Applications"),
+            PathBuf::from("/Users/tester/Applications"),
+        ];
+        let mac = candidate_locations("qidi", "macos", &bases, None);
+        assert_eq!(
+            mac.iter().map(|loc| loc.id).collect::<Vec<_>>(),
+            vec!["qidi-studio", "qidi-studio", "orca-slicer", "orca-slicer"]
+        );
+        assert_eq!(
+            mac[1].executable,
+            PathBuf::from("/Users/tester/Applications/QIDIStudio.app")
+        );
+        let flash = candidate_locations("c5", "macos", &bases, None);
+        assert_eq!(flash.len(), 4);
+        assert_eq!(
+            flash[1].executable,
+            PathBuf::from("/Applications/Flash Studio Desktop.app")
+        );
+        let root = Path::new("/read-only/explicit-profiles");
+        let custom = candidate_locations("qidi", "windows", &windows, Some(root));
+        assert_eq!(custom.len(), 1);
+        assert_eq!(custom[0].id, "system");
+        assert_eq!(custom[0].root, root);
+        assert!(custom[0].executable.as_os_str().is_empty());
+        assert!(candidate_locations("../qidi", "windows", &windows, None).is_empty());
+        assert!(candidate_locations("qidi", "linux", &windows, None).is_empty());
+    }
+
+    #[test]
+    fn explicit_installed_slicer_never_falls_back_to_other_app() {
+        // Both .exe and vendor profiles here are MOCK files under a
+        // disposable test directory. No program or slicer is ever launched.
+        let root = temp_dir();
+        let spec = spec("qidi", "0.4").unwrap();
+        let orca_root = root.join("orca-profiles");
+        make_profile(
+            &orca_root,
+            spec.vendor,
+            "machine",
+            &format!("{}.json", spec.machine),
+            json!({
+                "name":spec.machine, "printer_model":spec.model,
+                "nozzle_diameter":["0.4"]
+            }),
+        );
+        make_profile(
+            &orca_root,
+            spec.vendor,
+            "process",
+            &format!("{}.json", spec.process),
+            json!({"name":spec.process, "layer_height":"0.2"}),
+        );
+        let pla = preferred(spec, "PLA").unwrap();
+        make_profile(
+            &orca_root,
+            spec.vendor,
+            "filament",
+            &format!("{pla}.json"),
+            json!({
+                "name":pla,"filament_type":["PLA"],
+                "compatible_printers":[spec.machine]
+            }),
+        );
+        let installed_orca = root.join("orca-slicer.exe");
+        fs::write(&installed_orca, b"QA fake executable -- never run").unwrap();
+        let installed_vendor = root.join("qidi-studio.exe");
+        fs::write(&installed_vendor, b"QA fake executable -- never run").unwrap();
+        let vendor = Location {
+            id: "qidi-studio",
+            name: "QIDIStudio",
+            root: root.join("missing-qidi-profiles"),
+            executable: installed_vendor,
+        };
+        let orca = Location {
+            id: "orca-slicer",
+            name: "OrcaSlicer",
+            root: orca_root,
+            executable: installed_orca,
+        };
+        let installed = vec![vendor.clone(), orca.clone()];
+        let (_, auto) =
+            resolve_from_locations(spec, "auto", &BTreeMap::new(), installed.clone()).unwrap();
+        assert_eq!(auto["slicer_id"], "orca-slicer");
+        assert_eq!(auto["slicer"], "OrcaSlicer");
+        assert_eq!(auto["target"], "qidi");
+        let (_, explicit_orca) =
+            resolve_from_locations(spec, "orca-slicer", &BTreeMap::new(), installed.clone())
+                .unwrap();
+        assert_eq!(explicit_orca["slicer_id"], "orca-slicer");
+        assert!(
+            resolve_from_locations(spec, "qidi-studio", &BTreeMap::new(), installed.clone())
+                .is_err()
+        );
+        assert!(resolve_from_locations(spec, "system", &BTreeMap::new(), installed).is_err());
+        assert!(resolve_from_locations(
+            spec,
+            "auto",
+            &BTreeMap::new(),
+            vec![Location {
+                id: "system",
+                name: "Custom local profile",
+                root: root.join("missing-custom"),
+                executable: PathBuf::new()
+            }]
+        )
+        .is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn all_sixteen_nozzle_presets_have_exact_vendor_processes() {
         assert_eq!(TARGETS.len(), 16);
