@@ -110,6 +110,19 @@ pub fn compose_project_settings(input: &Value) -> Result<Value, String> {
             settings_ids.push(Value::String(profile_name(profile, "PLA")));
         }
     }
+    // QIDIStudio's installed X-Plus 5 importer renders a wrong (near-black)
+    // virtual filament chip when only filament_colour is supplied, even
+    // though the source JSON correctly declares #FFFFFF. Its own native
+    // project writes the same source palette under filament_multi_colour.
+    // Keep these arrays equal; never substitute OEM palette defaults.
+    if profile.get("name").and_then(Value::as_str) == Some("qidi")
+        && profile.get("printer_model_id").and_then(Value::as_str) == Some("X-Plus 5")
+    {
+        cfg.insert(
+            "filament_multi_colour".to_owned(),
+            Value::Array(colors.clone()),
+        );
+    }
     cfg.insert("filament_colour".to_owned(), Value::Array(colors));
     cfg.insert("filament_type".to_owned(), Value::Array(types));
     cfg.insert(

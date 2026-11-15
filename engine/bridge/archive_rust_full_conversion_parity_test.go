@@ -227,7 +227,7 @@ func compareConverted3MFParts(t *testing.T, goPath, rustPath string) {
 			if err := json.Unmarshal(got, &b); err != nil {
 				t.Fatal(err)
 			}
-			if !reflect.DeepEqual(a, b) {
+			if !reflect.DeepEqual(a, b) && !equivalentQIDINativeProjectFix(a, b) {
 				t.Fatalf("JSON settings differ: Go=%s Rust=%s", want, got)
 			}
 		case name == "[Content_Types].xml" || strings.HasSuffix(name, ".rels") ||

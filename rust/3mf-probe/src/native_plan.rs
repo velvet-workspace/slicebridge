@@ -214,6 +214,72 @@ fn align_c5_support_flags(settings: &mut Map<String, Value>, count: usize) -> Re
     Ok(())
 }
 
+// QIDIStudio resolves every virtual filament against its verified installed
+// preset ID. A lone legacy filament_id scalar mistakenly applies PLA to the
+// final PETG slot; the OEM format instead stores per-slot filament_ids and
+// filament_self_index. The values are never guessed from source colors.
+fn bind_qidi_project_material_identity(
+    project: &mut Map<String, Value>,
+    installed: &Map<String, Value>,
+    slots: &[Value],
+) -> Result<(), String> {
+    if slots.is_empty() || slots.len() > 64 {
+        return Err("QIDI virtual filament count must be 1..64".into());
+    }
+    let mut ids = Vec::with_capacity(slots.len());
+    let mut indices = Vec::with_capacity(slots.len());
+    for (index, slot) in slots.iter().enumerate() {
+        let material = slot
+            .get("type")
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| format!("QIDI slot {} has no verified material type", index + 1))?;
+        let leaf = installed
+            .get(material)
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                format!(
+                    "QIDI slot {} lacks an installed {material:?} material",
+                    index + 1
+                )
+            })?;
+        if leaf
+            .get("filament_type")
+            .and_then(Value::as_array)
+            .and_then(|values| values.first())
+            .and_then(Value::as_str)
+            != Some(material)
+        {
+            return Err(format!(
+                "QIDI slot {} installed filament type does not match {material:?}",
+                index + 1
+            ));
+        }
+        let id = leaf
+            .get("filament_id")
+            .and_then(Value::as_str)
+            .filter(|value| {
+                !value.is_empty()
+                    && value.len() <= 64
+                    && value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+            })
+            .ok_or_else(|| {
+                format!(
+                    "QIDI slot {} lacks a valid installed filament_id",
+                    index + 1
+                )
+            })?;
+        ids.push(json!(id));
+        indices.push(json!((index + 1).to_string()));
+    }
+    project.remove("filament_id");
+    project.insert("filament_ids".to_owned(), Value::Array(ids));
+    project.insert("filament_self_index".to_owned(), Value::Array(indices));
+    Ok(())
+}
+
 /// Builds an experimental, Go rustExplicitPlan-compatible plan entirely in memory.
 ///
 /// Request: {"bundle": flattened verified OEM bundle, "filaments": ordered
@@ -259,6 +325,15 @@ pub fn build_native_conversion_plan(request: &Value) -> Result<Value, String> {
     let settings = profile["project_settings"]
         .as_object_mut()
         .ok_or_else(|| "profile project_settings must be an object".to_owned())?;
+    if target == "qidi" {
+        let installed = request["bundle"]["material_settings"]
+            .as_object()
+            .ok_or_else(|| "QIDI requires verified installed material leaves".to_owned())?;
+        let slots = source["slots"]
+            .as_array()
+            .ok_or_else(|| "QIDI source slots must be an array".to_owned())?;
+        bind_qidi_project_material_identity(settings, installed, slots)?;
+    }
     let slicer = request["bundle"]["slicer"].as_str().unwrap_or_default();
     if target == "c5" && (slicer == "Flash Studio" || slicer == "Flash Studio Desktop") {
         align_c5_support_flags(settings, filament_count.max(4))?;
@@ -329,8 +404,75 @@ mod tests {
         })
     }
 
+    fn qidi_request() -> Value {
+        let mut request = bundle_request();
+        request["bundle"]["target"] = json!("qidi");
+        request["bundle"]["profile"]["name"] = json!("qidi");
+        request["bundle"]["profile"]["display_name"] = json!("X-Plus 5");
+        request["bundle"]["profile"]["printer_model_id"] = json!("X-Plus 5");
+        request["bundle"]["profile"]["project_settings"]["printer_model"] = json!("X-Plus 5");
+        // The old QIDI machine snapshot carries one PLA scalar. The source
+        // palette has five virtual filaments, including a PETG fifth slot.
+        request["bundle"]["profile"]["project_settings"]["filament_id"] = json!("QFA90");
+        for (material, id) in [("PLA", "QFA90"), ("PETG", "QFG90")] {
+            request["bundle"]["material_settings"][material]["filament_id"] = json!(id);
+            request["bundle"]["material_settings"][material]["filament_type"] = json!([material]);
+        }
+        request
+    }
+
     fn plan_error(request: &Value) -> String {
         build_native_conversion_plan(request).unwrap_err()
+    }
+
+    #[test]
+    fn qidi_uses_verified_per_slot_oem_ids_without_overwriting_source_colors() {
+        let request = qidi_request();
+        let before = request.clone();
+        let plan = build_native_conversion_plan(&request).unwrap();
+        let settings = &plan["profile"]["project_settings"];
+        assert_eq!(
+            settings["filament_ids"],
+            json!(["QFA90", "QFA90", "QFA90", "QFA90", "QFG90"])
+        );
+        assert_eq!(
+            settings["filament_self_index"],
+            json!(["1", "2", "3", "4", "5"])
+        );
+        assert!(settings.get("filament_id").is_none());
+        assert_eq!(
+            settings["filament_type"],
+            json!(["PLA", "PLA", "PLA", "PLA", "PETG"])
+        );
+        let completed = compose_project_settings(&plan).unwrap();
+        assert_eq!(
+            completed["filament_colour"],
+            json!(["#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#123456"])
+        );
+        assert_eq!(completed["filament_ids"], settings["filament_ids"]);
+        assert_eq!(
+            completed["filament_self_index"],
+            settings["filament_self_index"]
+        );
+        assert_eq!(
+            completed["filament_multi_colour"],
+            completed["filament_colour"]
+        );
+        assert!(completed.get("filament_id").is_none());
+        assert_eq!(
+            request, before,
+            "source and verified OEM snapshots must remain unchanged"
+        );
+    }
+
+    #[test]
+    fn qidi_invalid_or_missing_material_leaf_id_is_never_guessed() {
+        let mut req = qidi_request();
+        req["bundle"]["material_settings"]["PETG"]["filament_id"] = json!("");
+        assert!(plan_error(&req).contains("lacks a valid installed filament_id"));
+        req["bundle"]["material_settings"]["PETG"]["filament_id"] = json!("QFG90");
+        req["bundle"]["material_settings"]["PETG"]["filament_type"] = json!(["PLA"]);
+        assert!(plan_error(&req).contains("filament type does not match"));
     }
 
     #[test]
@@ -625,7 +767,11 @@ mod tests {
             ("cc2", "Elegoo Centauri Carbon 2"),
             ("qidi", "X-Plus 5"),
         ] {
-            let mut request = bundle_request();
+            let mut request = if target == "qidi" {
+                qidi_request()
+            } else {
+                bundle_request()
+            };
             request["bundle"]["target"] = json!(target);
             request["bundle"]["profile"]["name"] = json!(target);
             request["bundle"]["profile"]["display_name"] = json!(model);
