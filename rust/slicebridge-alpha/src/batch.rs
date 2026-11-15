@@ -19,6 +19,26 @@ struct Item {
     output: PathBuf,
 }
 
+fn parse_sources(params: &Value) -> Result<Vec<PathBuf>, String> {
+    let values = params
+        .get("paths")
+        .and_then(Value::as_array)
+        .ok_or("batch requires paths array")?;
+    if values.is_empty() || values.len() > MAX_BATCH {
+        return Err(format!("batch requires 1..={MAX_BATCH} source files"));
+    }
+    values
+        .iter()
+        .map(|value| {
+            let path = value
+                .as_str()
+                .filter(|s| !s.trim().is_empty())
+                .ok_or("batch paths must be nonempty strings")?;
+            Ok(PathBuf::from(path))
+        })
+        .collect()
+}
+
 fn plan_batch(
     paths: &[PathBuf],
     output_dir: &Path,
@@ -101,7 +121,10 @@ fn update(shared: &Arc<Mutex<Session>>, index: usize, phase: &str, detail: Optio
             }
             if phase == "completed" {
                 let completed = batch["completed"].as_u64().unwrap_or(0);
-                batch["completed"] = json!(completed + 1);
+                let done = completed + 1;
+                batch["completed"] = json!(done);
+                let total = batch["total"].as_u64().unwrap_or(0);
+                batch["progress_percent"] = json!((done * 100).checked_div(total).unwrap_or(0));
             }
         }
     }
@@ -112,6 +135,15 @@ fn finish(shared: &Arc<Mutex<Session>>, phase: &str, error: Option<&str>) {
         if let Some(batch) = session.batch.as_mut() {
             batch["phase"] = json!(phase);
             batch["active_index"] = Value::Null;
+            if phase == "cancelled" || phase == "failed" {
+                if let Some(items) = batch["items"].as_array_mut() {
+                    for item in items {
+                        if item["phase"] == "queued" {
+                            item["phase"] = json!("skipped");
+                        }
+                    }
+                }
+            }
             if let Some(error) = error {
                 batch["error"] = json!(error);
             }
@@ -222,23 +254,73 @@ fn run_batch(
 }
 
 impl Registry {
+    pub(crate) fn batch_stage(&self, params: &Value) -> Result<Value, String> {
+        let paths = parse_sources(params)?;
+        let mut canonical = BTreeSet::new();
+        for path in &paths {
+            if !path.is_file()
+                || !path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("3mf"))
+            {
+                return Err(format!(
+                    "batch stage expects existing .3mf: {}",
+                    path.display()
+                ));
+            }
+            if !canonical.insert(path.canonicalize().map_err(|e| e.to_string())?) {
+                return Err(format!("duplicate batch source: {}", path.display()));
+            }
+        }
+        let mut session = self.state.lock().map_err(|e| e.to_string())?;
+        if busy(&session) {
+            return Err("cannot stage new sources while a conversion is active".into());
+        }
+        session.batch_staged = paths;
+        Ok(json!({"staged":session.batch_staged.len(),
+            "paths":session.batch_staged}))
+    }
+
+    pub(crate) fn batch_directory(&self, params: &Value) -> Result<Value, String> {
+        let path = PathBuf::from(arg(params, "path")?);
+        if !path.is_dir() {
+            return Err("batch directory must exist".into());
+        }
+        let mut session = self.state.lock().map_err(|e| e.to_string())?;
+        if busy(&session) {
+            return Err("cannot change batch directory while a conversion is active".into());
+        }
+        session.batch_output_dir = Some(path.clone());
+        Ok(json!({"output_dir":path}))
+    }
+
+    pub(crate) fn batch_selection(&self) -> Result<Value, String> {
+        let session = self.state.lock().map_err(|e| e.to_string())?;
+        Ok(json!({"paths":session.batch_staged,
+            "output_dir":session.batch_output_dir}))
+    }
+
     pub(crate) fn batch_start(&self, params: &Value) -> Result<Value, String> {
-        let source_values = params
-            .get("paths")
-            .and_then(Value::as_array)
-            .ok_or("batch.start requires paths array")?;
-        if source_values.is_empty() || source_values.len() > MAX_BATCH {
-            return Err(format!("batch requires 1..={MAX_BATCH} sources"));
-        }
-        let mut sources = Vec::new();
-        for value in source_values {
-            let path = value
-                .as_str()
-                .filter(|v| !v.trim().is_empty())
-                .ok_or("batch.paths must contain only nonempty strings")?;
-            sources.push(PathBuf::from(path));
-        }
-        let output_dir = PathBuf::from(arg(params, "output_dir")?);
+        // An explicit batch.start payload remains backwards-compatible with CLI/MCP.
+        // With no payload the same command starts the agent-visible staged selection.
+        let (sources, output_dir) = {
+            let session = self.state.lock().map_err(|e| e.to_string())?;
+            let sources = if params.get("paths").is_some() {
+                parse_sources(params)?
+            } else {
+                session.batch_staged.clone()
+            };
+            let output_dir = if params.get("output_dir").is_some() {
+                PathBuf::from(arg(params, "output_dir")?)
+            } else {
+                session
+                    .batch_output_dir
+                    .clone()
+                    .ok_or("batch output directory not selected")?
+            };
+            (sources, output_dir)
+        };
         let engine = engine_path(params.get("engine").and_then(Value::as_str))?;
         if !engine.is_file() {
             return Err(format!("batch Rust engine missing: {}", engine.display()));
@@ -272,7 +354,7 @@ impl Registry {
             session.batch = Some(json!({
                 "phase":"running",
                 "target":target,"nozzle":nozzle,
-                "total":items.len(),"completed":0,
+                "total":items.len(),"completed":0,"progress_percent":0,
                 "active_index":null,"error":null,
                 "items":items.iter().map(|item|json!({
                     "source":item.source,"output":item.output,
@@ -350,6 +432,62 @@ mod tests {
         assert!(err.contains("collision"), "{err}");
         fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn staging_and_directory_share_agent_registry_without_starting_conversion() {
+        let root = std::env::temp_dir().join(format!("sb-batch-stage-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let one = root.join("one.3mf");
+        fs::write(&one, b"not-a-real-3mf").unwrap();
+        let registry = Registry::new();
+        assert_eq!(
+            registry.execute("batch.stage", &json!({"paths":[one]}))["ok"],
+            true
+        );
+        assert_eq!(
+            registry.execute("batch.directory", &json!({"path":root}))["ok"],
+            true
+        );
+        assert_eq!(
+            registry.execute("batch.selection", &json!({}))["data"]["paths"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            registry.snapshot()["batch_selection"]["paths"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            registry.execute("batch.stage", &json!({"paths":[one,one]}))["ok"],
+            false
+        );
+        assert_eq!(registry.execute("batch.start", &json!({}))["ok"], false);
+        assert!(registry.snapshot()["batch"].is_null());
+        assert!(one.is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn terminal_batch_marks_unprocessed_items_as_skipped() {
+        let shared = Arc::new(Mutex::new(Session::default()));
+        {
+            let mut s = shared.lock().unwrap();
+            s.batch = Some(json!({"phase":"running","active_index":0,
+                "items":[{"phase":"failed"},{"phase":"queued"},{"phase":"queued"}]}));
+        }
+        finish(&shared, "failed", Some("fixture failure"));
+        let s = shared.lock().unwrap();
+        let batch = s.batch.as_ref().unwrap();
+        assert_eq!(batch["items"][1]["phase"], "skipped");
+        assert_eq!(batch["items"][2]["phase"], "skipped");
+        assert_eq!(batch["error"], "fixture failure");
+    }
+
     #[test]
     fn malformed_and_empty_batch_requests_are_rejected() {
         let r = Registry::new();

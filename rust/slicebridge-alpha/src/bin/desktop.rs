@@ -12,8 +12,7 @@ struct SliceBridgeWindow {
     commands: Registry,
     last_message: String,
     destination: Option<String>,
-    batch_sources: Vec<PathBuf>,
-    batch_directory: Option<PathBuf>,
+    destination_source: Option<String>,
 }
 
 impl SliceBridgeWindow {
@@ -24,8 +23,7 @@ impl SliceBridgeWindow {
                 "No UI action yet. Agent / CLI / MCP changes appear in the project fields above."
                     .into(),
             destination: None,
-            batch_sources: Vec::new(),
-            batch_directory: None,
+            destination_source: None,
         }
     }
 
@@ -55,6 +53,10 @@ impl SliceBridgeWindow {
 
     fn run(&mut self, name: &str, args: Value, cx: &mut Context<Self>) {
         let result = self.commands.execute(name, &args);
+        if name == "source.select" && result["ok"] == true {
+            self.destination = None;
+            self.destination_source = None;
+        }
         self.last_message = if result["ok"] == true {
             format!("{name}: {}", result["data"])
         } else {
@@ -93,25 +95,15 @@ impl SliceBridgeWindow {
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = picker.await {
                 let _ = this.update(cx, |view, cx| {
-                    let sources = paths
-                        .into_iter()
-                        .filter(|p| p.extension().and_then(|e| e.to_str())
-                            .is_some_and(|e| e.eq_ignore_ascii_case("3mf")))
-                        .collect::<Vec<_>>();
-                    if sources.is_empty() || sources.len() > 32 {
-                        view.last_message = "Choose between one and 32 .3mf sources.".into();
-                        cx.notify();
-                        return;
-                    }
-                    view.batch_sources = sources;
-                    view.last_message = format!(
-                        "{} batch sources staged. Select a verified OEM printer/nozzle before starting.",
-                        view.batch_sources.len()
-                    );
-                    cx.notify();
+                    let paths: Vec<String> = paths
+                        .iter()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .collect();
+                    view.run("batch.stage", json!({"paths":paths}), cx);
                 });
             }
-        }).detach();
+        })
+        .detach();
     }
 
     fn choose_batch_directory(&mut self, cx: &mut Context<Self>) {
@@ -124,10 +116,9 @@ impl SliceBridgeWindow {
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = picker.await {
                 if let Some(path) = paths.first() {
+                    let path = path.to_string_lossy().to_string();
                     let _ = this.update(cx, |view, cx| {
-                        view.batch_directory = Some(path.clone());
-                        view.last_message = format!("Batch outputs: {}", path.display());
-                        cx.notify();
+                        view.run("batch.directory", json!({"path":path}), cx);
                     });
                 }
             }
@@ -136,22 +127,24 @@ impl SliceBridgeWindow {
     }
 
     fn start_batch(&mut self, cx: &mut Context<Self>) {
-        if self.batch_sources.is_empty() {
-            self.last_message = "Choose batch 3MF sources first.".into();
-            cx.notify();
-            return;
+        self.run("batch.start", json!({}), cx);
+    }
+
+    fn handle_dropped_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        // Native OS file drops, not an HTML/WebView surrogate.
+        // Validation and all resulting state changes belong to the Registry.
+        match paths.as_slice() {
+            [single] => {
+                self.run("source.select", json!({"path":single}), cx);
+            }
+            [] => {
+                self.last_message = "Drop a .3mf file or up to 32 files for batch.".into();
+                cx.notify();
+            }
+            many => {
+                self.run("batch.stage", json!({"paths":many}), cx);
+            }
         }
-        let Some(dir) = self.batch_directory.as_ref() else {
-            self.last_message = "Choose the batch output folder first.".into();
-            cx.notify();
-            return;
-        };
-        let paths = self
-            .batch_sources
-            .iter()
-            .map(|p| p.to_string_lossy().to_string())
-            .collect::<Vec<_>>();
-        self.run("batch.start", json!({"paths":paths,"output_dir":dir}), cx);
     }
 
     fn choose_destination(&mut self, cx: &mut Context<Self>) {
@@ -166,6 +159,9 @@ impl SliceBridgeWindow {
             if let Ok(Ok(Some(path))) = picker.await {
                 let _ = this.update(cx, |view, cx| {
                     view.destination = Some(path.to_string_lossy().to_string());
+                    view.destination_source = view.commands.snapshot()["source"]
+                        .as_str()
+                        .map(str::to_owned);
                     view.last_message =
                         "Destination selected; original will never be overwritten.".into();
                     cx.notify();
@@ -196,6 +192,14 @@ impl SliceBridgeWindow {
     }
 
     fn start_conversion(&mut self, cx: &mut Context<Self>) {
+        let source = self.commands.snapshot()["source"]
+            .as_str()
+            .map(str::to_owned);
+        if source.is_none() || self.destination_source != source {
+            self.last_message = "Choose a new destination for the selected source.".into();
+            cx.notify();
+            return;
+        }
         if let Some(output) = &self.destination {
             self.run("conversion.start", json!({"output": output}), cx);
         } else {
@@ -290,19 +294,111 @@ impl Render for SliceBridgeWindow {
             .as_u64()
             .map(|v| v.to_string())
             .unwrap_or_else(|| "-".into());
-        let output = self.destination.clone().unwrap_or("Not chosen".into());
+        let output = if self.destination_source.as_deref() == status["source"].as_str() {
+            self.destination.clone().unwrap_or("Not chosen".into())
+        } else {
+            "Not chosen for this source".into()
+        };
         let batch = &status["batch"];
         let batch_phase = batch["phase"].as_str().unwrap_or("idle");
         let batch_total = batch["total"].as_u64().unwrap_or(0);
         let batch_completed = batch["completed"].as_u64().unwrap_or(0);
-        let batch_summary =
-            format!("Batch: {batch_phase} · {batch_completed}/{batch_total} files completed");
-        let batch_dir = self
-            .batch_directory
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| "No output folder chosen".into());
-        let batch_source_count = self.batch_sources.len();
+        let batch_percent = batch["progress_percent"].as_u64().unwrap_or(0);
+        let batch_summary = format!(
+            "Batch: {batch_phase} · {batch_completed}/{batch_total} files · {batch_percent}% of files"
+        );
+        let batch_error = batch["error"].as_str().unwrap_or("");
+        let staged = &status["batch_selection"];
+        let batch_dir = staged["output_dir"]
+            .as_str()
+            .unwrap_or("No output folder chosen");
+        let batch_source_count = staged["paths"].as_array().map(|v| v.len()).unwrap_or(0);
+
+        let mut recent_projects = div().flex().flex_col().gap_1();
+        if let Some(paths) = status["projects"].as_array() {
+            for (index, path) in paths.iter().take(16).enumerate() {
+                let Some(path) = path.as_str() else { continue };
+                let open_path = path.to_string();
+                let forget_path = path.to_string();
+                let filename = Path::new(path)
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.to_string());
+                recent_projects = recent_projects.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_2()
+                        .p_1()
+                        .child(
+                            Button::new(format!("recent-open-{index}"))
+                                .label("Open")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.run(
+                                        "source.select",
+                                        json!({"path":open_path.clone()}),
+                                        cx,
+                                    );
+                                })),
+                        )
+                        .child(div().w_64().child(filename))
+                        .child(
+                            Button::new(format!("recent-forget-{index}"))
+                                .label("Forget")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.run(
+                                        "projects.forget",
+                                        json!({"path":forget_path.clone()}),
+                                        cx,
+                                    );
+                                })),
+                        ),
+                );
+            }
+        }
+
+        let mut batch_table = div().flex().flex_col().gap_1();
+        if let Some(items) = batch["items"].as_array() {
+            batch_table = batch_table.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .p_1()
+                    .child(div().w_8().child("#"))
+                    .child(div().w_64().child("Source 3MF"))
+                    .child(div().w_24().child("State"))
+                    .child(div().flex_1().child("Receipt / error")),
+            );
+            for (index, item) in items.iter().enumerate() {
+                let file = item["source"].as_str().unwrap_or("unknown");
+                let filename = Path::new(file)
+                    .file_name()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| file.to_string());
+                let phase = item["phase"].as_str().unwrap_or("queued");
+                let detail = if let Some(error) = item["receipt"]["error"].as_str() {
+                    error.to_string()
+                } else if let Some(bytes) = item["receipt"]["bytes"].as_u64() {
+                    format!("Converted {bytes} bytes")
+                } else if phase == "running" {
+                    "Converting via Rust OEM engine...".into()
+                } else {
+                    String::new()
+                };
+                batch_table = batch_table.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_2()
+                        .p_1()
+                        .child(div().w_8().child(format!("{}", index + 1)))
+                        .child(div().w_64().child(filename))
+                        .child(div().w_24().child(phase.to_string()))
+                        .child(div().flex_1().child(detail)),
+                );
+            }
+        }
         let columns = [
             ("3MF source", source),
             ("OEM printer", printer),
@@ -344,8 +440,14 @@ impl Render for SliceBridgeWindow {
             );
         }
 
-        div().flex().flex_col().gap_2().p_4()
+        div().id("slicebridge-workspace").size_full().overflow_y_scroll()
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                this.handle_dropped_paths(paths.paths().to_vec(), cx);
+            }))
+            .flex().flex_col().gap_2().p_4()
             .child(div().text_2xl().child("SliceBridge  /  Rust Native Alpha"))
+            .child(div().id("3mf-native-file-drop").p_2().border_1()
+                .child("Drop .3mf anywhere in the workspace: one opens, multiple stage a batch"))
             .child(div().child("GPUI + GPUI Kit  |  Agent-first command registry  |  English"))
             .child(
                 div().flex().flex_row().gap_2()
@@ -356,6 +458,13 @@ impl Render for SliceBridgeWindow {
                     .child(Button::new("choose-target").label("Save as...")
                         .on_click(cx.listener(|this, _, _, cx| this.choose_destination(cx))))
             )
+            .child(div().flex().flex_row().gap_2()
+                .child(div().text_lg().child("Recent 3MF projects · session"))
+                .child(Button::new("recent-clear").label("Clear recent")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.run("projects.clear", json!({}), cx);
+                    }))))
+            .child(recent_projects)
             .child(div().text_lg().child("Snapmaker U1 — installed nozzle presets"))
             .child(
                 div().flex().flex_row().gap_2()
@@ -417,6 +526,8 @@ impl Render for SliceBridgeWindow {
             )
             .child(div().child(format!("{batch_source_count} selected sources · {batch_dir}")))
             .child(div().child(batch_summary))
+            .child(div().child(batch_error.to_string()))
+            .child(batch_table)
             .child(div().text_lg().child("Last UI action"))
             .child(div().p_2().child(self.last_message.clone()))
             .child(div().child("Local attach: 127.0.0.1:48637  •  MCP: slicebridge-alpha --mcp"))

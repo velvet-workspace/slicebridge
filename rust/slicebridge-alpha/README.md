@@ -10,10 +10,13 @@ G-code, initiate slicing, or contact a printer.
   cycle through installed PLA/PETG material presets, choose destination,
   convert, cancel, read status and open converted output in an OEM slicer.
 - One Rust Registry drives the GUI, JSONL CLI, MCP stdio and local attach.
-- Native GUI batch picker selects 1-32 3MF files and an existing output folder.
-  The same agent/MCP Registry performs sequential, cancellable batch jobs,
-  verifies each input against installed OEM settings and tracks per-file
-  phases/receipts. Destinations are deterministic and never overwritten.
+- Native OS drag-and-drop zone selects one 3MF project or stages 2-32 files
+  for batch; the GPUI window also provides recent-project open/forget controls
+  and a scrollable per-file batch table with phases, receipts and errors.
+- GUI file/folder pickers and native drops invoke the same batch.stage and
+  batch.directory commands as CLI, MCP and attach. batch.start accepts either
+  explicit paths/output_dir or the staged Registry selection. Jobs remain
+  sequential/cancellable with deterministic, non-overwriting destinations.
 - OEM discovery resolves installed vendor machine/process/material inheritance
   on disk, read-only, including leading UTF-8 BOM where present.
 - Windows OEM scope: Snapmaker U1 (Snapmaker Orca) and QIDI X-Plus 5
@@ -51,6 +54,10 @@ For a Windows executable add .exe to each name.
 The running GUI listens at 127.0.0.1:48637, with the same Registry instance.
 Keep a persistent CLI/MCP/attach connection for an end-to-end conversion.
 
+Recent project history is session-local and agent-visible: projects.list,
+projects.forget {"path":"..."}, and projects.clear. source.select updates it only
+after successful 3MF inspection; no project file is modified or deleted.
+
 Example JSONL command sequence:
 
     {"command":"source.select","args":{"path":"C:\\scratch\\project.3mf"}}
@@ -73,8 +80,17 @@ Batch using the same *selected installed OEM printer/nozzle* (preselect a
     {"command":"batch.status","args":{}}
     {"command":"batch.cancel","args":{}}
 
-batch.start returns immediately; batch.status reports the phase, completed
-and total counts, active index and every file's source/output/receipt.
+The GUI and agents can instead stage a batch with:
+
+    {"command":"batch.stage","args":{"paths":["C:\\scratch\\one.3mf","C:\\scratch\\two.3mf"]}}
+    {"command":"batch.directory","args":{"path":"C:\\scratch\\converted"}}
+    {"command":"batch.selection","args":{}}
+    {"command":"batch.start","args":{}}
+
+batch.start returns immediately; batch.status reports phase, completed/total,
+progress_percent (whole completed files, not per-mesh estimates), active index,
+and each file's source/output/phase/receipt. Terminal failures/cancellations
+mark remaining queued items skipped rather than implying they succeeded.
 At most 32 files; source filenames must be distinct at the output filename
 level, files must be nonempty valid 3MF archives, and the output directory
 must already exist. It writes <stem>-slicebridge-<target>-<nozzle>.3mf;

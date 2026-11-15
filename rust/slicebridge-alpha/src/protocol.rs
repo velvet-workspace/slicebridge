@@ -7,13 +7,14 @@ use std::thread;
 
 fn schema(name: &str) -> Value {
     let required = match name {
-        "source.inspect" | "source.select" | "bundle.load" => vec!["path"],
+        "source.inspect" | "source.select" | "bundle.load" | "projects.forget"
+        | "batch.directory" => vec!["path"],
         "printer.select" => vec!["name"],
         "profiles.select" => vec!["target"],
         "profiles.materials" => vec!["material"],
         "material.select" => vec!["material", "preset"],
         "conversion.start" => vec!["output"],
-        "batch.start" => vec!["paths", "output_dir"],
+        "batch.stage" => vec!["paths"],
         "slicer.open" => vec!["executable"],
         _ => vec![],
     };

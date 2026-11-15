@@ -16,11 +16,13 @@ use std::thread;
 use std::time::Duration;
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+const MAX_RECENT_PROJECTS: usize = 16;
 
 #[derive(Default)]
 struct Session {
     source: Option<PathBuf>,
     facts: Option<Value>,
+    recent_projects: Vec<PathBuf>,
     bundle_path: Option<PathBuf>,
     bundle_label: Option<String>,
     bundle: Option<Value>,
@@ -34,6 +36,8 @@ struct Session {
     cancel: Option<Arc<AtomicBool>>,
     batch: Option<Value>,
     batch_cancel: Option<Arc<AtomicBool>>,
+    batch_staged: Vec<PathBuf>,
+    batch_output_dir: Option<PathBuf>,
 }
 
 fn busy(state: &Session) -> bool {
@@ -52,6 +56,27 @@ pub struct Registry {
 
 pub const COMMANDS: &[(&str, &str)] = &[
     ("commands.list", "Discover typed Rust application commands"),
+    (
+        "projects.list",
+        "List recently opened 3MF projects in this session",
+    ),
+    (
+        "projects.forget",
+        "Forget a recent project without changing its file",
+    ),
+    (
+        "projects.clear",
+        "Clear recent projects without changing files",
+    ),
+    (
+        "batch.stage",
+        "Stage up to 32 source 3MF files for GUI and agent batch",
+    ),
+    ("batch.directory", "Select existing batch output folder"),
+    (
+        "batch.selection",
+        "Read staged batch files and output folder",
+    ),
     (
         "batch.start",
         "Convert up to 32 verified 3MF sources sequentially using the selected OEM",
@@ -155,6 +180,11 @@ impl Registry {
         json!({
             "source": state.source.as_ref().map(|p| p.to_string_lossy().to_string()),
             "facts": state.facts,
+            "projects": state.recent_projects,
+            "batch_selection": {
+                "paths": state.batch_staged,
+                "output_dir": state.batch_output_dir,
+            },
             "bundle_path": state.bundle_path.as_ref().map(|p| p.to_string_lossy().to_string()),
             "printer": state.bundle_label,
             "target": state.target,
@@ -182,6 +212,30 @@ impl Registry {
                 .map(|(name, description)| json!({"name": name, "description": description}))
                 .collect::<Vec<_>>()})),
             "app.status" | "conversion.status" => Ok(self.snapshot()),
+            "projects.list" => {
+                let state = self.state.lock().map_err(|e| e.to_string())?;
+                Ok(json!({"paths":state.recent_projects,
+                    "active":state.source.as_ref().map(|p|p.to_string_lossy().to_string())}))
+            }
+            "projects.forget" => {
+                let path = user_path(params, "path")?;
+                let mut state = self.state.lock().map_err(|e| e.to_string())?;
+                let before = state.recent_projects.len();
+                state
+                    .recent_projects
+                    .retain(|entry| !same_path(entry, &path));
+                Ok(json!({"removed":before != state.recent_projects.len(),
+                    "remaining":state.recent_projects.len()}))
+            }
+            "projects.clear" => {
+                let mut state = self.state.lock().map_err(|e| e.to_string())?;
+                let removed = state.recent_projects.len();
+                state.recent_projects.clear();
+                Ok(json!({"removed":removed}))
+            }
+            "batch.stage" => self.batch_stage(params),
+            "batch.directory" => self.batch_directory(params),
+            "batch.selection" => self.batch_selection(),
             "batch.start" => self.batch_start(params),
             "batch.status" => {
                 let state = self.state.lock().map_err(|e| e.to_string())?;
@@ -206,6 +260,11 @@ impl Registry {
                     if busy(&state) {
                         return Err("cannot change source during conversion".into());
                     }
+                    state
+                        .recent_projects
+                        .retain(|entry| !same_path(entry, &path));
+                    state.recent_projects.insert(0, path.clone());
+                    state.recent_projects.truncate(MAX_RECENT_PROJECTS);
                     state.source = Some(path);
                     state.facts = Some(receipt.clone());
                     state.last_result = None;
@@ -673,6 +732,40 @@ mod tests {
         let registry = Registry::new();
         let result = registry.execute("slicer.open_selected", &json!({}));
         assert_eq!(result["ok"], false);
+    }
+
+    #[test]
+    fn recent_project_history_is_agent_visible_and_does_not_touch_files() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+        let one = root.join("bambu-one-color.3mf");
+        let five = root.join("bambu-five-colors.3mf");
+        let registry = Registry::new();
+        for path in [&one, &five, &one] {
+            assert_eq!(
+                registry.execute("source.select", &json!({"path":path}))["ok"],
+                true
+            );
+        }
+        let history = registry.execute("projects.list", &json!({}));
+        assert_eq!(history["data"]["paths"].as_array().unwrap().len(), 2);
+        assert_eq!(history["data"]["paths"][0], json!(one));
+        assert_eq!(registry.snapshot()["projects"][0], json!(one));
+        assert_eq!(
+            registry.execute("projects.forget", &json!({"path":five}))["data"]["removed"],
+            true
+        );
+        assert_eq!(registry.snapshot()["projects"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            registry.execute("projects.clear", &json!({}))["data"]["removed"],
+            1
+        );
+        assert!(registry.snapshot()["projects"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(registry.snapshot()["source"], json!(one));
+        assert!(one.is_file());
+        assert!(five.is_file());
     }
 
     #[test]
