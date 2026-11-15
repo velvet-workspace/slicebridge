@@ -26,7 +26,9 @@ struct PreparedItem {
     item: Item,
     source_nozzle: String,
     source_nozzle_assumed: bool,
-    bundle: Arc<Value>,
+    // Per-source OEM refusal is retained as a file result; other sources
+    // can still use a valid variant, as in the original Go batch.
+    resolved: Result<Arc<Value>, String>,
 }
 
 fn parse_sources(params: &Value) -> Result<Vec<PathBuf>, String> {
@@ -149,7 +151,7 @@ where
     let mut variant_nozzles = Vec::with_capacity(paths.len());
     // Every source uses the same saved printer preferences, but a different
     // source nozzle may select a different *installed* OEM variant.
-    let mut verified_bundles: BTreeMap<String, Arc<Value>> = BTreeMap::new();
+    let mut verified_bundles: BTreeMap<String, Result<Arc<Value>, String>> = BTreeMap::new();
     for path in paths {
         let source =
             inspect_source_nozzle(path).map_err(|err| format!("{}: {err}", path.display()))?;
@@ -161,34 +163,34 @@ where
         let (target_nozzle, overrides) =
             printer_settings::profile_choice_for_source(settings, target, "auto", &source_nozzle)
                 .map_err(|err| format!("{}: {err}", path.display()))?;
-        let bundle = if let Some(cached) = verified_bundles.get(&target_nozzle) {
-            Arc::clone(cached)
+        let resolved = if let Some(cached) = verified_bundles.get(&target_nozzle) {
+            cached.clone()
         } else {
-            let fresh = resolver(target, &target_nozzle, &overrides)
-                .map_err(|err| format!("{}: {err}", path.display()))?;
-            if fresh["target"] != target || fresh["nozzle"] != target_nozzle {
-                return Err(format!(
-                    "{}: installed OEM does not match target {target} {target_nozzle}mm",
-                    path.display()
-                ));
-            }
-            let fresh = Arc::new(fresh);
-            verified_bundles.insert(target_nozzle.clone(), Arc::clone(&fresh));
-            fresh
+            let result = resolver(target, &target_nozzle, &overrides).and_then(|fresh| {
+                if fresh["target"] != target || fresh["nozzle"] != target_nozzle {
+                    Err(format!(
+                        "installed OEM does not match target {target} {target_nozzle}mm"
+                    ))
+                } else {
+                    Ok(Arc::new(fresh))
+                }
+            });
+            verified_bundles.insert(target_nozzle.clone(), result.clone());
+            result
         };
         variant_nozzles.push(target_nozzle);
-        metadata.push((source_nozzle, assumed, bundle));
+        metadata.push((source_nozzle, assumed, resolved));
     }
     let filenames = plan_batch(paths, output_dir, target, &variant_nozzles)?;
     Ok(filenames
         .into_iter()
         .zip(metadata)
         .map(
-            |(item, (source_nozzle, source_nozzle_assumed, bundle))| PreparedItem {
+            |(item, (source_nozzle, source_nozzle_assumed, resolved))| PreparedItem {
                 item,
                 source_nozzle,
                 source_nozzle_assumed,
-                bundle,
+                resolved,
             },
         )
         .collect())
@@ -206,12 +208,22 @@ fn update(shared: &Arc<Mutex<Session>>, index: usize, phase: &str, detail: Optio
             if let Some(detail) = detail {
                 batch["items"][index]["receipt"] = detail;
             }
-            if phase == "completed" {
-                let completed = batch["completed"].as_u64().unwrap_or(0);
-                let done = completed + 1;
-                batch["completed"] = json!(done);
+            if phase == "completed" || phase == "failed" {
+                // Go's BatchReply.FilesDone advances even if a single source
+                // fails. Keep completed as files processed for existing UI,
+                // while tracking successful/failed outputs separately.
+                let processed = batch["completed"].as_u64().unwrap_or(0) + 1;
+                batch["completed"] = json!(processed);
+                let key = if phase == "completed" {
+                    "successes"
+                } else {
+                    "failures"
+                };
+                let count = batch[key].as_u64().unwrap_or(0) + 1;
+                batch[key] = json!(count);
                 let total = batch["total"].as_u64().unwrap_or(0);
-                batch["progress_percent"] = json!((done * 100).checked_div(total).unwrap_or(0));
+                batch["progress_percent"] =
+                    json!((processed * 100).checked_div(total).unwrap_or(0));
             }
         }
     }
@@ -265,10 +277,13 @@ fn run_batch(
         let result: Result<Value, String> = (|| {
             // A staged source may have changed after its read-only planning.
             // Never apply a stale OEM variant to a different source nozzle.
+            // A missing installed profile is a per-source failure, not a
+            // reason to drop the rest of the original batch.
+            let bundle = ready.resolved.as_ref().map_err(|error| error.clone())?;
             verify_source_nozzle_unchanged(ready)?;
             // Only trusted installed OEM inheritance. Revalidate the
             // resolved profile against EACH source's own slot materials.
-            let validation = validate_native_autonomous_input(ready.bundle.as_ref(), &item.source)?;
+            let validation = validate_native_autonomous_input(bundle.as_ref(), &item.source)?;
             if cancel.load(Ordering::SeqCst) {
                 return Err("batch cancelled during preflight".into());
             }
@@ -279,7 +294,7 @@ fn run_batch(
             }
             {
                 let mut session = worker.state.lock().map_err(|e| e.to_string())?;
-                session.bundle = Some(ready.bundle.as_ref().clone());
+                session.bundle = Some(bundle.as_ref().clone());
             }
             let start = worker.execute(
                 "conversion.start",
@@ -330,26 +345,15 @@ fn run_batch(
         match result {
             Ok(receipt) => update(&shared, index, "completed", Some(receipt)),
             Err(error) => {
-                update(
-                    &shared,
-                    index,
-                    if cancel.load(Ordering::SeqCst) {
-                        "cancelled"
-                    } else {
-                        "failed"
-                    },
-                    Some(json!({"error":error})),
-                );
-                finish(
-                    &shared,
-                    if cancel.load(Ordering::SeqCst) {
-                        "cancelled"
-                    } else {
-                        "failed"
-                    },
-                    Some(&error),
-                );
-                return;
+                // A per-file profile/material/source error is not a global
+                // batch failure in original Go: report it and keep processing.
+                // Cancellation remains terminal and marks queued work skipped.
+                if cancel.load(Ordering::SeqCst) {
+                    update(&shared, index, "cancelled", Some(json!({"error":error})));
+                    finish(&shared, "cancelled", Some(&error));
+                    return;
+                }
+                update(&shared, index, "failed", Some(json!({"error":error})));
             }
         }
     }
@@ -505,7 +509,8 @@ impl Registry {
             session.batch = Some(json!({
                 "phase":"running",
                 "target":target,"nozzle":batch_nozzle,
-                "total":items.len(),"completed":0,"progress_percent":0,
+                "total":items.len(),"completed":0,"successes":0,"failures":0,
+                "progress_percent":0,
                 "active_index":null,"error":null,
                 "items":items.iter().map(|ready|json!({
                     "source":ready.item.source,"output":ready.item.output,
@@ -642,7 +647,10 @@ mod tests {
         })
         .unwrap();
         assert_eq!(calls, 1);
-        assert!(Arc::ptr_eq(&ready[0].bundle, &ready[1].bundle));
+        assert!(Arc::ptr_eq(
+            ready[0].resolved.as_ref().unwrap(),
+            ready[1].resolved.as_ref().unwrap()
+        ));
         assert!(ready
             .iter()
             .all(|v| v.item.nozzle == "0.6" && !v.item.output.exists()));
@@ -672,7 +680,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(calls, 1);
-        assert!(Arc::ptr_eq(&ready[0].bundle, &ready[1].bundle));
+        assert!(Arc::ptr_eq(
+            ready[0].resolved.as_ref().unwrap(),
+            ready[1].resolved.as_ref().unwrap()
+        ));
         assert!(ready.iter().all(|v| v.item.nozzle == "0.25"));
         assert!(ready.iter().all(|v| !v.item.output.exists()));
         fs::remove_dir_all(root).unwrap();
@@ -720,7 +731,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_or_mismatched_oem_cannot_prepare_a_batch() {
+    fn missing_or_mismatched_oem_is_reported_per_file_without_conversion() {
         let root = output_folder("missing");
         let paths = [
             fixture("bambu-nozzle-0.2.3mf"),
@@ -734,13 +745,23 @@ mod tests {
                 Ok(json!({"target":target,"nozzle":nozzle}))
             }
         })
-        .unwrap_err();
-        assert!(failed.contains("0.6 not found"));
+        .unwrap();
+        assert!(failed[0].resolved.is_ok());
+        assert!(failed[1]
+            .resolved
+            .as_ref()
+            .unwrap_err()
+            .contains("0.6 not found"));
+        assert!(failed.iter().all(|item| !item.item.output.exists()));
         let mismatch = prepare_batch(&paths[..1], &root, "u1", &settings, |target, _, _| {
             Ok(json!({"target":target,"nozzle":"0.4"}))
         })
-        .unwrap_err();
-        assert!(mismatch.contains("does not match"));
+        .unwrap();
+        assert!(mismatch[0]
+            .resolved
+            .as_ref()
+            .unwrap_err()
+            .contains("does not match"));
         let invalid = root.join("not-a-3mf.3mf");
         fs::write(&invalid, b"invalid source").unwrap();
         assert!(prepare_batch(
@@ -753,6 +774,60 @@ mod tests {
         .is_err());
         assert!(root.join("not-a-3mf-slicebridge-u1-0_4.3mf").exists() == false);
         assert_eq!(fs::read(&invalid).unwrap(), b"invalid source");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unresolved_oem_files_finish_as_individual_failures_without_starting_engine() {
+        let root = output_folder("all-unresolved");
+        let sources = [
+            fixture("bambu-nozzle-0.2.3mf"),
+            fixture("bambu-nozzle-0.6.3mf"),
+        ];
+        let ready = prepare_batch(
+            &sources,
+            &root,
+            "u1",
+            &printer_settings::defaults(),
+            |_, nozzle, _| Err(format!("OEM {nozzle} unavailable")),
+        )
+        .unwrap();
+        assert!(ready.iter().all(|entry| entry.resolved.is_err()));
+        let shared = Arc::new(Mutex::new(Session::default()));
+        {
+            let mut state = shared.lock().unwrap();
+            state.batch = Some(json!({
+                "phase":"running","total":2,"completed":0,"successes":0,"failures":0,
+                "progress_percent":0,"items":[
+                    {"phase":"queued","receipt":null},
+                    {"phase":"queued","receipt":null}
+                ]
+            }));
+        }
+        // This fake engine path intentionally does not exist. Every unresolved
+        // profile is reported before any worker process can be invoked.
+        run_batch(
+            shared.clone(),
+            ready,
+            PathBuf::from("MUST-NOT-EXECUTE"),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let state = shared.lock().unwrap();
+        let batch = state.batch.as_ref().unwrap();
+        assert_eq!(batch["phase"], "completed");
+        assert_eq!(batch["completed"], 2);
+        assert_eq!(batch["successes"], 0);
+        assert_eq!(batch["failures"], 2);
+        assert_eq!(batch["progress_percent"], 100);
+        assert!(batch["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| entry["phase"] == "failed"
+                && entry["receipt"]["error"]
+                    .as_str()
+                    .is_some_and(|error| error.contains("unavailable"))));
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -837,6 +912,57 @@ mod tests {
         assert!(registry.snapshot()["batch"].is_null());
         assert!(one.is_file());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_failed_source_keeps_later_files_queued_and_reports_all_outcomes() {
+        let shared = Arc::new(Mutex::new(Session::default()));
+        {
+            let mut state = shared.lock().unwrap();
+            state.batch = Some(json!({
+                "phase":"running","total":3,
+                "completed":0,"successes":0,"failures":0,"progress_percent":0,
+                "items":[
+                    {"phase":"queued","receipt":null},
+                    {"phase":"queued","receipt":null},
+                    {"phase":"queued","receipt":null}
+                ]
+            }));
+        }
+        update(&shared, 0, "running", None);
+        update(
+            &shared,
+            0,
+            "failed",
+            Some(json!({"error":"source profile unavailable"})),
+        );
+        {
+            let state = shared.lock().unwrap();
+            let batch = state.batch.as_ref().unwrap();
+            assert_eq!(batch["phase"], "running");
+            assert_eq!(batch["items"][1]["phase"], "queued");
+            assert_eq!(batch["completed"], 1);
+            assert_eq!(batch["successes"], 0);
+            assert_eq!(batch["failures"], 1);
+            assert_eq!(batch["progress_percent"], 33);
+        }
+        update(&shared, 1, "completed", Some(json!({"bytes":200})));
+        update(&shared, 2, "completed", Some(json!({"bytes":300})));
+        finish(&shared, "completed", None);
+        let state = shared.lock().unwrap();
+        let batch = state.batch.as_ref().unwrap();
+        assert_eq!(batch["phase"], "completed");
+        assert_eq!(batch["completed"], 3);
+        assert_eq!(batch["successes"], 2);
+        assert_eq!(batch["failures"], 1);
+        assert_eq!(batch["progress_percent"], 100);
+        assert_eq!(batch["items"][0]["phase"], "failed");
+        assert_eq!(
+            batch["items"][0]["receipt"]["error"],
+            "source profile unavailable"
+        );
+        assert_eq!(batch["items"][1]["phase"], "completed");
+        assert_eq!(batch["items"][2]["phase"], "completed");
     }
 
     #[test]

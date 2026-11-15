@@ -149,6 +149,7 @@ pub(super) fn render_window(
     let batch_phase = batch["phase"].as_str().unwrap_or("idle");
     let batch_total = batch["total"].as_u64().unwrap_or(0);
     let batch_completed = batch["completed"].as_u64().unwrap_or(0);
+    let batch_failures = batch["failures"].as_u64().unwrap_or(0);
     let batch_percent = batch["progress_percent"].as_u64().unwrap_or(0).min(100);
     let running = phase == "running" || batch_phase == "running";
 
@@ -520,7 +521,14 @@ pub(super) fn render_window(
         .child(targets);
 
     let status_result = if batch_total > 0 {
-        format!("{batch_completed}/{batch_total} · {batch_phase}")
+        if batch_failures > 0 {
+            format!(
+                "{batch_completed}/{batch_total} · {batch_phase} · {batch_failures} {}",
+                label(locale, "summaryFailure")
+            )
+        } else {
+            format!("{batch_completed}/{batch_total} · {batch_phase}")
+        }
     } else if phase == "completed" {
         label(locale, "summarySuccess")
     } else if phase == "failed" {
@@ -652,6 +660,8 @@ pub(super) fn render_window(
 
     let activity_text = if running {
         label(locale, "converting")
+    } else if batch_total > 0 && batch_phase == "completed" && batch_failures > 0 {
+        label(locale, "summaryFailure")
     } else if batch_total > 0 && batch_phase == "completed" {
         label(locale, "finished")
     } else if file_count > 0 && !target.is_empty() {
