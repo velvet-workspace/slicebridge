@@ -152,11 +152,6 @@ pub(super) fn empty_target_notice_visible(
     !ready_rows.iter().any(|(id, _)| selected.contains(*id))
 }
 
-fn unavailable(view: &mut SliceBridgeWindow, area: &str, cx: &mut Context<SliceBridgeWindow>) {
-    view.last_message = format!("{area}: original application behavior not yet migrated to Rust");
-    cx.notify();
-}
-
 pub(super) fn render_window(
     view: &mut SliceBridgeWindow,
     _window: &mut Window,
@@ -203,6 +198,18 @@ pub(super) fn render_window(
                 ),
         );
 
+    // Locked like the stable app: enabled only while Registry developer mode is an explicit On.
+    let integrations = Button::new("integrations")
+        .disabled(!view.integrations_developer)
+        .label(label(locale, "makerworldSetup"));
+    let integrations = if view.integrations_developer {
+        integrations
+    } else {
+        integrations.tooltip(label(locale, "makerworldLocked"))
+    };
+    let integrations =
+        integrations.on_click(cx.listener(|this, _, _, cx| this.open_integrations(cx)));
+
     let topbar = line(rtl)
         .h(px(56.))
         .px_5()
@@ -234,14 +241,7 @@ pub(super) fn render_window(
                         .label(label(locale, "settings"))
                         .on_click(cx.listener(|this, _, _, cx| this.open_settings(cx))),
                 )
-                .child(
-                    Button::new("integrations")
-                        .disabled(true) // Same default state as the stable developer gate.
-                        .label(label(locale, "makerworldSetup"))
-                        .on_click(
-                            cx.listener(|this, _, _, cx| unavailable(this, "MakerWorld", cx)),
-                        ),
-                )
+                .child(integrations)
                 .child(
                     Button::new("about")
                         .label(label(locale, "aboutOpen"))
@@ -954,6 +954,9 @@ pub(super) fn render_window(
     if view.about_open {
         root = root.child(render_about(view, cx));
     }
+    if view.integrations_open {
+        root = root.child(render_integrations(view, cx));
+    }
     root
 }
 
@@ -1302,6 +1305,315 @@ fn render_about(view: &SliceBridgeWindow, cx: &mut Context<SliceBridgeWindow>) -
         .child(
             div()
                 .id("aboutFrame")
+                .w(px(760.))
+                .max_w(relative(0.94))
+                .h(relative(0.86))
+                .bg(rgb(WHITE))
+                .rounded_lg()
+                .border_1()
+                .border_color(rgb(STROKE))
+                .overflow_hidden()
+                .flex()
+                .flex_col()
+                .child(header)
+                .child(body)
+                .child(footer),
+        )
+}
+
+// One setup card, as index.html's .integration-step: number, title, hint. The active card gets the brand border.
+fn setup_step(number: &str, title: String, hint: String, active: bool, rtl: bool) -> Div {
+    panel()
+        .p_4()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .border_color(rgb(if active { BRAND } else { STROKE }))
+        .child(heading(number, title, rtl))
+        .child(align_text(
+            div().text_xs().text_color(rgb(MUTED)).child(hint),
+            rtl,
+        ))
+}
+
+fn feedback_line(feedback: &Feedback, rtl: bool) -> Option<Div> {
+    (!feedback.text.is_empty()).then(|| {
+        align_text(
+            div()
+                .text_xs()
+                .text_color(rgb(if feedback.error { RED } else { INK }))
+                .child(feedback.text.clone()),
+            rtl,
+        )
+    })
+}
+
+// Mirrors index.html #integrationsDialog and integrations.js: the same three steps, copy and order.
+// Every browser action runs from an explicit click, and the topbar entry stays locked until developer
+// mode is On. Step 1 reports link status only; no enable control exists until registration is ported.
+fn render_integrations(
+    view: &SliceBridgeWindow,
+    cx: &mut Context<SliceBridgeWindow>,
+) -> impl IntoElement {
+    let locale = view.locale;
+    let rtl = locale.rtl();
+    let busy = view.integrations_busy;
+    let browser = view.integrations_browser;
+    let firefox = browser == BrowserChoice::Firefox;
+    let active = active_setup_step(view.integrations_link, view.integrations_install_opened);
+    let page = view.integrations_page.unwrap_or("");
+
+    let header = line(rtl)
+        .items_center()
+        .justify_between()
+        .px_5()
+        .py_4()
+        .border_b_1()
+        .border_color(rgb(0xEBEFED))
+        .child(
+            align_text(div().flex().flex_col().gap_1(), rtl)
+                .child(
+                    div()
+                        .text_lg()
+                        .text_color(rgb(INK))
+                        .child(label(locale, "integrationTitle")),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(MUTED))
+                        .child(label(locale, "integrationHint")),
+                ),
+        )
+        .child(
+            Button::new("close-integrations-x")
+                .label("×")
+                .on_click(cx.listener(|this, _, _, cx| this.close_integrations(cx))),
+        );
+
+    let link = view.integrations_link;
+    let step_one = setup_step(
+        "01",
+        label(locale, "stepOneTitle"),
+        label(locale, "stepOneHint"),
+        active == 1,
+        rtl,
+    )
+    .child(align_text(
+        div()
+            .text_xs()
+            .text_color(rgb(if link == LinkState::Error { RED } else { INK }))
+            .child(label(locale, link.message_key())),
+        rtl,
+    ));
+
+    let mut browser_row = line(rtl).gap_2();
+    for choice in BrowserChoice::ALL {
+        let button = Button::new(format!("integrations-browser-{}", choice.key()))
+            .disabled(busy)
+            .label(choice.display_name())
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.select_integrations_browser(choice, cx);
+            }));
+        browser_row = browser_row.child(if choice == browser {
+            button.primary()
+        } else {
+            button
+        });
+    }
+
+    let actions = line(rtl)
+        .gap_2()
+        .child(
+            Button::new("integrations-prepare")
+                .disabled(busy)
+                .label(label(locale, "prepareExtension"))
+                .on_click(cx.listener(|this, _, _, cx| this.prepare_integrations_extension(cx))),
+        )
+        .child(
+            Button::new("integrations-open-manager")
+                .disabled(busy)
+                .label(label(locale, "openExtensionsPage"))
+                .on_click(cx.listener(|this, _, _, cx| this.open_integrations_manager(cx))),
+        );
+
+    let (two, three) = if firefox {
+        (
+            "installInstructionTwoFirefox",
+            "installInstructionThreeFirefox",
+        )
+    } else {
+        ("installInstructionTwo", "installInstructionThree")
+    };
+    let instructions = div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(align_text(
+            div().text_xs().text_color(rgb(INK)).child(format!(
+                "1. {} {page}",
+                label(locale, "installInstructionOne")
+            )),
+            rtl,
+        ))
+        .child(align_text(
+            div()
+                .text_xs()
+                .text_color(rgb(INK))
+                .child(format!("2. {}", label(locale, two))),
+            rtl,
+        ))
+        .child(align_text(
+            div()
+                .text_xs()
+                .text_color(rgb(INK))
+                .child(format!("3. {}", label(locale, three))),
+            rtl,
+        ));
+
+    let mut step_two = setup_step(
+        "02",
+        label(locale, "stepTwoTitle"),
+        label(locale, "stepTwoHint"),
+        active == 2,
+        rtl,
+    )
+    .child(align_text(
+        div()
+            .text_xs()
+            .text_color(rgb(MUTED))
+            .child(label(locale, "browserLabel")),
+        rtl,
+    ))
+    .child(browser_row)
+    .child(actions)
+    .child(instructions)
+    .child(align_text(
+        div()
+            .text_xs()
+            .text_color(rgb(MUTED))
+            .child(label(locale, "storeNotPublished")),
+        rtl,
+    ))
+    .child(align_text(
+        div()
+            .text_xs()
+            .text_color(rgb(MUTED))
+            .child(label(locale, "betaInstallInfo")),
+        rtl,
+    ));
+    if firefox {
+        step_two = step_two.child(align_text(
+            div()
+                .text_xs()
+                .text_color(rgb(RED))
+                .child(label(locale, "firefoxInstallWarning")),
+            rtl,
+        ));
+    }
+    if let Some(folder) = &view.integrations_folder {
+        step_two = step_two.child(align_text(
+            div()
+                .text_xs()
+                .text_color(rgb(INK))
+                .child(format!("{} {folder}", label(locale, "folderPrepared"))),
+            rtl,
+        ));
+    }
+    if let Some(feedback) = feedback_line(&view.integrations_install, rtl) {
+        step_two = step_two.child(feedback);
+    }
+
+    let mut modes = div().flex().flex_col().gap_2();
+    for mode in LinkMode::ALL {
+        let button = Button::new(format!("integrations-mode-{}", mode.key()))
+            .disabled(busy)
+            .label(label(locale, mode.title_key()))
+            .on_click(cx.listener(move |this, _, _, cx| this.select_integrations_mode(mode, cx)));
+        let button = if view.integrations_mode == Some(mode) {
+            button.primary()
+        } else {
+            button
+        };
+        modes = modes.child(
+            line(rtl)
+                .items_center()
+                .gap_3()
+                .child(button)
+                .child(align_text(
+                    div()
+                        .flex_1()
+                        .text_xs()
+                        .text_color(rgb(MUTED))
+                        .child(label(locale, mode.detail_key())),
+                    rtl,
+                )),
+        );
+    }
+
+    let confirm = Button::new("integrations-confirm-mode")
+        .primary()
+        .disabled(busy || view.integrations_mode.is_none())
+        .label(label(locale, "confirmInBrowser"))
+        .on_click(cx.listener(|this, _, _, cx| this.open_integrations_mode(cx)));
+    let mut step_three = setup_step(
+        "03",
+        label(locale, "stepThreeTitle"),
+        label(locale, "stepThreeHint"),
+        active == 3,
+        rtl,
+    )
+    .child(modes)
+    .child(confirm);
+    if let Some(feedback) = feedback_line(&view.integrations_mode_feedback, rtl) {
+        step_three = step_three.child(feedback);
+    }
+
+    let body = div()
+        .id("integrations-scroll")
+        .flex_1()
+        .min_h(px(0.))
+        .overflow_y_scroll()
+        .p_5()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .child(step_one)
+        .child(step_two)
+        .child(step_three)
+        .child(align_text(
+            div()
+                .text_xs()
+                .text_color(rgb(MUTED))
+                .child(label(locale, "modeScopeNote")),
+            rtl,
+        ));
+
+    let footer = line(rtl)
+        .justify_end()
+        .px_5()
+        .py_3()
+        .border_t_1()
+        .border_color(rgb(STROKE))
+        .child(
+            Button::new("close-integrations")
+                .primary()
+                .label(label(locale, "done"))
+                .on_click(cx.listener(|this, _, _, cx| this.close_integrations(cx))),
+        );
+
+    div()
+        .id("integrationsDialog")
+        .absolute()
+        .inset_0()
+        .occlude()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(rgba(0x193F387F))
+        .child(
+            div()
+                .id("integrationsFrame")
                 .w(px(760.))
                 .max_w(relative(0.94))
                 .h(relative(0.86))

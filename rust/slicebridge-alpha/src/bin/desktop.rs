@@ -194,6 +194,19 @@ struct SliceBridgeWindow {
     about_link_error: bool,
     about_document: Option<AboutDocument>,
     update: UpdateCheck,
+    // MakerWorld setup modal. Reachable only while the Registry reports developer mode as an explicit On.
+    integrations_open: bool,
+    integrations_developer: bool,
+    integrations_browser: BrowserChoice,
+    integrations_mode: Option<LinkMode>,
+    integrations_link: LinkState,
+    integrations_page: Option<&'static str>,
+    integrations_folder: Option<String>,
+    integrations_install_opened: bool,
+    integrations_install: Feedback,
+    integrations_mode_feedback: Feedback,
+    // True while a prepare, open or mode request is in flight, so one click cannot start a second.
+    integrations_busy: bool,
 }
 
 // Matches the installed-version string the stable Go app shows (`appVersion` in native/updates_bridge.go).
@@ -401,6 +414,215 @@ impl UpdateCheck {
     }
 }
 
+// MakerWorld setup modal, from native/frontend/dist/integrations.js and index.html. The modal opens only
+// while the Registry reports developer mode as an explicit On. Browser actions run only on a click, with
+// the fixed browser.setup.* arguments below. browser.setup.store is not called: store listings are
+// unpublished, so no store install is offered or claimed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum BrowserChoice {
+    #[default]
+    Edge,
+    Chrome,
+    Brave,
+    Firefox,
+}
+
+impl BrowserChoice {
+    const ALL: [Self; 4] = [Self::Edge, Self::Chrome, Self::Brave, Self::Firefox];
+
+    // The only browser keys sent to the Registry, the same set native/browser_setup.go accepts.
+    fn key(self) -> &'static str {
+        match self {
+            Self::Edge => "edge",
+            Self::Chrome => "chrome",
+            Self::Brave => "brave",
+            Self::Firefox => "firefox",
+        }
+    }
+
+    #[cfg(test)]
+    fn from_key(key: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|browser| browser.key() == key)
+    }
+
+    // Names as index.html shows them; the "(test)" marking is the source's own wording.
+    fn display_name(self) -> &'static str {
+        match self {
+            Self::Edge => "Microsoft Edge",
+            Self::Chrome => "Google Chrome",
+            Self::Brave => "Brave",
+            Self::Firefox => "Firefox (test)",
+        }
+    }
+
+    // Extension package the Registry prepares for this browser.
+    fn kind(self) -> &'static str {
+        match self {
+            Self::Firefox => "firefox",
+            _ => "chromium",
+        }
+    }
+
+    // The fixed extensions page for this browser, as integrations.js lists it.
+    fn settings_page(self) -> &'static str {
+        match self {
+            Self::Edge => "edge://extensions",
+            Self::Chrome => "chrome://extensions",
+            Self::Brave => "brave://extensions",
+            Self::Firefox => "about:debugging#/runtime/this-firefox",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LinkMode {
+    Off,
+    Ask,
+    Always,
+}
+
+impl LinkMode {
+    const ALL: [Self; 3] = [Self::Off, Self::Ask, Self::Always];
+
+    // The only values accepted for `browser.setup.open` with kind "mode".
+    fn key(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Ask => "ask",
+            Self::Always => "always",
+        }
+    }
+
+    #[cfg(test)]
+    fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|mode| mode.key() == key)
+    }
+
+    fn title_key(self) -> &'static str {
+        match self {
+            Self::Off => "interceptOff",
+            Self::Ask => "interceptAsk",
+            Self::Always => "interceptAlways",
+        }
+    }
+
+    fn detail_key(self) -> &'static str {
+        match self {
+            Self::Off => "interceptOffDetail",
+            Self::Ask => "interceptAskDetail",
+            Self::Always => "interceptAlwaysDetail",
+        }
+    }
+}
+
+// Step 1 status, as integrations.js refreshStatus shows it. Windows is not offered a fix button yet:
+// protocol registration is not ported, so an unregistered Windows install only reports Missing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum LinkState {
+    #[default]
+    Unknown,
+    Ready,
+    Missing,
+    Mac,
+    Error,
+}
+
+impl LinkState {
+    fn message_key(self) -> &'static str {
+        match self {
+            Self::Unknown => "browserLinkUnknown",
+            Self::Ready => "browserLinkReady",
+            Self::Missing => "browserLinkMissing",
+            Self::Mac => "browserLinkMac",
+            Self::Error => "browserLinkError",
+        }
+    }
+
+    fn is_ready(self) -> bool {
+        matches!(self, Self::Ready | Self::Mac)
+    }
+}
+
+// A line of status under one setup step. `error` picks the red copy.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Feedback {
+    text: String,
+    error: bool,
+}
+
+impl Feedback {
+    fn ok(text: String) -> Self {
+        Self { text, error: false }
+    }
+
+    fn failed(text: String) -> Self {
+        Self { text, error: true }
+    }
+}
+
+// Only the fixed page for a browser is shown; any other URL the Registry returns is ignored.
+fn allowed_browser_page(url: &str) -> Option<&'static str> {
+    BrowserChoice::ALL
+        .iter()
+        .map(|browser| browser.settings_page())
+        .find(|page| *page == url)
+}
+
+// Windows and macOS only, as integrations.js reads them. Missing data or any other platform is an error.
+fn link_state_from(reply: &Value) -> LinkState {
+    if reply["ok"] != true {
+        return LinkState::Error;
+    }
+    match reply["data"]["platform"].as_str() {
+        Some("darwin") => LinkState::Mac,
+        Some("windows") if reply["data"]["registered"] == true => LinkState::Ready,
+        Some("windows") => LinkState::Missing,
+        _ => LinkState::Error,
+    }
+}
+
+// Only an explicit `opened: true` counts as a launched browser; the modal never assumes success.
+fn browser_opened(reply: &Value) -> bool {
+    reply["ok"] == true && reply["data"]["opened"] == true
+}
+
+// The prepared folder must be an absolute path and match the browser's package kind.
+fn prepared_folder(reply: &Value, browser: BrowserChoice) -> Option<String> {
+    if reply["ok"] != true || reply["data"]["kind"].as_str() != Some(browser.kind()) {
+        return None;
+    }
+    reply["data"]["folder"]
+        .as_str()
+        .filter(|folder| Path::new(folder).is_absolute())
+        .map(str::to_owned)
+}
+
+fn reply_error(reply: &Value) -> String {
+    reply["error"]
+        .as_str()
+        .unwrap_or("unknown error")
+        .to_owned()
+}
+
+// Connect links first, then install in the browser, then choose the mode.
+fn active_setup_step(link: LinkState, install_opened: bool) -> u8 {
+    if !link.is_ready() {
+        1
+    } else if install_opened {
+        3
+    } else {
+        2
+    }
+}
+
+// The modal stays open only while developer mode is an explicit On; an explicit Off or any error closes it.
+fn integrations_still_open(open: bool, developer_on: bool) -> bool {
+    open && developer_on
+}
+
 impl SliceBridgeWindow {
     fn new(registry: Registry, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let locale = Locale::load();
@@ -488,6 +710,17 @@ impl SliceBridgeWindow {
             about_link_error: false,
             about_document: None,
             update: UpdateCheck::default(),
+            integrations_open: false,
+            integrations_developer: false,
+            integrations_browser: BrowserChoice::default(),
+            integrations_mode: None,
+            integrations_link: LinkState::default(),
+            integrations_page: None,
+            integrations_folder: None,
+            integrations_install_opened: false,
+            integrations_install: Feedback::default(),
+            integrations_mode_feedback: Feedback::default(),
+            integrations_busy: false,
         }
     }
 
@@ -496,10 +729,31 @@ impl SliceBridgeWindow {
     fn start_live_refresh(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             let mut previous = Value::Null;
+            let mut tick: u32 = 0;
             loop {
                 cx.background_executor()
                     .timer(Duration::from_millis(500))
                     .await;
+                tick = tick.wrapping_add(1);
+                // Developer mode can also change from CLI or MCP, so the MakerWorld gate is re-read every
+                // 2 seconds on the background executor. Only an explicit On keeps the setup modal usable.
+                if tick % 4 == 1 {
+                    let Ok(registry) = this.update(cx, |view, _| view.commands.clone()) else {
+                        break;
+                    };
+                    let reply = cx
+                        .background_executor()
+                        .spawn(async move { registry.execute("settings.get", &json!({})) })
+                        .await;
+                    let gate = this.update(cx, |view, cx| {
+                        if view.set_integrations_gate(developer_mode_enabled(&reply)) {
+                            cx.notify();
+                        }
+                    });
+                    if gate.is_err() {
+                        break;
+                    }
+                }
                 let updated = this.update(cx, |view, cx| {
                     let current = view.commands.snapshot();
                     if current != previous {
@@ -622,6 +876,7 @@ impl SliceBridgeWindow {
         // Read the preference on each open: CLI or MCP may have changed it while the window was running.
         let reply = self.commands.execute("settings.get", &json!({}));
         self.about_developer_mode = developer_mode_enabled(&reply);
+        self.set_integrations_gate(self.about_developer_mode);
         self.about_developer_error = reply["ok"] != true;
         self.about_link_error = false;
         self.about_document = None;
@@ -666,6 +921,7 @@ impl SliceBridgeWindow {
             self.about_developer_mode = false;
             self.about_developer_error = true;
         }
+        self.set_integrations_gate(self.about_developer_mode);
         cx.notify();
     }
 
@@ -747,6 +1003,204 @@ impl SliceBridgeWindow {
         } else {
             Some(document)
         };
+        cx.notify();
+    }
+
+    // Setup-modal Registry calls run off the UI thread; the reply is applied back on it, as updates are.
+    fn ask_setup(
+        &mut self,
+        name: &'static str,
+        args: Value,
+        cx: &mut Context<Self>,
+        apply: impl FnOnce(&mut Self, Value) + 'static,
+    ) {
+        let registry = self.commands.clone();
+        cx.spawn(async move |this, cx| {
+            let reply = cx
+                .background_executor()
+                .spawn(async move { registry.execute(name, &args) })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                apply(view, reply);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    // Read-only status and page lookups. Nothing is written or opened here.
+    fn load_setup_state(&mut self, cx: &mut Context<Self>) {
+        self.ask_setup("browser.setup.status", json!({}), cx, |view, reply| {
+            view.integrations_link = link_state_from(&reply);
+        });
+        self.load_browser_page(cx);
+    }
+
+    fn load_browser_page(&mut self, cx: &mut Context<Self>) {
+        let browser = self.integrations_browser;
+        self.integrations_page = None;
+        self.ask_setup(
+            "browser.setup.page",
+            json!({"browser": browser.key()}),
+            cx,
+            move |view, reply| {
+                // A reply for a browser the user has since switched away from is dropped.
+                if view.integrations_browser == browser && reply["ok"] == true {
+                    view.integrations_page =
+                        reply["data"]["url"].as_str().and_then(allowed_browser_page);
+                }
+            },
+        );
+    }
+
+    // Topbar click only. The preference is read again so the modal never opens on stale state.
+    fn open_integrations(&mut self, cx: &mut Context<Self>) {
+        let reply = self.commands.execute("settings.get", &json!({}));
+        self.set_integrations_gate(developer_mode_enabled(&reply));
+        if self.integrations_developer {
+            self.integrations_open = true;
+            self.integrations_link = LinkState::Unknown;
+            self.load_setup_state(cx);
+        }
+        cx.notify();
+    }
+
+    fn close_integrations(&mut self, cx: &mut Context<Self>) {
+        self.integrations_open = false;
+        cx.notify();
+    }
+
+    // Applies a developer-mode reading. Anything other than an explicit On locks the modal and closes it.
+    // Returns true when the state changed, so callers repaint only then.
+    fn set_integrations_gate(&mut self, enabled: bool) -> bool {
+        let before = (self.integrations_developer, self.integrations_open);
+        self.integrations_developer = enabled;
+        self.integrations_open = integrations_still_open(self.integrations_open, enabled);
+        before != (self.integrations_developer, self.integrations_open)
+    }
+
+    fn select_integrations_browser(&mut self, browser: BrowserChoice, cx: &mut Context<Self>) {
+        if self.integrations_busy {
+            return;
+        }
+        self.integrations_browser = browser;
+        self.integrations_folder = None;
+        self.integrations_install_opened = false;
+        self.integrations_install = Feedback::default();
+        self.load_browser_page(cx);
+        cx.notify();
+    }
+
+    // Explicit click only: writes the extension folder for the selected browser and shows its path.
+    fn prepare_integrations_extension(&mut self, cx: &mut Context<Self>) {
+        if self.integrations_busy {
+            return;
+        }
+        let browser = self.integrations_browser;
+        self.integrations_busy = true;
+        self.ask_setup(
+            "browser.setup.prepare",
+            json!({"browser": browser.key()}),
+            cx,
+            move |view, reply| {
+                view.integrations_busy = false;
+                if view.integrations_browser != browser {
+                    return;
+                }
+                match prepared_folder(&reply, browser) {
+                    Some(folder) => {
+                        view.integrations_folder = Some(folder);
+                        view.integrations_install = Feedback::default();
+                    }
+                    None => {
+                        view.integrations_folder = None;
+                        view.integrations_install = Feedback::failed(format!(
+                            "{}{}",
+                            view.locale.text("folderError"),
+                            reply_error(&reply)
+                        ));
+                    }
+                }
+            },
+        );
+        cx.notify();
+    }
+
+    // Explicit click only: opens the selected browser's fixed extensions page and nothing else.
+    fn open_integrations_manager(&mut self, cx: &mut Context<Self>) {
+        if self.integrations_busy {
+            return;
+        }
+        let browser = self.integrations_browser;
+        self.integrations_busy = true;
+        self.ask_setup(
+            "browser.setup.open",
+            json!({"browser": browser.key(), "kind": "manager"}),
+            cx,
+            move |view, reply| {
+                view.integrations_busy = false;
+                if view.integrations_browser != browser {
+                    return;
+                }
+                if browser_opened(&reply) {
+                    view.integrations_install_opened = true;
+                    let key = if browser == BrowserChoice::Firefox {
+                        "betaOpenedFirefox"
+                    } else {
+                        "betaOpened"
+                    };
+                    view.integrations_install = Feedback::ok(view.locale.text(key));
+                } else {
+                    view.integrations_install = Feedback::failed(format!(
+                        "{}{}",
+                        view.locale.text("modeError"),
+                        reply_error(&reply)
+                    ));
+                }
+            },
+        );
+        cx.notify();
+    }
+
+    fn select_integrations_mode(&mut self, mode: LinkMode, cx: &mut Context<Self>) {
+        self.integrations_mode = Some(mode);
+        self.integrations_mode_feedback = Feedback::default();
+        cx.notify();
+    }
+
+    // Explicit click only, and only after a mode is chosen. The browser opens; the extension must confirm.
+    fn open_integrations_mode(&mut self, cx: &mut Context<Self>) {
+        if self.integrations_busy {
+            return;
+        }
+        let Some(mode) = self.integrations_mode else {
+            self.integrations_mode_feedback = Feedback::failed(self.locale.text("selectModeFirst"));
+            cx.notify();
+            return;
+        };
+        let browser = self.integrations_browser;
+        self.integrations_busy = true;
+        self.ask_setup(
+            "browser.setup.open",
+            json!({"browser": browser.key(), "kind": "mode", "mode": mode.key()}),
+            cx,
+            move |view, reply| {
+                view.integrations_busy = false;
+                view.integrations_mode_feedback = if browser_opened(&reply) {
+                    Feedback::ok(format!(
+                        "{} {}",
+                        view.locale.text("modeLaunched"),
+                        view.locale.text("modeNoExtension")
+                    ))
+                } else {
+                    Feedback::failed(format!(
+                        "{}{}",
+                        view.locale.text("modeError"),
+                        reply_error(&reply)
+                    ))
+                };
+            },
+        );
         cx.notify();
     }
 
@@ -1816,5 +2270,248 @@ mod update_check_tests {
         let request = check.begin().unwrap();
         check.finish(request, &json!({"ok":true,"data":{"status":"up_to_date"}}));
         assert_eq!(check.data, Some(json!({"status":"up_to_date"})));
+    }
+}
+
+#[cfg(test)]
+mod integrations_tests {
+    use super::desktop_i18n::Locale;
+    use super::{
+        active_setup_step, allowed_browser_page, browser_opened, integrations_still_open,
+        link_state_from, prepared_folder, BrowserChoice, LinkMode, LinkState,
+    };
+    use serde_json::json;
+
+    // Every key integrations.js uses, embedded from its he and en maps.
+    const INTEGRATION_KEYS: &[&str] = &[
+        "integrationTitle",
+        "integrationHint",
+        "stepOneTitle",
+        "stepOneHint",
+        "browserLinkUnknown",
+        "browserLinkReady",
+        "browserLinkMissing",
+        "browserLinkMac",
+        "browserLinkError",
+        "enableBrowserLinks",
+        "stepTwoTitle",
+        "stepTwoHint",
+        "guidedBetaInstall",
+        "installFromStore",
+        "storeChecking",
+        "storeReady",
+        "storeNotPublished",
+        "betaInstallGuide",
+        "betaInstallInfo",
+        "openExtensionsPage",
+        "betaOpened",
+        "betaOpenedFirefox",
+        "storeOpened",
+        "browserLabel",
+        "prepareExtension",
+        "installInstructionOne",
+        "installInstructionTwo",
+        "installInstructionThree",
+        "installInstructionTwoFirefox",
+        "installInstructionThreeFirefox",
+        "firefoxInstallWarning",
+        "folderPrepared",
+        "folderError",
+        "stepThreeTitle",
+        "stepThreeHint",
+        "interceptOff",
+        "interceptOffDetail",
+        "interceptAsk",
+        "interceptAskDetail",
+        "interceptAlways",
+        "interceptAlwaysDetail",
+        "confirmInBrowser",
+        "selectModeFirst",
+        "modeLaunched",
+        "modeNoExtension",
+        "modeError",
+        "modeScopeNote",
+        "done",
+        "makerworldLocked",
+    ];
+
+    #[test]
+    fn browser_keys_are_the_four_allowlisted_values() {
+        let keys: Vec<&str> = BrowserChoice::ALL
+            .iter()
+            .map(|browser| browser.key())
+            .collect();
+        assert_eq!(keys, ["edge", "chrome", "brave", "firefox"]);
+        for browser in BrowserChoice::ALL {
+            assert_eq!(BrowserChoice::from_key(browser.key()), Some(browser));
+        }
+        for invalid in [
+            "",
+            "Edge",
+            "chromium",
+            "about:debugging",
+            "edge://extensions",
+            " brave",
+        ] {
+            assert_eq!(BrowserChoice::from_key(invalid), None, "{invalid:?}");
+        }
+        assert_eq!(BrowserChoice::default(), BrowserChoice::Edge);
+    }
+
+    #[test]
+    fn mode_values_are_the_three_allowlisted_values() {
+        let keys: Vec<&str> = LinkMode::ALL.iter().map(|mode| mode.key()).collect();
+        assert_eq!(keys, ["off", "ask", "always"]);
+        for mode in LinkMode::ALL {
+            assert_eq!(LinkMode::from_key(mode.key()), Some(mode));
+        }
+        for invalid in ["", "Off", "on", "always ", "true", "bambu"] {
+            assert_eq!(LinkMode::from_key(invalid), None, "{invalid:?}");
+        }
+    }
+
+    #[test]
+    fn browser_pages_come_only_from_the_fixed_list() {
+        assert_eq!(
+            allowed_browser_page("edge://extensions"),
+            Some("edge://extensions")
+        );
+        assert_eq!(
+            allowed_browser_page("about:debugging#/runtime/this-firefox"),
+            Some("about:debugging#/runtime/this-firefox")
+        );
+        for invalid in [
+            "",
+            "edge://extensions/",
+            "https://makerworld.com/",
+            "file:///etc/passwd",
+            "chrome://settings",
+        ] {
+            assert_eq!(allowed_browser_page(invalid), None, "{invalid:?}");
+        }
+    }
+
+    #[test]
+    fn only_firefox_uses_the_temporary_package() {
+        assert_eq!(BrowserChoice::Firefox.kind(), "firefox");
+        for browser in [
+            BrowserChoice::Edge,
+            BrowserChoice::Chrome,
+            BrowserChoice::Brave,
+        ] {
+            assert_eq!(browser.kind(), "chromium");
+        }
+    }
+
+    #[test]
+    fn link_state_reads_only_windows_and_macos() {
+        assert_eq!(
+            link_state_from(&json!({"ok":true,"data":{"platform":"darwin"}})),
+            LinkState::Mac
+        );
+        assert_eq!(
+            link_state_from(&json!({"ok":true,"data":{"platform":"windows","registered":true}})),
+            LinkState::Ready
+        );
+        assert_eq!(
+            link_state_from(&json!({"ok":true,"data":{"platform":"windows","registered":false}})),
+            LinkState::Missing
+        );
+        // A string "true" is not the explicit boolean the Registry contract requires.
+        assert_eq!(
+            link_state_from(&json!({"ok":true,"data":{"platform":"windows","registered":"true"}})),
+            LinkState::Missing
+        );
+        assert_eq!(
+            link_state_from(&json!({"ok":true,"data":{"platform":"unsupported"}})),
+            LinkState::Error
+        );
+        assert_eq!(
+            link_state_from(&json!({"ok":false,"data":{"platform":"darwin"}})),
+            LinkState::Error
+        );
+        assert_eq!(
+            link_state_from(&json!({"ok":true,"data":null})),
+            LinkState::Error
+        );
+    }
+
+    #[test]
+    fn opened_is_true_only_for_an_explicit_true() {
+        assert!(browser_opened(&json!({"ok":true,"data":{"opened":true}})));
+        assert!(!browser_opened(
+            &json!({"ok":true,"data":{"opened":"true"}})
+        ));
+        assert!(!browser_opened(&json!({"ok":true,"data":{}})));
+        assert!(!browser_opened(&json!({"ok":false,"data":{"opened":true}})));
+    }
+
+    #[test]
+    fn prepared_folder_needs_an_absolute_path_of_the_matching_kind() {
+        let folder = std::env::temp_dir().join("SliceBridge");
+        let folder = folder.to_string_lossy().into_owned();
+        assert_eq!(
+            prepared_folder(
+                &json!({"ok":true,"data":{"folder":folder,"kind":"chromium"}}),
+                BrowserChoice::Edge
+            ),
+            Some(folder.clone())
+        );
+        // Firefox needs the Firefox package kind; a chromium package is refused.
+        assert_eq!(
+            prepared_folder(
+                &json!({"ok":true,"data":{"folder":folder,"kind":"chromium"}}),
+                BrowserChoice::Firefox
+            ),
+            None
+        );
+        assert_eq!(
+            prepared_folder(
+                &json!({"ok":true,"data":{"folder":"relative/SliceBridge","kind":"chromium"}}),
+                BrowserChoice::Edge
+            ),
+            None
+        );
+        assert_eq!(
+            prepared_folder(
+                &json!({"ok":false,"error":"no","data":{"folder":folder,"kind":"chromium"}}),
+                BrowserChoice::Edge
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn active_step_follows_connect_then_install_then_mode() {
+        assert_eq!(active_setup_step(LinkState::Unknown, false), 1);
+        assert_eq!(active_setup_step(LinkState::Missing, true), 1);
+        assert_eq!(active_setup_step(LinkState::Error, false), 1);
+        assert_eq!(active_setup_step(LinkState::Ready, false), 2);
+        assert_eq!(active_setup_step(LinkState::Mac, false), 2);
+        assert_eq!(active_setup_step(LinkState::Ready, true), 3);
+    }
+
+    #[test]
+    fn modal_stays_open_only_while_developer_mode_is_on() {
+        assert!(integrations_still_open(true, true));
+        // Developer mode turned off while the modal is open closes it.
+        assert!(!integrations_still_open(true, false));
+        // A closed modal never reopens by itself when developer mode turns on.
+        assert!(!integrations_still_open(false, true));
+    }
+
+    #[test]
+    fn every_setup_key_has_copy_in_both_locales() {
+        for key in INTEGRATION_KEYS {
+            assert_ne!(Locale::He.text(key), *key, "he {key}");
+            assert_ne!(Locale::En.text(key), *key, "en {key}");
+        }
+        assert_eq!(Locale::En.text("done"), "Done");
+        assert_eq!(
+            Locale::En.text("makerworldLocked"),
+            "MakerWorld setup is locked. Open About → Developer mode to unlock it."
+        );
+        assert_eq!(Locale::He.text("done"), "סיום");
+        assert_eq!(Locale::En.text("browserLabel"), "Browser");
     }
 }
