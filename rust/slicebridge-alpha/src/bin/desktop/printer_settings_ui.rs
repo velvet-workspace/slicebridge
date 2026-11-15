@@ -41,16 +41,24 @@ fn choice_button(
     }
 }
 
+const OEM_READINESS_TARGETS: &[&str] = &["u1", "c5", "cc2", "qidi"];
+
 // Hardware readiness is checked against the selected PHYSICAL nozzle, not a
-// hardcoded 0.4mm variant. Saved filament overrides require an exact fresh OEM
-// verification before appearing as a ready destination.
-pub(super) fn ready_from_preferences(
+// hardcoded 0.4mm variant. Every built-in OEM target participates. Auto with
+// no saved material overrides can use the current discovery snapshot; an
+// explicit slicer or saved material always gets an exact fresh resolution
+// against that selected slicer's installed profile tree.
+fn ready_from_preferences_with<F>(
     discovery: &Value,
     settings: &Value,
     source_nozzle: Option<&str>,
-) -> std::collections::BTreeSet<String> {
+    mut resolve: F,
+) -> std::collections::BTreeSet<String>
+where
+    F: FnMut(&str, &str, &str, &std::collections::BTreeMap<String, String>) -> bool,
+{
     let mut ready = std::collections::BTreeSet::new();
-    for target in ["u1", "qidi"] {
+    for target in OEM_READINESS_TARGETS {
         let selection = if let Some(source) = source_nozzle {
             slicebridge_alpha::printer_settings::profile_choice_for_source(
                 settings, target, "auto", source,
@@ -61,22 +69,53 @@ pub(super) fn ready_from_preferences(
         let Ok((nozzle, overrides)) = selection else {
             continue;
         };
+        let slicer = settings["printers"][*target]["slicer"]
+            .as_str()
+            .unwrap_or("auto");
         let listed = discovery["profiles"].as_array().is_some_and(|rows| {
             rows.iter().any(|item| {
-                item["target"] == target && item["nozzle"] == nozzle && item["ready"] == true
+                item["target"] == *target && item["nozzle"] == nozzle && item["ready"] == true
             })
         });
-        if !listed {
-            continue;
+        let installed = if slicer == "auto" && overrides.is_empty() {
+            listed
+        } else {
+            resolve(target, &nozzle, slicer, &overrides)
+        };
+        if installed {
+            ready.insert((*target).to_owned());
         }
-        if !overrides.is_empty()
-            && slicebridge_alpha::oem::resolve(target, &nozzle, &overrides).is_err()
-        {
-            continue;
-        }
-        ready.insert(target.to_owned());
     }
     ready
+}
+
+pub(super) fn ready_from_preferences(
+    discovery: &Value,
+    settings: &Value,
+    source_nozzle: Option<&str>,
+) -> std::collections::BTreeSet<String> {
+    ready_from_preferences_with(
+        discovery,
+        settings,
+        source_nozzle,
+        |target, nozzle, slicer, overrides| {
+            slicebridge_alpha::oem::resolve_configured(target, nozzle, slicer, overrides).is_ok()
+        },
+    )
+}
+
+// Mirrors the source-locked Go guard in saveSettings: Auto nozzle cannot carry
+// a saved filament preset. Only used to show the localized reason before the
+// request; printer_settings::validate_for_save remains the authoritative check.
+fn auto_nozzle_has_filament_override(draft: &Value) -> bool {
+    let auto = match draft["nozzle"].as_str() {
+        None => true,
+        Some(nozzle) => nozzle.is_empty() || nozzle == "auto",
+    };
+    auto && draft["filaments"].as_object().is_some_and(|map| {
+        map.values()
+            .any(|v| v.as_str().is_some_and(|s| !s.is_empty()))
+    })
 }
 
 impl SliceBridgeWindow {
@@ -174,6 +213,11 @@ impl SliceBridgeWindow {
         cx.notify();
     }
     pub(super) fn save_settings(&mut self, cx: &mut Context<Self>) {
+        if auto_nozzle_has_filament_override(&self.settings_draft) {
+            self.settings_error = self.locale.text("autoPresetWarning");
+            cx.notify();
+            return;
+        }
         let reply = self.commands.execute(
             "settings.save",
             &json!({
@@ -553,11 +597,69 @@ mod tests {
     }
 
     #[test]
+    fn readiness_includes_creator5_and_cc2_and_honors_the_saved_slicer() {
+        let mut saved = slicebridge_alpha::printer_settings::defaults();
+        saved["printers"]["c5"]["nozzle"] = json!("0.4");
+        saved["printers"]["c5"]["slicer"] = json!("flash-studio");
+        saved["printers"]["cc2"]["nozzle"] = json!("0.4");
+        saved["printers"]["cc2"]["slicer"] = json!("elegoo-slicer");
+        let discovered = json!({"profiles":[
+            {"target":"u1","nozzle":"0.4","ready":true},
+            {"target":"c5","nozzle":"0.4","ready":false},
+            {"target":"cc2","nozzle":"0.4","ready":false},
+            {"target":"qidi","nozzle":"0.4","ready":false}
+        ]});
+        let mut resolved = Vec::new();
+        let ready = super::ready_from_preferences_with(
+            &discovered,
+            &saved,
+            None,
+            |target, nozzle, slicer, overrides| {
+                resolved.push((
+                    target.to_owned(),
+                    nozzle.to_owned(),
+                    slicer.to_owned(),
+                    overrides.len(),
+                ));
+                (target == "c5" && slicer == "flash-studio")
+                    || (target == "cc2" && slicer == "elegoo-slicer")
+            },
+        );
+        assert!(ready.contains("u1")); // exact auto discovery
+        assert!(ready.contains("c5")); // explicit installed slicer overrides auto discovery
+        assert!(ready.contains("cc2"));
+        assert!(!ready.contains("qidi")); // neither discovery nor selected resolver is ready
+        assert_eq!(
+            resolved,
+            vec![
+                ("c5".into(), "0.4".into(), "flash-studio".into(), 0),
+                ("cc2".into(), "0.4".into(), "elegoo-slicer".into(), 0),
+            ]
+        );
+    }
+
+    #[test]
     fn settings_ui_has_exact_legacy_target_and_material_ids() {
         assert_eq!(
             TARGETS.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
             vec!["u1", "c5", "cc2", "qidi"]
         );
         assert_eq!(MATERIALS, &["PLA", "PETG", "ABS", "ASA", "TPU"]);
+    }
+
+    #[test]
+    fn auto_nozzle_blocks_only_non_empty_filament_overrides() {
+        let auto_with_preset = json!({"nozzle":"auto","filaments":{"PLA":"Custom PLA"}});
+        assert!(super::auto_nozzle_has_filament_override(&auto_with_preset));
+        let auto_empty_preset = json!({"nozzle":"auto","filaments":{"PLA":""}});
+        assert!(!super::auto_nozzle_has_filament_override(
+            &auto_empty_preset
+        ));
+        let fixed_with_preset = json!({"nozzle":"0.4","filaments":{"PLA":"Custom PLA"}});
+        assert!(!super::auto_nozzle_has_filament_override(
+            &fixed_with_preset
+        ));
+        let missing_nozzle = json!({"filaments":{"PETG":"Custom PETG"}});
+        assert!(super::auto_nozzle_has_filament_override(&missing_nozzle));
     }
 }
