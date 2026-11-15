@@ -585,3 +585,29 @@ fn autonomous_cli_accepts_only_a_resolved_bundle_and_real_source_archive() {
     assert_eq!(inspect_package(&out).unwrap().slice_caches, 0);
     assert_eq!(fs::read(&fixture.source).unwrap(), source_before);
 }
+
+#[test]
+fn autonomous_rejects_unsafe_zip_entries_before_material_discovery() {
+    let fixture = Fixture::new("autonomous-unsafe-zip");
+    let source = fixture.output("unsafe-source.3mf");
+    let mut writer = ZipWriter::new(File::create(&source).unwrap());
+    let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    writer.start_file("../outside.txt", opts).unwrap();
+    writer.write_all(b"not a safe 3MF entry").unwrap();
+    writer.start_file("[Content_Types].xml", opts).unwrap();
+    writer.write_all(b"<Types/>").unwrap();
+    writer.start_file("3D/3dmodel.model", opts).unwrap();
+    writer.write_all(MODEL).unwrap();
+    writer.finish().unwrap();
+    let source_before = fs::read(&source).unwrap();
+    let destination = fixture.output("must-not-exist.3mf");
+    let err = slicebridge_3mf_probe::convert_native_autonomous(
+        &request_value()["bundle"],
+        &source,
+        &destination,
+    )
+    .unwrap_err();
+    assert!(err.contains("unsafe archive entry"), "{err}");
+    assert!(!destination.exists());
+    assert_eq!(fs::read(&source).unwrap(), source_before);
+}

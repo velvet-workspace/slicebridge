@@ -3,7 +3,7 @@
 //! cross-checked against the source slice info, and the existing fail-closed
 //! archive converter performs the only write. Callers receive a compact receipt;
 //! the OEM plan and its machine scripts never leave the process.
-use crate::{build_native_conversion_plan, convert_archive_experimental};
+use crate::{build_native_conversion_plan, convert_archive_experimental, inspect_package};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 use serde_json::{json, Value};
@@ -265,6 +265,9 @@ pub fn convert_native_autonomous(
     if destination.exists() {
         return Err("destination already exists; refusing overwrite".into());
     }
+    // Validate archive entry names, duplicate names, expanded ZIP size, and
+    // geometry bounds before even discovering source-owned print parameters.
+    inspect_package(source)?;
     let request = source_owned_native_request(bundle, source)?;
     convert_native_archive(&request, source, destination)
 }
