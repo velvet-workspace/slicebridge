@@ -67,6 +67,14 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "Read validated stable printer settings or defaults without modifying installed settings",
     ),
     (
+        "settings.options",
+        "List source-locked nozzle, installed slicer and verified material choices",
+    ),
+    (
+        "settings.save",
+        "Save one validated printer's preferences only to isolated GPUI alpha settings",
+    ),
+    (
         "printers.get",
         "Read saved My Printers inventory without modifying stable Wails settings",
     ),
@@ -240,6 +248,39 @@ impl Registry {
             "app.status" | "conversion.status" => Ok(self.snapshot()),
             "printers.catalog" => my_printers::catalog_snapshot(),
             "settings.get" => printer_settings::current(),
+            "settings.options" => {
+                let target = params
+                    .get("target")
+                    .and_then(Value::as_str)
+                    .ok_or("target is required")?;
+                let nozzle = params
+                    .get("nozzle")
+                    .and_then(Value::as_str)
+                    .unwrap_or("auto");
+                let slicer = params
+                    .get("slicer")
+                    .and_then(Value::as_str)
+                    .unwrap_or("auto");
+                let material = params
+                    .get("material")
+                    .and_then(Value::as_str)
+                    .unwrap_or("PLA");
+                printer_settings::options(target, nozzle, slicer, material)
+            }
+            "settings.save" => {
+                let target = params
+                    .get("target")
+                    .and_then(Value::as_str)
+                    .ok_or("target is required")?;
+                let preference = params
+                    .get("pref")
+                    .ok_or("printer preferences are required")?;
+                let state = self.state.lock().map_err(|err| err.to_string())?;
+                if busy(&state) {
+                    return Err("cannot modify printer settings during conversion".into());
+                }
+                printer_settings::save(target, preference)
+            }
             "printers.get" => my_printers::read(
                 &my_printers::experimental_path()?,
                 &my_printers::available_installed_ids(),
