@@ -236,9 +236,8 @@ func convertWithNativeRust(ctx context.Context, source, destination string, reso
 			"All %d original color/material slots remain separate virtual project filaments. The target profile reports %s; this does not establish filament feeder capacity. Verify material-changing hardware and each slot's assignment in the native slicer. Do not combine or discard colors unless explicitly intended.",
 			len(receipt.Slots), physicalToolPhrase(resolved.PhysicalTools)))
 	}
-	qidiPETGImportWarning := qidiXPlus5PETGImportWarning(resolved.ID, resolved.ExpectedModel, resolved.PhysicalTools, receipt.Slots)
-	if qidiPETGImportWarning != "" {
-		warnings = append(warnings, qidiPETGImportWarning)
+	if warning := qidiXPlus5PETGImportWarning(resolved.ID, resolved.ExpectedModel, resolved.PhysicalTools, receipt.Slots); warning != "" {
+		warnings = append(warnings, warning)
 	}
 	if len(receipt.Slots) > 1 {
 		warnings = append(warnings,
@@ -274,7 +273,6 @@ func convertWithNativeRust(ctx context.Context, source, destination string, reso
 		"physical_toolheads":                           resolved.PhysicalTools,
 		"user_slot_mapping_required":                   len(receipt.Slots) > resolved.PhysicalTools,
 		"tool_usage_verification_required":             len(receipt.Slots) > 1,
-		"qidi_fifth_petg_preset_review_required":       qidiPETGImportWarning != "",
 		"prime_tower_clearance_review_required":        primeTowerReview,
 		"prime_tower_plate_coordinate_review_required": primeTowerReview && towerPositions.incomplete(),
 		"prime_tower_plate_position_audit_status":      towerPositions.status(primeTowerReview),
