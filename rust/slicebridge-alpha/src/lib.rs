@@ -1,6 +1,7 @@
 //! One Rust command surface for the desktop and agent transports.
 //! The proven 3MF implementation remains in slicebridge-3mf-probe.
 pub mod batch;
+pub mod makerworld;
 pub mod my_printers;
 pub mod oem;
 pub mod printer_settings;
@@ -102,6 +103,14 @@ pub const COMMANDS: &[(&str, &str)] = &[
     (
         "printers.save",
         "Validate and save up to 32 printer memberships in isolated GPUI alpha settings",
+    ),
+    (
+        "makerworld.origins",
+        "Read bounded existing OS provenance for up to 200 local 3MF files",
+    ),
+    (
+        "makerworld.link.preview",
+        "Validate a trusted Bambu/MakerWorld deep link without downloading or opening it",
     ),
     (
         "projects.list",
@@ -272,6 +281,33 @@ impl Registry {
                 .collect::<Vec<_>>()})),
             "app.status" | "conversion.status" => Ok(self.snapshot()),
             "printers.catalog" => my_printers::catalog_snapshot(),
+            "makerworld.origins" => {
+                let paths = params
+                    .get("paths")
+                    .and_then(Value::as_array)
+                    .ok_or("paths must be an array")?;
+                if paths.len() > 200 {
+                    return Err("too many paths".into());
+                }
+                let mut results = serde_json::Map::new();
+                for path in paths {
+                    let path = path
+                        .as_str()
+                        .ok_or("MakerWorld source path must be a string")?;
+                    let source = makerworld::detect(Path::new(path));
+                    if source.kind != "unknown" {
+                        results.insert(path.to_owned(), source.as_value());
+                    }
+                }
+                Ok(Value::Object(results))
+            }
+            "makerworld.link.preview" => {
+                let raw = params
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .ok_or("external link is required")?;
+                makerworld::parse_link(raw).map(|link| link.as_value())
+            }
             "settings.get" => printer_settings::current(),
             "settings.developer.set" => {
                 let enabled = params
@@ -845,6 +881,65 @@ mod tests {
         assert_eq!(
             result["data"]["commands"].as_array().unwrap().len(),
             COMMANDS.len()
+        );
+    }
+
+    #[test]
+    fn makerworld_preview_is_read_only_and_refuses_untrusted_links() {
+        let registry = Registry::new();
+        let before = registry.snapshot();
+        let valid = registry.execute(
+            "makerworld.link.preview",
+            &json!({
+                "url":"slicebridge://import?url=https%3A%2F%2Fmakerworld.com%2Fen%2Fmodels%2F123"
+            }),
+        );
+        assert_eq!(valid["ok"], true);
+        assert_eq!(valid["data"]["scheme"], "slicebridge");
+        assert_eq!(valid["data"]["source"]["kind"], "makerworld");
+        assert_eq!(valid["data"]["source"]["confidence"], "high");
+        for input in [
+            json!({}),
+            json!({"url":"https://makerworld.com/a.3mf"}),
+            json!({"url":"bambustudioopen://https%3A%2F%2Fmakerworld.com.evil.test%2Fa.3mf"}),
+            json!({"url":"slicebridge://import?url=file%3A%2F%2Fetc%2Fpasswd"}),
+        ] {
+            assert_eq!(
+                registry.execute("makerworld.link.preview", &input)["ok"],
+                false
+            );
+        }
+        assert_eq!(registry.snapshot(), before);
+    }
+
+    #[test]
+    fn makerworld_provenance_does_not_modify_local_model_or_accept_oversize_list() {
+        let registry = Registry::new();
+        let source =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/bambu-one-color.3mf");
+        let original = fs::read(&source).unwrap();
+        let prior = registry.snapshot();
+        let reply = registry.execute("makerworld.origins", &json!({"paths":[source]}));
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert!(reply["data"].as_object().unwrap().is_empty());
+        assert_eq!(fs::read(&source).unwrap(), original);
+        assert_eq!(registry.snapshot(), prior);
+        assert_eq!(
+            registry.execute("makerworld.origins", &json!({"paths":[]}))["data"],
+            json!({})
+        );
+        assert_eq!(
+            registry.execute("makerworld.origins", &json!({"paths":"not-array"}))["ok"],
+            false
+        );
+        assert_eq!(
+            registry.execute("makerworld.origins", &json!({"paths":[12]}))["ok"],
+            false
+        );
+        let oversized = vec!["missing.3mf"; 201];
+        assert_eq!(
+            registry.execute("makerworld.origins", &json!({"paths":oversized}))["ok"],
+            false
         );
     }
 

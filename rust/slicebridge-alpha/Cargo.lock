@@ -5899,8 +5899,10 @@ name = "slicebridge-alpha"
 version = "0.1.0"
 dependencies = [
  "gpui-kit",
+ "percent-encoding",
  "serde_json",
  "slicebridge-3mf-probe",
+ "url",
 ]
 
 [[package]]
