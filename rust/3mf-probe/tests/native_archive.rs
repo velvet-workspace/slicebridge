@@ -378,3 +378,107 @@ fn cli_returns_only_compact_receipt_and_refuses_existing_output() {
     );
     assert!(inspect_package(&output).is_ok());
 }
+
+/// End-to-end two-plate archive test: unlike a slice-info-only rewrite,
+/// this verifies the complete original ZIP package is sanitized, no plate
+/// loses its independently tracked material usage, and the source is immutable.
+#[test]
+fn two_plate_native_archive_preserves_independent_usage_and_removes_both_caches() {
+    let fixture = Fixture::new("two-plate-full-archive");
+    // Only synthetic source data are used; never modify installed user files.
+    let two_plates = br##"<?xml version="1.0" encoding="UTF-8"?>
+<config>
+<plate><metadata key="index" value="1"/>
+  <filament id="1" type="PLA" color="#FF0000" used_m="1.0" used_g="2.0"/>
+  <filament id="2" type="PLA" color="#00FF00" used_m="0" used_g="0"/>
+  <filament id="3" type="PLA" color="#0000FF" used_m="0" used_g="0"/>
+  <filament id="4" type="PLA" color="#FFFF00" used_m="0" used_g="0"/>
+  <filament id="7" type="PETG" color="#123456" used_m="3.0" used_g="5.0"/>
+</plate>
+<plate><metadata key="index" value="2"/>
+  <filament id="1" type="PLA" color="#FF0000" used_m="8.0" used_g="9.0"/>
+  <filament id="2" type="PLA" color="#00FF00" used_m="0" used_g="0"/>
+  <filament id="3" type="PLA" color="#0000FF" used_m="0" used_g="0"/>
+  <filament id="4" type="PLA" color="#FFFF00" used_m="0" used_g="0"/>
+  <filament id="7" type="PETG" color="#123456" used_m="4.0" used_g="6.0"/>
+</plate>
+</config>"##;
+
+    let old_members = members(&fixture.source);
+    let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    let mut writer = ZipWriter::new(File::create(&fixture.source).unwrap());
+    for (name, bytes) in &old_members {
+        writer.start_file(name, opts).unwrap();
+        if name == "Metadata/slice_info.config" {
+            writer.write_all(two_plates).unwrap();
+        } else {
+            writer.write_all(bytes).unwrap();
+        }
+    }
+    for (name, bytes) in [
+        ("Metadata/plate_2.gcode", b"G1 X2".as_slice()),
+        ("Metadata/plate_2.gcode.md5", b"hash".as_slice()),
+        ("Metadata/plate_2.png", b"THUMBNAIL_2".as_slice()),
+    ] {
+        writer.start_file(name, opts).unwrap();
+        writer.write_all(bytes).unwrap();
+    }
+    writer.finish().unwrap();
+
+    let source_before = fs::read(&fixture.source).unwrap();
+    let out = fixture.output("two-plate-output.3mf");
+    let receipt = convert_native_archive(&request_value(), &fixture.source, &out).unwrap();
+    assert_eq!(receipt["ok"], true);
+    assert_eq!(fs::read(&fixture.source).unwrap(), source_before);
+    let converted = members(&out);
+    assert_eq!(
+        converted["3D/3dmodel.model"],
+        old_members["3D/3dmodel.model"]
+    );
+    assert_eq!(converted["Metadata/plate_1.png"], b"THUMBNAIL");
+    assert_eq!(converted["Metadata/plate_2.png"], b"THUMBNAIL_2");
+    assert!(converted
+        .keys()
+        .all(|name| !name.ends_with(".gcode") && !name.ends_with(".gcode.md5")));
+    assert_eq!(inspect_package(&out).unwrap().slice_caches, 0);
+
+    // Parse the actual rewritten full archive to verify plate-local values.
+    let xml = &converted["Metadata/slice_info.config"];
+    let mut reader = Reader::from_reader(xml.as_slice());
+    let mut plates: Vec<BTreeMap<String, String>> = Vec::new();
+    loop {
+        match reader.read_event().unwrap() {
+            Event::Start(ref node) if node.local_name().as_ref() == "plate" => {
+                plates.push(BTreeMap::new());
+            }
+            Event::Start(ref node) | Event::Empty(ref node)
+                if node.local_name().as_ref() == "filament" =>
+            {
+                let attrs = node
+                    .attributes()
+                    .map(|a| {
+                        let attr = a.unwrap();
+                        (attr.key.as_ref().to_owned(), attr.value.as_ref().to_owned())
+                    })
+                    .collect::<BTreeMap<_, _>>();
+                let id = attrs["id"].clone();
+                let grams = attrs["used_g"].clone();
+                plates
+                    .last_mut()
+                    .expect("filament inside plate")
+                    .insert(id, grams);
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    assert_eq!(plates.len(), 2);
+    assert_eq!(plates[0].len(), 5);
+    assert_eq!(plates[1].len(), 5);
+    assert_eq!(plates[0]["1"], "2.00");
+    assert_eq!(plates[1]["1"], "9.00");
+    assert_eq!(plates[0]["5"], "5.00"); // original source filament 7
+    assert_eq!(plates[1]["5"], "6.00");
+    assert!(!plates[0].contains_key("7"));
+    assert!(!plates[1].contains_key("7"));
+}
