@@ -69,7 +69,7 @@ pub fn inspect_package(path: impl AsRef<Path>) -> Result<PackageFacts, String> {
 
     for index in 0..zip.len() {
         let entry = zip.by_index(index).map_err(|e| format!("ZIP entry: {e}"))?;
-        let name = entry.name().to_owned();
+        let name = entry.name().map_err(|e| e.to_string())?.into_owned();
         if !safe_entry_name(&name) {
             return Err(format!("unsafe archive entry {name:?}"));
         }

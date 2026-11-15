@@ -153,7 +153,10 @@ fn members(path: &Path) -> BTreeMap<String, Vec<u8>> {
         let mut entry = archive.by_index(index).unwrap();
         let mut bytes = Vec::new();
         entry.read_to_end(&mut bytes).unwrap();
-        out.insert(entry.name().to_owned(), bytes);
+        out.insert(
+            entry.name().expect("valid ZIP member name").into_owned(),
+            bytes,
+        );
     }
     out
 }

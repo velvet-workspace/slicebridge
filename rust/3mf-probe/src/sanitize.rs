@@ -86,7 +86,8 @@ pub(crate) fn strip_slice_cache_preserving_for_qidi(
     let mut total = 0u64;
     for index in 0..src.len() {
         let entry = src.by_index_raw(index).map_err(|e| e.to_string())?;
-        if !safe_entry_name(entry.name()) || !seen.insert(entry.name().to_owned()) {
+        let name = entry.name().map_err(|e| e.to_string())?;
+        if !safe_entry_name(&name) || !seen.insert(name.into_owned()) {
             return Err("unsafe or duplicate ZIP entry".to_owned());
         }
         total = total
@@ -118,7 +119,7 @@ pub(crate) fn strip_slice_cache_preserving_for_qidi(
 
     for index in 0..src.len() {
         let mut entry = src.by_index(index).map_err(|e| e.to_string())?;
-        let name = entry.name().to_owned();
+        let name = entry.name().map_err(|e| e.to_string())?.into_owned();
         if is_cache(&name) {
             removed += 1;
             continue;

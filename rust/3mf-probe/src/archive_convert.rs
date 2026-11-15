@@ -313,7 +313,7 @@ fn audit_source_material_references(
     let mut missing_defaults = BTreeSet::new();
     for index in 0..source.len() {
         let entry = source.by_index(index).map_err(|e| e.to_string())?;
-        let name = entry.name().to_owned();
+        let name = entry.name().map_err(|e| e.to_string())?.into_owned();
         let model = name.to_ascii_lowercase().ends_with(".model");
         let defaults = name == "Metadata/model_settings.config";
         if !model && !defaults {
@@ -547,7 +547,7 @@ pub fn convert_archive_experimental(
 
     for index in 0..src.len() {
         let mut entry = src.by_index(index).map_err(|e| e.to_string())?;
-        let name = entry.name().to_owned();
+        let name = entry.name().map_err(|e| e.to_string())?.into_owned();
         if name.ends_with(".model") {
             if entry.size() > MAX_MODEL_XML_BYTES {
                 return Err(format!("{name}: model XML exceeds 200 MB limit"));
