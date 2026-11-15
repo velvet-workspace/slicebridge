@@ -238,6 +238,19 @@ fn is_worker_output_exists(receipt: &Value, candidate_exists: bool) -> bool {
             || atomic_publish_collision)
 }
 
+// Preserve stable Go ConvertResult.Code without inventing error categories.
+fn failure_receipt(error: &str, source_invalid: bool) -> Value {
+    if source_invalid {
+        return json!({"code":"SOURCE_INVALID","error":error});
+    }
+    for code in ["OUTPUT_COLLISIONS", "OUTPUT_INVALID"] {
+        if let Some(message) = error.strip_prefix(&format!("{code}: ")) {
+            return json!({"code":code,"error":message});
+        }
+    }
+    json!({"error":error})
+}
+
 fn output_exists(path: &Path) -> Result<bool, String> {
     match fs::metadata(path) {
         Ok(_) => Ok(true),
@@ -246,13 +259,26 @@ fn output_exists(path: &Path) -> Result<bool, String> {
     }
 }
 
+#[cfg(test)]
 fn plan_batch(
+    paths: &[PathBuf],
+    target: &str,
+    nozzles: &[Option<String>],
+) -> Result<Vec<Item>, String> {
+    plan_batch_with(paths, target, nozzles, output_exists)
+}
+
+fn plan_batch_with<E>(
     paths: &[PathBuf],
     target: &str,
     // None denotes a source rejected by 3MF inspection or profile selection.
     // It must remain in the batch report, but must not be assigned an output.
     nozzles: &[Option<String>],
-) -> Result<Vec<Item>, String> {
+    mut exists: E,
+) -> Result<Vec<Item>, String>
+where
+    E: FnMut(&Path) -> Result<bool, String>,
+{
     if paths.is_empty() || paths.len() > MAX_BATCH {
         return Err(format!(
             "batch requires 1..={MAX_BATCH} distinct 3MF sources"
@@ -300,7 +326,8 @@ fn plan_batch(
         }
         // Go's writeConversion chooses the first free name in the source's
         // own directory. Reserve earlier planned names within this batch.
-        let destination = next_original_output_with(path, target, &destinations, output_exists)?;
+        let destination =
+            next_original_output_with(path, target, &destinations, |candidate| exists(candidate))?;
         if crate::same_path(path, &destination) {
             return Err("batch output cannot be the original source".into());
         }
@@ -321,13 +348,38 @@ fn prepare_batch<F>(
     paths: &[PathBuf],
     target: &str,
     settings: &Value,
-    mut resolver: F,
+    resolver: F,
 ) -> Result<Vec<PreparedItem>, String>
 where
     F: FnMut(&str, &str, &BTreeMap<String, String>) -> Result<Value, String>,
 {
+    prepare_batch_with(paths, target, settings, resolver, output_exists)
+}
+
+// A read-only injectable probe models file-name races and inaccessible
+// destinations without creating any 3MF output during QA.
+fn prepare_batch_with<F, E>(
+    paths: &[PathBuf],
+    target: &str,
+    settings: &Value,
+    mut resolver: F,
+    mut exists: E,
+) -> Result<Vec<PreparedItem>, String>
+where
+    F: FnMut(&str, &str, &BTreeMap<String, String>) -> Result<Value, String>,
+    E: FnMut(&Path) -> Result<bool, String>,
+{
     if paths.is_empty() || paths.len() > MAX_BATCH {
         return Err(format!("batch requires 1..={MAX_BATCH} source files"));
+    }
+    // Preserve the existing direct-API duplicate refusal. Errors belonging
+    // only to one source/target are instead recorded per item below.
+    let mut seen = BTreeSet::new();
+    for path in paths {
+        let identity = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if !seen.insert(output_key(&identity)) {
+            return Err(format!("duplicate 3MF source: {}", path.display()));
+        }
     }
     let mut metadata = Vec::with_capacity(paths.len());
     let mut variant_nozzles = Vec::with_capacity(paths.len());
@@ -391,7 +443,35 @@ where
         variant_nozzles.push(Some(target_nozzle));
         metadata.push((source_nozzle, assumed, false, resolved));
     }
-    let filenames = plan_batch(paths, target, &variant_nozzles)?;
+    // Go's name/permission errors are per-file and per-target results.
+    // A single saturated directory must not refuse the entire batch.
+    let mut filenames = Vec::with_capacity(paths.len());
+    for ((path, nozzle), meta) in paths.iter().zip(&variant_nozzles).zip(&mut metadata) {
+        if meta.3.is_err() {
+            filenames.push(Item {
+                source: path.clone(),
+                output: PathBuf::new(),
+                nozzle: nozzle.clone().unwrap_or_default(),
+            });
+            continue;
+        }
+        match plan_batch_with(
+            std::slice::from_ref(path),
+            target,
+            std::slice::from_ref(nozzle),
+            |candidate| exists(candidate),
+        ) {
+            Ok(mut planned) => filenames.push(planned.remove(0)),
+            Err(error) => {
+                meta.3 = Err(error);
+                filenames.push(Item {
+                    source: path.clone(),
+                    output: PathBuf::new(),
+                    nozzle: nozzle.clone().unwrap_or_default(),
+                });
+            }
+        }
+    }
     Ok(filenames
         .into_iter()
         .zip(metadata)
@@ -653,11 +733,12 @@ fn run_batch_with<F>(
                     finish(&shared, "cancelled", Some(&error));
                     return;
                 }
-                let mut receipt = json!({"error":error});
-                if ready.source_invalid {
-                    receipt["code"] = json!("SOURCE_INVALID");
-                }
-                update(&shared, index, "failed", Some(receipt));
+                update(
+                    &shared,
+                    index,
+                    "failed",
+                    Some(failure_receipt(&error, ready.source_invalid)),
+                );
             }
         }
     }
@@ -857,12 +938,13 @@ fn run_multi_batch_with<F>(
                         );
                     }
                     Err(error) => {
-                        let receipt = if pair.ready.source_invalid {
-                            json!({"code":"SOURCE_INVALID","error":error})
-                        } else {
-                            json!({"error":error})
-                        };
-                        mark_multi_target(&shared, file_index, index, "failed", receipt);
+                        mark_multi_target(
+                            &shared,
+                            file_index,
+                            index,
+                            "failed",
+                            failure_receipt(&error, pair.ready.source_invalid),
+                        );
                     }
                 }
             }
@@ -1656,6 +1738,101 @@ mod tests {
                     .is_some_and(|error| error.contains("unavailable"))));
         assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn exhausted_or_inaccessible_output_for_one_source_does_not_refuse_batch() {
+        let paths = [
+            fixture("bambu-nozzle-0.2.3mf"),
+            fixture("bambu-nozzle-0.6.3mf"),
+        ];
+        let before = paths
+            .iter()
+            .map(|p| fs::read(p).unwrap())
+            .collect::<Vec<_>>();
+        let settings = printer_settings::defaults();
+        let resolved = |target: &str, nozzle: &str, _: &BTreeMap<String, String>| {
+            Ok(json!({"target":target,"nozzle":nozzle}))
+        };
+        let planned = prepare_batch_with(&paths, "u1", &settings, resolved, |candidate| {
+            Ok(candidate
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("U1-bambu-nozzle-0.2"))
+        })
+        .unwrap();
+        assert_eq!(planned.len(), 2);
+        assert!(planned[0]
+            .resolved
+            .as_ref()
+            .unwrap_err()
+            .contains("OUTPUT_COLLISIONS"));
+        assert!(planned[0].item.output.as_os_str().is_empty());
+        assert!(planned[1].resolved.is_ok());
+        assert!(!planned[1].item.output.exists());
+
+        let shared = Arc::new(Mutex::new(Session::default()));
+        shared.lock().unwrap().batch = Some(json!({
+            "phase":"running","total":2,"completed":0,"successes":0,
+            "failures":0,"progress_percent":0,
+            "items":[{"phase":"queued","receipt":null},
+                     {"phase":"queued","receipt":null}]
+        }));
+        let mut mock_calls = Vec::new();
+        run_batch_with(
+            shared.clone(),
+            planned,
+            Arc::new(AtomicBool::new(false)),
+            |entry| {
+                mock_calls.push(entry.item.source.clone());
+                Ok(json!({"mock":true}))
+            },
+        );
+        assert_eq!(mock_calls, vec![paths[1].clone()]);
+        let state = shared.lock().unwrap();
+        let batch = state.batch.as_ref().unwrap();
+        assert_eq!(batch["phase"], "completed");
+        assert_eq!(batch["completed"], 2);
+        assert_eq!(batch["successes"], 1);
+        assert_eq!(batch["failures"], 1);
+        assert_eq!(batch["items"][0]["receipt"]["code"], "OUTPUT_COLLISIONS");
+        assert_eq!(
+            batch["items"][0]["receipt"]["error"],
+            "Too many same-name outputs"
+        );
+        assert_eq!(batch["items"][1]["phase"], "completed");
+        drop(state);
+
+        let permission = prepare_batch_with(
+            &paths,
+            "u1",
+            &settings,
+            |target, nozzle, _| Ok(json!({"target":target,"nozzle":nozzle})),
+            |candidate| {
+                if candidate
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("U1-bambu-nozzle-0.2")
+                {
+                    Err("OUTPUT_INVALID: permission denied".to_owned())
+                } else {
+                    Ok(false)
+                }
+            },
+        )
+        .unwrap();
+        assert!(permission[0].resolved.is_err());
+        assert!(permission[0].item.output.as_os_str().is_empty());
+        assert!(permission[1].resolved.is_ok());
+        assert_eq!(
+            failure_receipt(permission[0].resolved.as_ref().unwrap_err(), false),
+            json!({"code":"OUTPUT_INVALID","error":"permission denied"})
+        );
+        for (path, bytes) in paths.iter().zip(before) {
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
     }
 
     #[test]
