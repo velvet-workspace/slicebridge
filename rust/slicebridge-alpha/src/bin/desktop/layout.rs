@@ -64,6 +64,11 @@ fn align_text(element: Div, rtl: bool) -> Div {
     }
 }
 
+// One small caption line inside a result report, aligned for the current direction.
+fn caption(text: String, color: u32, rtl: bool) -> Div {
+    align_text(div().text_xs().text_color(rgb(color)).child(text), rtl)
+}
+
 fn panel() -> Div {
     div()
         .rounded_lg()
@@ -142,6 +147,75 @@ pub(super) fn result_counts(item: &Value) -> (usize, usize) {
         Some("failed") => (0, 1),
         _ => (0, 0),
     }
+}
+
+// Mirrors app.js renderResults header: successes and failures summed over every source in the batch.
+pub(super) fn batch_totals(items: &[Value]) -> (usize, usize) {
+    items.iter().fold((0, 0), |(passed, failed), item| {
+        let (succeeded, finished) = result_counts(item);
+        (passed + succeeded, failed + finished - succeeded)
+    })
+}
+
+// A ready printer's saved title, falling back to the raw target id when it is no longer ready.
+pub(super) fn target_display_name(ready_rows: &[(&str, &str)], id: &str) -> String {
+    if let Some((_, title)) = ready_rows.iter().find(|(row_id, _)| *row_id == id) {
+        return (*title).to_string();
+    }
+    match id {
+        "u1" => "Snapmaker U1".into(),
+        "c5" => "Flashforge Creator 5".into(),
+        "cc2" => "ELEGOO CC2".into(),
+        "qidi" => "QIDI Plus5".into(),
+        _ => id.to_string(),
+    }
+}
+
+// Planned output paths exist before success, so a file name appears only once the phase is completed.
+pub(super) fn completed_output_name(
+    phase: &str,
+    receipt: &Value,
+    planned: &Value,
+) -> Option<String> {
+    if phase != "completed" {
+        return None;
+    }
+    receipt["output"]
+        .as_str()
+        .or_else(|| planned.as_str())
+        .map(filename)
+}
+
+// Source nozzle lives on the item for single-target batches and on the first target for multi-target ones.
+pub(super) fn source_nozzle_facts(item: &Value) -> Option<(String, bool)> {
+    let item_nozzle = item["source_nozzle"]
+        .as_str()
+        .filter(|value| !value.is_empty());
+    let origin = if item_nozzle.is_some() {
+        item
+    } else {
+        &item["targets"][0]
+    };
+    let nozzle = origin["source_nozzle"]
+        .as_str()
+        .filter(|value| !value.is_empty())?;
+    Some((nozzle.to_owned(), origin["source_nozzle_assumed"] == true))
+}
+
+// Completed conversions add target nozzle and output size, as the Go details grid does.
+pub(super) fn completed_target_detail(receipt: &Value, nozzle_label: &str) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(nozzle) = receipt["target_nozzle"].as_str() {
+        parts.push(format!("{nozzle_label} {nozzle} mm"));
+    }
+    if let Some(bytes) = receipt["bytes"].as_u64() {
+        parts.push(if bytes >= 1_048_576 {
+            format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+        } else {
+            format!("{:.0} KB", bytes as f64 / 1024.0)
+        });
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 // Mirrors app.js renderTargets: the notice shows unless a ready printer is selected for conversion.
@@ -602,6 +676,34 @@ pub(super) fn render_window(
     } else {
         label(locale, "emptyTitle")
     };
+    let mut results_title =
+        line(rtl)
+            .items_center()
+            .gap_2()
+            .child(heading("03", label(locale, "resultsTitle"), rtl));
+    if let Some((passed, failed)) = batch["items"].as_array().map(|items| batch_totals(items)) {
+        results_title = results_title
+            .child(
+                div()
+                    .rounded_full()
+                    .bg(rgb(0xEEF1F0))
+                    .px_2()
+                    .text_xs()
+                    .text_color(rgb(BRAND))
+                    .child(format!("✓ {passed}")),
+            )
+            .child(
+                div()
+                    .rounded_full()
+                    .bg(rgb(0xEEF1F0))
+                    .px_2()
+                    .text_xs()
+                    .text_color(rgb(RED))
+                    .child(format!("× {failed}")),
+            );
+    }
+    let source_nozzle_label = format!("{} {}", label(locale, "source"), label(locale, "nozzle"));
+    let target_nozzle_label = format!("{} {}", label(locale, "target"), label(locale, "nozzle"));
     let mut results_content = div()
         .id("sb-results-scroll")
         .flex_1()
@@ -652,22 +754,90 @@ pub(super) fn render_window(
                         .text_color(rgb(MUTED))
                         .child(phase.to_string()),
                 );
+            if let Some((nozzle, assumed)) = source_nozzle_facts(item) {
+                file_report = file_report.child(caption(
+                    format!("{source_nozzle_label} {nozzle} mm"),
+                    MUTED,
+                    rtl,
+                ));
+                if assumed {
+                    file_report =
+                        file_report.child(caption(label(locale, "sourceAssumed"), INK, rtl));
+                }
+            }
             if let Some(targets) = item["targets"].as_array() {
                 for target in targets {
                     let id = target["target"].as_str().unwrap_or("unknown");
                     let state = target["phase"].as_str().unwrap_or("queued");
-                    let error = receipt_error(&target["receipt"]);
-                    let detail = if error.is_empty() {
-                        format!("{id} · {state}")
-                    } else {
-                        format!("{id} · {state} · {error}")
+                    let receipt = &target["receipt"];
+                    let (status_text, status_color) = match state {
+                        "completed" => (label(locale, "summarySuccess"), BRAND),
+                        "failed" => (label(locale, "summaryFailure"), RED),
+                        other => (other.to_string(), MUTED),
+                    };
+                    let mut target_report = div().flex().flex_col().gap_1().child(
+                        line(rtl)
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(rgb(INK))
+                                    .child(target_display_name(&ready_rows, id)),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(status_color))
+                                    .child(status_text),
+                            ),
+                    );
+                    if let Some(output) = completed_output_name(state, receipt, &target["output"]) {
+                        target_report = target_report.child(caption(output, MUTED, rtl));
+                    }
+                    if let Some(detail) = completed_target_detail(receipt, &target_nozzle_label) {
+                        target_report = target_report.child(caption(detail, MUTED, rtl));
+                    }
+                    let error = receipt_error(receipt);
+                    if !error.is_empty() {
+                        target_report = target_report.child(caption(error, RED, rtl));
+                    }
+                    file_report = file_report.child(target_report);
+                }
+            } else {
+                // Single-target items keep their target and receipt on the batch itself.
+                let receipt = &item["receipt"];
+                if let Some(id) = batch["target"].as_str() {
+                    let (status_text, status_color) = match phase {
+                        "completed" => (label(locale, "summarySuccess"), BRAND),
+                        "failed" => (label(locale, "summaryFailure"), RED),
+                        other => (other.to_string(), MUTED),
                     };
                     file_report = file_report.child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(if state == "failed" { RED } else { MUTED }))
-                            .child(detail),
+                        line(rtl)
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(rgb(INK))
+                                    .child(target_display_name(&ready_rows, id)),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(status_color))
+                                    .child(status_text),
+                            ),
                     );
+                }
+                if let Some(output) = completed_output_name(phase, receipt, &item["output"]) {
+                    file_report = file_report.child(caption(output, MUTED, rtl));
+                }
+                if let Some(detail) = completed_target_detail(receipt, &target_nozzle_label) {
+                    file_report = file_report.child(caption(detail, MUTED, rtl));
                 }
             }
             if !message.is_empty() {
@@ -724,7 +894,7 @@ pub(super) fn render_window(
                 .px_4()
                 .border_b_1()
                 .border_color(rgb(0xEBEFED))
-                .child(heading("03", label(locale, "resultsTitle"), rtl))
+                .child(results_title)
                 .child(
                     Button::new("clear-results")
                         .disabled(running || (result.is_null() && batch_total == 0))

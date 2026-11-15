@@ -2515,3 +2515,71 @@ mod integrations_tests {
         assert_eq!(Locale::En.text("browserLabel"), "Browser");
     }
 }
+
+#[cfg(test)]
+mod batch_result_tests {
+    use super::desktop_layout::{
+        batch_totals, completed_output_name, completed_target_detail, source_nozzle_facts,
+        target_display_name,
+    };
+    use serde_json::{json, Value};
+
+    #[test]
+    fn output_name_appears_only_after_completion() {
+        let planned = json!("out/planned.3mf");
+        let receipt = json!({"output":"out/done.3mf"});
+        assert_eq!(completed_output_name("running", &receipt, &planned), None);
+        assert_eq!(
+            completed_output_name("failed", &Value::Null, &planned),
+            None
+        );
+        assert_eq!(
+            completed_output_name("completed", &receipt, &planned).as_deref(),
+            Some("done.3mf")
+        );
+        assert_eq!(
+            completed_output_name("completed", &Value::Null, &planned).as_deref(),
+            Some("planned.3mf")
+        );
+    }
+
+    #[test]
+    fn source_nozzle_prefers_item_then_first_target_and_ignores_empty() {
+        let single = json!({"source_nozzle":"0.6","source_nozzle_assumed":false});
+        assert_eq!(source_nozzle_facts(&single), Some(("0.6".into(), false)));
+        let multi = json!({"targets":[{"source_nozzle":"0.2","source_nozzle_assumed":true}]});
+        assert_eq!(source_nozzle_facts(&multi), Some(("0.2".into(), true)));
+        assert_eq!(source_nozzle_facts(&json!({"targets":[]})), None);
+        assert_eq!(source_nozzle_facts(&json!({"source_nozzle":""})), None);
+    }
+
+    #[test]
+    fn target_names_survive_temporary_profile_unavailability() {
+        let rows = [("u1", "Snapmaker U1")];
+        assert_eq!(target_display_name(&rows, "u1"), "Snapmaker U1");
+        assert_eq!(target_display_name(&[], "c5"), "Flashforge Creator 5");
+        assert_eq!(target_display_name(&[], "cc2"), "ELEGOO CC2");
+        assert_eq!(target_display_name(&[], "qidi"), "QIDI Plus5");
+        assert_eq!(target_display_name(&[], "unknown"), "unknown");
+    }
+
+    #[test]
+    fn batch_totals_sum_every_source() {
+        let items = vec![
+            json!({"results":[{},{}],"failures":[{}]}),
+            json!({"phase":"failed"}),
+            json!({"phase":"completed"}),
+        ];
+        assert_eq!(batch_totals(&items), (3, 2));
+    }
+
+    #[test]
+    fn completed_detail_reports_only_grounded_receipt_values() {
+        let receipt = json!({"target_nozzle":"0.4","bytes":2_097_152});
+        assert_eq!(
+            completed_target_detail(&receipt, "Target Nozzle").as_deref(),
+            Some("Target Nozzle 0.4 mm · 2.0 MB")
+        );
+        assert_eq!(completed_target_detail(&Value::Null, "Target Nozzle"), None);
+    }
+}
