@@ -1700,12 +1700,40 @@ mod original_output_folder_tests {
 mod layout_helper_tests {
     use super::desktop_i18n::Locale;
     use super::desktop_layout::{
-        activity_detail_text, empty_target_notice_text, empty_target_notice_visible, receipt_error,
-        result_counts, selected_ready_count,
+        activity_detail_text, converting_detail_text, empty_target_notice_text,
+        empty_target_notice_visible, receipt_error, result_counts, selected_ready_count,
     };
     use serde_json::json;
     use serde_json::Value;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn converting_detail_names_the_active_file_from_registry_batch() {
+        let batch = json!({
+            "phase":"running","total":3,"active_index":1,
+            "items":[{"source":"/jobs/a.3mf"},{"source":"/jobs/b.3mf"},{"source":"/jobs/c.3mf"}]
+        });
+        // Literal Go strings in native/frontend/dist/app.js (convertingFile), 1-based index.
+        assert_eq!(
+            converting_detail_text(Locale::En, &batch),
+            "Project 2 of 3: b.3mf"
+        );
+        assert_eq!(
+            converting_detail_text(Locale::He, &batch),
+            "קובץ 2 מתוך 3: b.3mf"
+        );
+        // Between files, a single conversion with no batch, or a stale index: no invented file.
+        let between = json!({"phase":"running","total":3,"active_index":null,"items":[]});
+        assert_eq!(converting_detail_text(Locale::En, &between), "…");
+        assert_eq!(converting_detail_text(Locale::En, &json!(null)), "…");
+        let stale = json!({"total":1,"active_index":4,"items":[{"source":"/a.3mf"}]});
+        assert_eq!(converting_detail_text(Locale::En, &stale), "…");
+        // A stale active index must not display an impossible "Project 5 of 1".
+        let contradictory = json!({"total":1,"active_index":4,
+            "items":[{"source":"0.3mf"},{"source":"1.3mf"},{"source":"2.3mf"},
+                     {"source":"3.3mf"},{"source":"4.3mf"}]});
+        assert_eq!(converting_detail_text(Locale::He, &contradictory), "…");
+    }
 
     #[test]
     fn idle_detail_becomes_go_ready_summary_only_with_files_and_printers() {

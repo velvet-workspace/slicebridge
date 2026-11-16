@@ -287,6 +287,23 @@ pub(super) fn activity_detail_text(
     }
 }
 
+// Mirrors app.js renderActionBar busy detail (convertingFile, or "…" until progress is known).
+// Uses only Registry batch fields: active_index (0-based), total and items[active].source.
+pub(super) fn converting_detail_text(locale: Locale, batch: &Value) -> String {
+    let total = batch["total"].as_u64().unwrap_or(0);
+    let active = batch["active_index"].as_u64();
+    let source = active
+        .filter(|index| *index < total)
+        .and_then(|index| batch["items"][index as usize]["source"].as_str());
+    match (active, source) {
+        (Some(index), Some(source)) if total > 0 => label(locale, "convertingFile")
+            .replace("{index}", &(index + 1).to_string())
+            .replace("{total}", &total.to_string())
+            .replace("{name}", &filename(source)),
+        _ => "…".into(),
+    }
+}
+
 pub(super) fn render_window(
     view: &mut SliceBridgeWindow,
     _window: &mut Window,
@@ -1007,8 +1024,13 @@ pub(super) fn render_window(
         label(locale, "idle")
     };
     let selected_printers = selected_ready_count(&ready_rows, &view.selected_batch_targets);
-    let activity_detail =
-        activity_detail_text(locale, &view.last_message, file_count, selected_printers);
+    // While converting, Go shows the live file, not the last UI message; last_message would be
+    // the raw batch.start reply, which is not a progress line.
+    let activity_detail = if running {
+        converting_detail_text(locale, &batch)
+    } else {
+        activity_detail_text(locale, &view.last_message, file_count, selected_printers)
+    };
 
     let actionbar = line(rtl)
         .h(px(76.))
