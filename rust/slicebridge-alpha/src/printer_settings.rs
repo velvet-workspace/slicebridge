@@ -101,7 +101,13 @@ fn valid_setting(target: &str, pref: &Value) -> Result<Value, String> {
             if !["PLA", "PETG", "ABS", "ASA", "TPU"].contains(&material.as_str()) {
                 return Err(format!("{target}: invalid material type {material}"));
             }
-            let name = as_string(entry, "filament preset")?;
+            // Go's json.Unmarshal decodes a null map[string]string entry to an
+            // empty string. Preserve it; invalid non-null types still fail.
+            let name = if entry.is_null() {
+                ""
+            } else {
+                as_string(entry, "filament preset")?
+            };
             if name.len() > 200 || name.contains(['\0', '\r', '\n']) {
                 return Err(format!("{target}: invalid saved {material} preset name"));
             }
@@ -552,6 +558,21 @@ mod tests {
         // A non-null, non-string nozzle still fails, as Go's unmarshal type error does.
         assert!(parse(br#"{"version":1,"printers":{"u1":{"nozzle":0.4}}}"#).is_err());
     }
+    #[test]
+    fn json_null_filament_name_matches_go_map_string_loader() {
+        let saved =
+            parse(br#"{"version":1,"printers":{"u1":{"filaments":{"PLA":null}}}}"#).unwrap();
+        assert_eq!(saved["printers"]["u1"]["filaments"]["PLA"], "");
+        for raw in [
+            r#"{"version":1,"printers":{"u1":{"filaments":{"PLA":0}}}}"#,
+            r#"{"version":1,"printers":{"u1":{"filaments":{"PLA":false}}}}"#,
+            r#"{"version":1,"printers":{"u1":{"filaments":{"PLA":[]}}}}"#,
+            r#"{"version":1,"printers":{"u1":{"filaments":{"PLA":{}}}}}"#,
+        ] {
+            assert!(parse(raw.as_bytes()).is_err(), "unexpected {raw}");
+        }
+    }
+
     #[test]
     fn corrupt_or_unknown_preferences_are_rejected_not_reset() {
         for raw in [
