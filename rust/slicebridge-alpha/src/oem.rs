@@ -553,7 +553,7 @@ pub(crate) fn raw_preset<'a>(
 ) -> Result<&'a Preset, String> {
     let list = index
         .get(&format!("{kind}:{name}"))
-        .ok_or_else(|| format!("installed {kind} preset {name:?} missing"))?;
+        .ok_or_else(|| format!("missing installed {kind} preset {name:?}"))?;
     Ok(list
         .iter()
         .find(|entry| entry.stem == name)
@@ -876,6 +876,15 @@ pub fn discover() -> Value {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn missing_inherited_machine_rejection_matches_go() {
+        let index = Index::new();
+        assert_eq!(
+            flatten(&index, "machine", "fdm_machine_x_common").unwrap_err(),
+            r#"missing installed machine preset "fdm_machine_x_common""#
+        );
+    }
     static SEQ: AtomicUsize = AtomicUsize::new(0);
     fn temp_dir() -> PathBuf {
         let path = std::env::temp_dir().join(format!(
