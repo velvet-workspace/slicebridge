@@ -61,11 +61,15 @@ fn valid_setting(target: &str, pref: &Value) -> Result<Value, String> {
     let input = pref
         .as_object()
         .ok_or(format!("{target}: saved setting must be an object"))?;
+    // Go json.Unmarshal leaves these string fields empty for JSON null, and
+    // loadSettings then normalizes "" to "auto", so null is accepted, not rejected.
     let nozzle = match input.get("nozzle") {
+        Some(value) if value.is_null() => "",
         Some(value) => as_string(value, "nozzle")?,
         None => "auto",
     };
     let slicer = match input.get("slicer") {
+        Some(value) if value.is_null() => "",
         Some(value) => as_string(value, "slicer")?,
         None => "auto",
     };
@@ -532,6 +536,21 @@ mod tests {
             json!({"nozzle":"auto","slicer":"auto","filaments":{}})
         );
         assert_eq!(saved["window"], json!({"width":1280,"height":900}));
+    }
+    #[test]
+    fn json_null_nozzle_and_slicer_read_as_auto_like_go_loader() {
+        // Go json.Unmarshal keeps "" for JSON null in string fields, and
+        // loadSettings (native/preferences.go) maps "" to "auto" without error.
+        let saved = parse(
+            br#"{"version":1,"printers":{"u1":{"nozzle":null,"slicer":null,"filaments":{}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            saved["printers"]["u1"],
+            json!({"nozzle":"auto","slicer":"auto","filaments":{}})
+        );
+        // A non-null, non-string nozzle still fails, as Go's unmarshal type error does.
+        assert!(parse(br#"{"version":1,"printers":{"u1":{"nozzle":0.4}}}"#).is_err());
     }
     #[test]
     fn corrupt_or_unknown_preferences_are_rejected_not_reset() {
