@@ -497,10 +497,14 @@ pub(super) fn render_window(
                                 .child(short_path(&filename(path), 48)),
                         )
                         .child(
-                            div()
-                                .text_xs()
-                                .text_color(rgb(MUTED))
-                                .child(short_path(path, 80)),
+                            div().text_xs().text_color(rgb(MUTED)).child(short_path(
+                                &view
+                                    .source_subtitles
+                                    .get(path)
+                                    .cloned()
+                                    .unwrap_or_else(|| source_queue_subtitle(path, None)),
+                                80,
+                            )),
                         ),
                 )
                 // Go app.js renderQueue exposes just the remove control on each

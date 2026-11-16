@@ -38,6 +38,45 @@ fn queue_display_paths(status: &Value, suppressed_source: Option<&str>) -> Vec<S
         .collect()
 }
 
+// Same format as Go native/app.go bytesLabel: size < 1KiB is B, then
+// one decimal in KB or MB. The stable app captures this on input selection.
+fn source_bytes_label(size: u64) -> String {
+    if size < 1024 {
+        format!("{size} B")
+    } else if size < 1024 * 1024 {
+        format!("{:.1} KB", size as f64 / 1024.)
+    } else {
+        format!("{:.1} MB", size as f64 / (1024. * 1024.))
+    }
+}
+
+fn source_queue_subtitle(path: &str, size: Option<u64>) -> String {
+    let folder = Path::new(path)
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(|parent| parent.to_string_lossy().into_owned())
+        .unwrap_or_else(|| ".".into());
+    size.map_or_else(
+        || folder.clone(),
+        |bytes| format!("{folder} · {}", source_bytes_label(bytes)),
+    )
+}
+
+// Cache metadata at queue changes, never during GPUI render. A large queue of
+// up to 200 paths must not stat every file on each frame.
+fn sync_source_subtitles(paths: &[String], labels: &mut BTreeMap<String, String>) {
+    labels.retain(|path, _| paths.contains(path));
+    for path in paths {
+        labels.entry(path.clone()).or_insert_with(|| {
+            let size = std::fs::metadata(path)
+                .ok()
+                .filter(|metadata| metadata.is_file())
+                .map(|metadata| metadata.len());
+            source_queue_subtitle(path, size)
+        });
+    }
+}
+
 // Same definition the layout uses for disabling queue controls during a conversion.
 fn snapshot_running(status: &Value) -> bool {
     status["phase"] == "running" || status["batch"]["phase"] == "running"
@@ -161,6 +200,8 @@ struct SliceBridgeWindow {
     destination_source: Option<String>,
     // Set by `batch.remove` so a removed source is not shown again while the Registry still reports it.
     suppressed_source: Option<String>,
+    // Go source-row folder and size captured when each path enters the queue.
+    source_subtitles: BTreeMap<String, String>,
     // Per queued path: true only for an exact high-confidence MakerWorld origin. Filled outside render.
     makerworld_origins: BTreeMap<String, bool>,
     makerworld_pending: BTreeMap<String, u64>,
@@ -687,6 +728,7 @@ impl SliceBridgeWindow {
             destination: None,
             destination_source: None,
             suppressed_source: None,
+            source_subtitles: BTreeMap::new(),
             makerworld_origins: BTreeMap::new(),
             makerworld_pending: BTreeMap::new(),
             makerworld_token: 0,
@@ -790,6 +832,7 @@ impl SliceBridgeWindow {
             if let Some(path) = args["path"].as_str() {
                 self.makerworld_origins.remove(path);
                 self.makerworld_pending.remove(path);
+                self.source_subtitles.remove(path);
             }
             self.destination = None;
             self.destination_source = None;
@@ -835,6 +878,7 @@ impl SliceBridgeWindow {
     fn sync_makerworld_origins(&mut self, cx: &mut Context<Self>) {
         let snap = self.commands.snapshot();
         let display = queue_display_paths(&snap, self.suppressed_source.as_deref());
+        sync_source_subtitles(&display, &mut self.source_subtitles);
         let unknown = origin_lookup_plan(&display, &mut self.makerworld_origins);
         self.makerworld_pending
             .retain(|path, _| display.contains(path));
@@ -1293,6 +1337,7 @@ impl SliceBridgeWindow {
                     for path in &selected {
                         self.makerworld_origins.remove(path);
                         self.makerworld_pending.remove(path);
+                        self.source_subtitles.remove(path);
                     }
                     if snap["source"].is_null() {
                         self.run(
@@ -1749,6 +1794,55 @@ mod layout_helper_tests {
         selected.insert("qidi".to_string());
         assert!(!empty_target_notice_visible(&rows, &selected));
         assert!(empty_target_notice_visible(&[], &BTreeSet::new()));
+    }
+}
+
+#[cfg(test)]
+mod queue_subtitle_tests {
+    use super::{source_bytes_label, source_queue_subtitle, sync_source_subtitles};
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn source_size_uses_exact_go_bytes_label_thresholds() {
+        assert_eq!(source_bytes_label(0), "0 B");
+        assert_eq!(source_bytes_label(1023), "1023 B");
+        assert_eq!(source_bytes_label(1024), "1.0 KB");
+        assert_eq!(source_bytes_label(1536), "1.5 KB");
+        assert_eq!(source_bytes_label(1_048_575), "1024.0 KB");
+        assert_eq!(source_bytes_label(1_048_576), "1.0 MB");
+        assert_eq!(source_bytes_label(250 * 1_048_576), "250.0 MB");
+    }
+
+    #[test]
+    fn source_subtitle_uses_folder_and_size_with_safe_missing_file_fallback() {
+        let parent = std::env::temp_dir().join("slicebridge-queue-parity");
+        let path = parent.join("example.3mf").to_string_lossy().into_owned();
+        let folder = parent.to_string_lossy().into_owned();
+        assert_eq!(
+            source_queue_subtitle(&path, Some(1536)),
+            format!("{folder} · 1.5 KB")
+        );
+        assert_eq!(source_queue_subtitle(&path, None), folder);
+    }
+
+    #[test]
+    fn subtitle_cache_keeps_known_rows_and_drops_removed_paths() {
+        let path = std::env::temp_dir()
+            .join("slicebridge-queue-parity-nonexistent.3mf")
+            .to_string_lossy()
+            .into_owned();
+        let mut labels = BTreeMap::from([("old.3mf".into(), "old".into())]);
+        sync_source_subtitles(std::slice::from_ref(&path), &mut labels);
+        assert!(!labels.contains_key("old.3mf"));
+        assert_eq!(labels.get(&path), Some(&source_queue_subtitle(&path, None)));
+        labels.insert(path.clone(), "cached selection".into());
+        sync_source_subtitles(std::slice::from_ref(&path), &mut labels);
+        assert_eq!(
+            labels.get(&path).map(String::as_str),
+            Some("cached selection")
+        );
+        sync_source_subtitles(&[], &mut labels);
+        assert!(labels.is_empty());
     }
 }
 
