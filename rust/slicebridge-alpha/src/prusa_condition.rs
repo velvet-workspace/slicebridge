@@ -433,6 +433,38 @@ fn go_regex_pattern(pattern: &str) -> Result<String, String> {
             // -- as character-class set subtraction.
             return Err(invalid());
         }
+        if ch == '[' && in_class {
+            // In Go RE2, an unescaped '[' inside a class is a literal '['.
+            // Rust regex instead opens a nested class, which can silently
+            // mark an incompatible printer as compatible. POSIX classes are
+            // the only supported nested-looking '[...]' syntax in Go.
+            if chars.peek() == Some(&':') {
+                let look: Vec<char> = chars.clone().take(32).collect();
+                if let Some(end) = look.windows(2).position(|pair| pair == [':', ']']) {
+                    let name: String = look[1..end].iter().collect();
+                    let name = name.strip_prefix('^').unwrap_or(&name);
+                    const POSIX: &[&str] = &[
+                        "alnum", "alpha", "ascii", "blank", "cntrl", "digit", "graph", "lower",
+                        "print", "punct", "space", "upper", "word", "xdigit",
+                    ];
+                    if !POSIX.contains(&name) {
+                        return Err(invalid());
+                    }
+                    translated.push('[');
+                    // Copy the complete POSIX token, including the ':]'.
+                    // Its closing bracket must not close the outer class.
+                    for _ in 0..end + 2 {
+                        translated.push(chars.next().ok_or_else(invalid)?);
+                    }
+                    at_class_start = false;
+                    continue;
+                }
+                return Err(invalid());
+            }
+            translated.push_str(r"\[");
+            at_class_start = false;
+            continue;
+        }
         if ch == '[' {
             in_class = true;
             at_class_start = true;
@@ -726,6 +758,45 @@ mod tests {
             (r"(?<n>x)", "x", true),
             (r"\pL", "é", true),
             (r"[[:alpha:]]", "é", false),
+        ];
+        for (pattern, model, expected) in cases {
+            let section = section(&[("printer_model", model)]);
+            let expression = format!("printer_model=~/{pattern}/");
+            assert_eq!(
+                evaluate_prusa_condition(&expression, &section),
+                Ok(expected),
+                "{expression:?} with {model:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn re2_literal_open_bracket_inside_class_never_enables_incompatible_printers() {
+        // Independently tested with native/presets/prusa_condition.go's
+        // regexp.Compile on each exact pattern/value pair below.
+        let cases = [
+            (r"[a[]", "a", true),
+            (r"[a[]", "[", true),
+            (r"[a[]", "]", false),
+            (r"[[]", "[", true),
+            (r"[[]", "a", false),
+            (r"[a[b]", "b", true),
+            (r"[a[b]", "[", true),
+            // Rust's nested-class interpretation previously matched "a",
+            // "b" or "]", even though Go's pattern does not.
+            (r"[a[]b]]", "a", false),
+            (r"[a[]b]]", "b", false),
+            (r"[a[]b]]", "]", false),
+            (r"[[:alpha:]]", "a", true),
+            (r"[[:alpha:]]", "é", false),
+            (r"[[:digit:]a]", "5", true),
+            (r"[[:digit:]a]", "a", true),
+            (r"[^[]", "x", true),
+            (r"[^[]", "[", false),
+            (r"[[:^digit:]]", "a", true),
+            (r"[[:^digit:]]", "3", false),
+            (r"[[:word:]]", "_", true),
+            (r"[[:word:]]", "é", false),
         ];
         for (pattern, model, expected) in cases {
             let section = section(&[("printer_model", model)]);
