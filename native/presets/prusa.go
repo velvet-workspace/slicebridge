@@ -250,32 +250,32 @@ func readPrusaSelection(file string) prusaSelection {
 // sectioned INI files keep the original strict parser. Full printer, print
 // and filament safety checks still decide whether any target is offered.
 func parsePrusaIndexedFile(file string, user bool, data []byte) (*prusaINI, error) {
-    parsed, originalError := parsePrusaINI(data)
-    if originalError == nil || !user {
-        return parsed, originalError
-    }
-    kind := filepath.Base(filepath.Dir(file))
-    if kind != "printer" && kind != "print" && kind != "filament" {
-        return nil, originalError
-    }
-    name := strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))
-    if name == "" || len(name) > 180 || strings.ContainsAny(name, "[]\r\n") || !utf8.Valid(data) {
-        return nil, originalError
-    }
-    for _, line := range strings.Split(string(data), "\n") {
-        if strings.HasPrefix(strings.TrimSpace(line), "[") {
-            return nil, originalError // never reinterpret a malformed sectioned file
-        }
-    }
-    header := "[" + kind + ":" + name + "]\n"
-    if len(header)+len(data) > maxPrusaINIBytes {
-        return nil, originalError
-    }
-    result, err := parsePrusaINI(append([]byte(header), data...))
-    if err != nil {
-        return nil, originalError
-    }
-    return result, nil
+	parsed, originalError := parsePrusaINI(data)
+	if originalError == nil || !user {
+		return parsed, originalError
+	}
+	kind := filepath.Base(filepath.Dir(file))
+	if kind != "printer" && kind != "print" && kind != "filament" {
+		return nil, originalError
+	}
+	name := strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))
+	if name == "" || len(name) > 180 || strings.ContainsAny(name, "[]\r\n") || !utf8.Valid(data) {
+		return nil, originalError
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "[") {
+			return nil, originalError // never reinterpret a malformed sectioned file
+		}
+	}
+	header := "[" + kind + ":" + name + "]\n"
+	if len(header)+len(data) > maxPrusaINIBytes {
+		return nil, originalError
+	}
+	result, err := parsePrusaINI(append([]byte(header), data...))
+	if err != nil {
+		return nil, originalError
+	}
+	return result, nil
 }
 
 // addFile parses one profile file and indexes its presets. It returns the bytes

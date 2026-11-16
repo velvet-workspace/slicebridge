@@ -348,14 +348,20 @@ fn parse_prusa_indexed_file(file: &Path, user: bool, data: &[u8]) -> Result<Prus
     if !PRUSA_KINDS.contains(&kind) {
         return Err(original);
     }
-    let name = file.file_stem().and_then(|name| name.to_str()).unwrap_or("");
+    let name = file
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
     if name.is_empty() || name.len() > 180 || name.contains(['[', ']', '\r', '\n']) {
         return Err(original);
     }
     let Ok(content) = std::str::from_utf8(data) else {
         return Err(original);
     };
-    if content.lines().any(|line| line.trim_start().starts_with('[')) {
+    if content
+        .lines()
+        .any(|line| line.trim_start().starts_with('['))
+    {
         return Err(original);
     }
     let header = format!("[{kind}:{name}]\n");
