@@ -455,15 +455,8 @@ pub(super) fn render_window(
         .flex()
         .flex_col()
         .px_3();
-    if display_files.is_empty() {
-        queue_items = queue_items.child(
-            div()
-                .p_4()
-                .text_sm()
-                .text_color(rgb(MUTED))
-                .child(label(locale, "queueEmpty")),
-        );
-    }
+    // main/native/frontend/dist/app.js renderQueue hides an empty fileList.
+    // Keep the source list empty as well; only the drop zone and footnote remain.
     for path in display_files.iter() {
         let open_path = path.clone();
         let remove_path = path.clone();
