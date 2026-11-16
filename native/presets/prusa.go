@@ -1,6 +1,7 @@
 package presets
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -262,16 +263,19 @@ func parsePrusaIndexedFile(file string, user bool, data []byte) (*prusaINI, erro
 	if name == "" || len(name) > 180 || strings.ContainsAny(name, "[]\r\n") || !utf8.Valid(data) {
 		return nil, originalError
 	}
-	for _, line := range strings.Split(string(data), "\n") {
+	// Strip exactly one leading UTF-8 BOM before adding the synthetic section.
+	// The strict INI parser already accepts the same signature at file start.
+	flat := bytes.TrimPrefix(data, []byte{0xef, 0xbb, 0xbf})
+	for _, line := range strings.Split(string(flat), "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), "[") {
 			return nil, originalError // never reinterpret a malformed sectioned file
 		}
 	}
 	header := "[" + kind + ":" + name + "]\n"
-	if len(header)+len(data) > maxPrusaINIBytes {
+	if len(header)+len(flat) > maxPrusaINIBytes {
 		return nil, originalError
 	}
-	result, err := parsePrusaINI(append([]byte(header), data...))
+	result, err := parsePrusaINI(append([]byte(header), flat...))
 	if err != nil {
 		return nil, originalError
 	}

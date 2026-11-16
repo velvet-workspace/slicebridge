@@ -358,6 +358,9 @@ fn parse_prusa_indexed_file(file: &Path, user: bool, data: &[u8]) -> Result<Prus
     let Ok(content) = std::str::from_utf8(data) else {
         return Err(original);
     };
+    // Permit a single exact UTF-8 BOM only at the original file start.
+    // It must not end up between our synthesized header and first key.
+    let content = content.strip_prefix('\u{feff}').unwrap_or(content);
     if content
         .lines()
         .any(|line| line.trim_start().starts_with('['))
@@ -365,11 +368,11 @@ fn parse_prusa_indexed_file(file: &Path, user: bool, data: &[u8]) -> Result<Prus
         return Err(original);
     }
     let header = format!("[{kind}:{name}]\n");
-    if header.len().saturating_add(data.len()) > MAX_PRUSA_INI_BYTES {
+    if header.len().saturating_add(content.len()) > MAX_PRUSA_INI_BYTES {
         return Err(original);
     }
     let mut wrapped = header.into_bytes();
-    wrapped.extend_from_slice(data);
+    wrapped.extend_from_slice(content.as_bytes());
     parse_prusa_ini(&wrapped).map_err(|_| original)
 }
 
@@ -1424,6 +1427,32 @@ compatible_printers_condition = printer_model=="X-Plus 4"
             1,
             "corrupt selection hid the printer"
         );
+    }
+
+    #[test]
+    fn trusted_flat_user_bom_is_stripped_once_and_remains_strict() {
+        let file = std::path::Path::new("qa/printer/QIDI Plus5 0.4 nozzle.ini");
+        let valid = b"\xef\xbb\xbfinherits = X-Plus 4 0.4 nozzle\r\n";
+        let parsed = parse_prusa_indexed_file(file, true, valid)
+            .expect("flat trusted user BOM+CRLF must parse");
+        assert_eq!(
+            parsed
+                .section("printer:QIDI Plus5 0.4 nozzle")
+                .and_then(|section| section.get("inherits"))
+                .map(String::as_str),
+            Some("X-Plus 4 0.4 nozzle")
+        );
+        assert!(parse_prusa_indexed_file(file, false, valid).is_err());
+        assert!(parse_prusa_indexed_file(
+            file,
+            true,
+            b"\xef\xbb\xbf\xef\xbb\xbfinherits = X-Plus 4 0.4 nozzle\n"
+        )
+        .is_err());
+        assert!(parse_prusa_indexed_file(
+            file, true,
+            b"\xef\xbb\xbfinherits = X-Plus 4 0.4 nozzle\n[printer:Injected]\nnozzle_diameter = 0.4\n"
+        ).is_err());
     }
 
     #[test]
