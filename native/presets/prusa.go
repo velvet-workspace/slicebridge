@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // Installed PrusaSlicer printers become per-printer targets only when the user
@@ -244,6 +245,39 @@ func readPrusaSelection(file string) prusaSelection {
 	}
 }
 
+// parsePrusaIndexedFile accepts real PrusaSlicer flat user presets only in
+// the three trusted user preset folders. Vendor bundles, selections and
+// sectioned INI files keep the original strict parser. Full printer, print
+// and filament safety checks still decide whether any target is offered.
+func parsePrusaIndexedFile(file string, user bool, data []byte) (*prusaINI, error) {
+    parsed, originalError := parsePrusaINI(data)
+    if originalError == nil || !user {
+        return parsed, originalError
+    }
+    kind := filepath.Base(filepath.Dir(file))
+    if kind != "printer" && kind != "print" && kind != "filament" {
+        return nil, originalError
+    }
+    name := strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))
+    if name == "" || len(name) > 180 || strings.ContainsAny(name, "[]\r\n") || !utf8.Valid(data) {
+        return nil, originalError
+    }
+    for _, line := range strings.Split(string(data), "\n") {
+        if strings.HasPrefix(strings.TrimSpace(line), "[") {
+            return nil, originalError // never reinterpret a malformed sectioned file
+        }
+    }
+    header := "[" + kind + ":" + name + "]\n"
+    if len(header)+len(data) > maxPrusaINIBytes {
+        return nil, originalError
+    }
+    result, err := parsePrusaINI(append([]byte(header), data...))
+    if err != nil {
+        return nil, originalError
+    }
+    return result, nil
+}
+
 // addFile parses one profile file and indexes its presets. It returns the bytes
 // it read so the caller can enforce the total budget.
 func (index *prusaIndex) addFile(file string, user bool, limit int64) (int64, error) {
@@ -252,7 +286,7 @@ func (index *prusaIndex) addFile(file string, user bool, limit int64) (int64, er
 		return 0, err
 	}
 	read := int64(len(data))
-	ini, err := parsePrusaINI(data)
+	ini, err := parsePrusaIndexedFile(file, user, data)
 	if err != nil {
 		return read, fmt.Errorf("profile file is malformed: %w", err)
 	}
