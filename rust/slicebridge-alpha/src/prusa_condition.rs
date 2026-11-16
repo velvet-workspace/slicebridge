@@ -335,9 +335,16 @@ fn go_regex_pattern(pattern: &str) -> Result<String, String> {
                     'd' => Some("0-9"),
                     'w' => Some("0-9A-Za-z_"),
                     's' => Some(r"\t\n\f\r "),
-                    // A negated ASCII class cannot be inserted into a larger
-                    // character class safely. Reject instead of a false match.
-                    'D' | 'W' | 'S' => return Err(invalid()),
+                    // RE2 unions negative Perl classes with other class
+                    // members. Rust regex supports that exact union via a
+                    // nested negated class, e.g. [a[^0-9]b] for [a\\Db].
+                    // Reject a would-be range endpoint: Go rejects [a-\\D].
+                    'D' | 'W' | 'S' if chars.peek() == Some(&'-') || translated.ends_with('-') => {
+                        return Err(invalid());
+                    }
+                    'D' => Some("[^0-9]"),
+                    'W' => Some("[^0-9A-Za-z_]"),
+                    'S' => Some(r"[^\t\n\f\r ]"),
                     _ => None,
                 }
             } else {
@@ -806,6 +813,53 @@ mod tests {
                 Ok(expected),
                 "{expression:?} with {model:?}"
             );
+        }
+    }
+
+    #[test]
+    fn mixed_negative_ascii_classes_match_go_re2_printer_eligibility() {
+        // Compared against native/presets/prusa_condition.go with regexp.Compile.
+        // ASCII complements deliberately include non-ASCII Unicode codepoints.
+        let cases = [
+            (r"[\Dabc]", "3", false),
+            (r"[\Dabc]", "a", true),
+            (r"[\Dabc]", "é", true),
+            (r"[\Dabc]", "٣", true),
+            (r"[\Wabc]", "_", false),
+            (r"[\Wabc]", "7", false),
+            (r"[\Wabc]", "a", true),
+            (r"[\Wabc]", "-", true),
+            (r"[\Wabc]", "é", true),
+            (r"[\Sabc]", " ", false),
+            (r"[\Sabc]", "a", true),
+            (r"[\Sabc]", "\u{00a0}", true),
+            (r"[^\Dabc]", "3", true),
+            (r"[^\Dabc]", "a", false),
+            (r"[^\Dabc]", "é", false),
+            (r"[\D\d]", "3", true),
+            (r"[\D\d]", "é", true),
+            (r"[\W\w]", "_", true),
+            (r"[\W\w]", "é", true),
+            (r"[\S\s]", " ", true),
+            (r"[\S\s]", "\u{00a0}", true),
+        ];
+        for (pattern, model, expected) in cases {
+            let section = section(&[("printer_model", model)]);
+            let expression = format!("printer_model=~/{pattern}/");
+            assert_eq!(
+                evaluate_prusa_condition(&expression, &section),
+                Ok(expected),
+                "{expression:?} with {model:?}"
+            );
+        }
+
+        // Conservatively reject ambiguous class-range endpoints. Some forms
+        // involving leading or trailing '-' are valid in Go but are deliberately
+        // not broadened here until their exact range semantics are verified.
+        for pattern in [r"[a-\D]", r"[\D-z]", r"[\D-]"] {
+            let section = section(&[("printer_model", "3")]);
+            let expression = format!("printer_model=~/{pattern}/");
+            assert!(evaluate_prusa_condition(&expression, &section).is_err());
         }
     }
 
