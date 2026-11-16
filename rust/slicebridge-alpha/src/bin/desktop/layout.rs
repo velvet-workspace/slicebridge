@@ -256,6 +256,37 @@ pub(super) fn empty_target_notice_text(rtl: bool) -> &'static str {
     }
 }
 
+// Mirrors app.js renderActionBar work=files.length*selected: only selected ready printers count.
+pub(super) fn selected_ready_count(
+    ready_rows: &[(&str, &str)],
+    selected: &BTreeSet<String>,
+) -> usize {
+    ready_rows
+        .iter()
+        .filter(|(id, _)| selected.contains(*id))
+        .count()
+}
+
+// Mirrors app.js renderActionBar detail. A transient last_message still wins; only the
+// idle placeholder is replaced by the Go "{files} × {printers}" ready summary.
+pub(super) fn activity_detail_text(
+    locale: Locale,
+    last_message: &str,
+    files: usize,
+    printers: usize,
+) -> String {
+    if !last_message.starts_with("No UI action yet") {
+        return short_path(last_message, 155);
+    }
+    if files > 0 && printers > 0 {
+        label(locale, "readyHint")
+            .replace("{files}", &files.to_string())
+            .replace("{printers}", &printers.to_string())
+    } else {
+        label(locale, "idleHint")
+    }
+}
+
 pub(super) fn render_window(
     view: &mut SliceBridgeWindow,
     _window: &mut Window,
@@ -999,11 +1030,9 @@ pub(super) fn render_window(
     } else {
         label(locale, "idle")
     };
-    let activity_detail = if view.last_message.starts_with("No UI action yet") {
-        label(locale, "idleHint")
-    } else {
-        short_path(&view.last_message, 155)
-    };
+    let selected_printers = selected_ready_count(&ready_rows, &view.selected_batch_targets);
+    let activity_detail =
+        activity_detail_text(locale, &view.last_message, file_count, selected_printers);
 
     let actionbar = line(rtl)
         .h(px(76.))

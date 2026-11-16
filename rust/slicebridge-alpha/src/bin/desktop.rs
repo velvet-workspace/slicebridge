@@ -1633,12 +1633,67 @@ mod original_output_folder_tests {
 
 #[cfg(test)]
 mod layout_helper_tests {
+    use super::desktop_i18n::Locale;
     use super::desktop_layout::{
-        empty_target_notice_text, empty_target_notice_visible, receipt_error, result_counts,
+        activity_detail_text, empty_target_notice_text, empty_target_notice_visible, receipt_error,
+        result_counts, selected_ready_count,
     };
     use serde_json::json;
     use serde_json::Value;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn idle_detail_becomes_go_ready_summary_only_with_files_and_printers() {
+        let idle =
+            "No UI action yet. Agent / CLI / MCP changes appear in the project fields above.";
+        // Literal Go strings in native/frontend/dist/app.js (readyHint, idleHint).
+        assert_eq!(
+            activity_detail_text(Locale::En, idle, 2, 1),
+            "2 projects × 1 printers"
+        );
+        assert_eq!(
+            activity_detail_text(Locale::He, idle, 2, 1),
+            "2 קבצים × 1 מדפסות"
+        );
+        // Zero files or zero selected printers is work=0 in Go, so the idle hint stays.
+        assert_eq!(
+            activity_detail_text(Locale::En, idle, 0, 1),
+            "Add projects and select printers to start"
+        );
+        assert_eq!(
+            activity_detail_text(Locale::En, idle, 2, 0),
+            "Add projects and select printers to start"
+        );
+        assert_eq!(
+            activity_detail_text(Locale::He, idle, 0, 0),
+            "בחר קבצים ומדפסות כדי להתחיל"
+        );
+    }
+
+    #[test]
+    fn transient_message_keeps_precedence_over_ready_summary() {
+        assert_eq!(
+            activity_detail_text(Locale::En, "Output folder no longer exists", 2, 1),
+            "Output folder no longer exists"
+        );
+        assert_eq!(
+            activity_detail_text(Locale::He, "Choose a destination before converting.", 0, 0),
+            "Choose a destination before converting."
+        );
+    }
+
+    #[test]
+    fn selected_ready_count_ignores_stale_or_unavailable_printers() {
+        let rows = [("u1", "Ultimaker"), ("qidi", "Qidi")];
+        let mut selected = BTreeSet::new();
+        assert_eq!(selected_ready_count(&rows, &selected), 0);
+        // A selection for a printer that is no longer ready must not inflate the count.
+        selected.insert("gone".to_string());
+        assert_eq!(selected_ready_count(&rows, &selected), 0);
+        selected.insert("qidi".to_string());
+        assert_eq!(selected_ready_count(&rows, &selected), 1);
+        assert_eq!(selected_ready_count(&[], &selected), 0);
+    }
 
     #[test]
     fn empty_target_notice_matches_go_copy() {
