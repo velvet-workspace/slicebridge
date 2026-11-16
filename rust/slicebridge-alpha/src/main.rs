@@ -3,6 +3,10 @@ use slicebridge_alpha::{protocol, Registry};
 use std::env;
 use std::process;
 
+// The desktop's loopback endpoint shares its Registry with the visible GPUI app.
+// Standalone commands intentionally retain their separate in-process Registry.
+const DESKTOP_ATTACH: &str = "127.0.0.1:48637";
+
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let registry = Registry::new();
@@ -19,6 +23,21 @@ fn main() {
                 Err(e) => Err(e.to_string()),
             }
         }
+        // Explicitly address the *visible* desktop session; never fake a stage
+        // success by quietly falling back to the CLI's fresh Registry.
+        [mode, command] if mode == "--desktop" => protocol::attach(
+            DESKTOP_ATTACH,
+            command,
+            json!({}),
+        )
+        .map_err(|e| format!("desktop GUI unavailable at {DESKTOP_ATTACH}: {e}")),
+        [mode, command, params] if mode == "--desktop" => {
+            match serde_json::from_str::<Value>(params) {
+                Ok(value) => protocol::attach(DESKTOP_ATTACH, command, value)
+                    .map_err(|e| format!("desktop GUI unavailable at {DESKTOP_ATTACH}: {e}")),
+                Err(e) => Err(format!("invalid input JSON: {e}")),
+            }
+        }
         [mode, addr, command] if mode == "--attach" =>
             protocol::attach(addr, command, json!({})).map_err(|e|e.to_string()),
         [mode, addr, command, params] if mode == "--attach" => {
@@ -32,7 +51,7 @@ fn main() {
             Ok(value) => Ok(registry.execute(command, &value)),
             Err(e) => Err(format!("invalid input JSON: {e}")),
         },
-        _ => Err("usage: slicebridge-alpha [command JSON] | --mcp | --stdio | --serve 127.0.0.1:48637 | --attach 127.0.0.1:48637 command JSON".into()),
+        _ => Err("usage: slicebridge-alpha [command JSON] | --desktop command [JSON] | --mcp | --stdio | --serve 127.0.0.1:48637 | --attach 127.0.0.1:48637 command JSON".into()),
     };
     match result {
         Ok(reply) => {
