@@ -1633,10 +1633,25 @@ mod original_output_folder_tests {
 
 #[cfg(test)]
 mod layout_helper_tests {
-    use super::desktop_layout::{empty_target_notice_visible, receipt_error, result_counts};
+    use super::desktop_layout::{
+        empty_target_notice_text, empty_target_notice_visible, receipt_error, result_counts,
+    };
     use serde_json::json;
     use serde_json::Value;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn empty_target_notice_matches_go_copy() {
+        // Literal Go strings in native/frontend/dist/app.js (emptyTargetNotice).
+        assert_eq!(
+            empty_target_notice_text(true),
+            "לא נבחרו מדפסות יעד. אפשר להוסיף דרך סמל המדפסת בראש החלון."
+        );
+        assert_eq!(
+            empty_target_notice_text(false),
+            "No target printers selected. Use the printer icon at the top to add them."
+        );
+    }
 
     #[test]
     fn receipt_error_keeps_code_and_message() {

@@ -247,6 +247,15 @@ pub(super) fn empty_target_notice_visible(
     !ready_rows.iter().any(|(id, _)| selected.contains(*id))
 }
 
+// Literal copy from app.js renderTargets (emptyTargetNotice), not a translations.json key.
+pub(super) fn empty_target_notice_text(rtl: bool) -> &'static str {
+    if rtl {
+        "לא נבחרו מדפסות יעד. אפשר להוסיף דרך סמל המדפסת בראש החלון."
+    } else {
+        "No target printers selected. Use the printer icon at the top to add them."
+    }
+}
+
 pub(super) fn render_window(
     view: &mut SliceBridgeWindow,
     _window: &mut Window,
@@ -640,11 +649,13 @@ pub(super) fn render_window(
         );
     }
     if empty_target_notice_visible(&ready_rows, &view.selected_batch_targets) {
-        targets = targets.child(div().p_3().text_sm().text_color(rgb(MUTED)).child(if rtl {
-            "לא נבחרו מדפסות יעד זמינות. אפשר להוסיף דרך סמל המדפסת בראש החלון."
-        } else {
-            "No target printers selected. Use the printer icon at the top to add them."
-        }));
+        targets = targets.child(
+            div()
+                .p_3()
+                .text_sm()
+                .text_color(rgb(MUTED))
+                .child(empty_target_notice_text(rtl)),
+        );
     }
     let all_ready_checked = !ready_rows.is_empty()
         && ready_rows
