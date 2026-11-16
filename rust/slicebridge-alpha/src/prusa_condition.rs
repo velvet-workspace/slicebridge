@@ -294,17 +294,122 @@ pub(crate) fn prusa_values_equal(a: &str, b: &str) -> bool {
     }
 }
 
+/// Parses an operand the way Go's `strconv.ParseFloat` does: hexadecimal floats
+/// such as `0x1p-2` are numbers, and a sign may precede only `Inf` and `Infinity`,
+/// so a signed `nan` compares as text. Numeric underscores follow Go's
+/// digit-separator placement rules; malformed separators compare as text.
 fn parse_prusa_number(text: &str) -> Option<f64> {
+    // Go strconv.ParseFloat also accepts digit separators in valid positions.
+    let cleaned = if text.contains('_') {
+        Some(strip_go_numeric_underscores(text)?)
+    } else {
+        None
+    };
+    let text = cleaned.as_deref().unwrap_or(text);
+    let signed = text.starts_with(['+', '-']);
+    let unsigned = if signed { &text[1..] } else { text };
+    let prefix = unsigned.as_bytes().get(..2);
+    if prefix.is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"0x")) {
+        return parse_prusa_hex_float(text);
+    }
+    if signed && unsigned.eq_ignore_ascii_case("nan") {
+        return None;
+    }
     let value = text.parse::<f64>().ok()?;
     // Go's ParseFloat reports an overflowing literal as an error, so it compares
     // as text. Rust returns infinity for it, so only spelled-out infinity counts.
-    let unsigned = text
-        .strip_prefix('+')
-        .or_else(|| text.strip_prefix('-'))
-        .unwrap_or(text);
     let spelled_infinity =
         unsigned.eq_ignore_ascii_case("inf") || unsigned.eq_ignore_ascii_case("infinity");
     (!value.is_infinite() || spelled_infinity).then_some(value)
+}
+
+/// Go permits one underscore between digits, and immediately after 0x/0X.
+/// It does not permit separators next to the decimal point or exponent marker.
+fn strip_go_numeric_underscores(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let sign = usize::from(matches!(bytes.first(), Some(b'+' | b'-')));
+    let hex = bytes
+        .get(sign..sign + 2)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"0x"));
+    let exponent_at = bytes
+        .iter()
+        .enumerate()
+        .skip(sign + usize::from(hex) * 2)
+        .find(|(_, byte)| {
+            if hex {
+                **byte == b'p' || **byte == b'P'
+            } else {
+                **byte == b'e' || **byte == b'E'
+            }
+        })
+        .map(|(index, _)| index)
+        .unwrap_or(bytes.len());
+    for (index, &byte) in bytes.iter().enumerate() {
+        if byte != b'_' {
+            continue;
+        }
+        let next = *bytes.get(index + 1)?;
+        if hex && index == sign + 2 {
+            if !next.is_ascii_hexdigit() {
+                return None;
+            }
+            continue;
+        }
+        let prev = *bytes.get(index.checked_sub(1)?)?;
+        let valid = if hex && index < exponent_at {
+            prev.is_ascii_hexdigit() && next.is_ascii_hexdigit()
+        } else {
+            prev.is_ascii_digit() && next.is_ascii_digit()
+        };
+        if !valid {
+            return None;
+        }
+    }
+    Some(text.replace('_', ""))
+}
+
+/// Parses Go's hexadecimal float form: `0x` digits with an optional `.` and a
+/// mandatory `p` exponent, such as `0x1.8p1`. The mantissa keeps 128 bits, and
+/// any lower digits are folded into a sticky bit, so the final rounding matches a
+/// correctly rounded conversion. Returns `None` on overflow, as Go does.
+fn parse_prusa_hex_float(text: &str) -> Option<f64> {
+    let (sign, unsigned) = match text.strip_prefix('-') {
+        Some(rest) => (-1.0, rest),
+        None => (1.0, text.strip_prefix('+').unwrap_or(text)),
+    };
+    let body = unsigned.get(2..)?;
+    let (mantissa, exponent) = body.split_once(['p', 'P'])?;
+    let exponent: i64 = exponent.parse().ok()?;
+    let (int_digits, frac_digits) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    if int_digits.is_empty() && frac_digits.is_empty() {
+        return None;
+    }
+    let mut bits: u128 = 0;
+    let mut dropped: i64 = 0;
+    let mut sticky = false;
+    for byte in int_digits.bytes().chain(frac_digits.bytes()) {
+        let digit = u128::from((byte as char).to_digit(16)?);
+        if bits >> 124 == 0 {
+            bits = bits * 16 + digit;
+        } else {
+            dropped += 1;
+            sticky |= digit != 0;
+        }
+    }
+    let frac_len = frac_digits.len() as i64;
+    let scale = exponent
+        .saturating_sub(4 * frac_len)
+        .saturating_add(4 * dropped)
+        .clamp(-4000, 4000);
+    let mut value = (bits | u128::from(sticky)) as f64;
+    // Scale in steps that stay inside f64's normal range, so 2^-1074 is reachable.
+    let mut remaining = scale;
+    while remaining != 0 {
+        let step = remaining.clamp(-512, 512);
+        value *= 2f64.powi(step as i32);
+        remaining -= step;
+    }
+    value.is_finite().then_some(sign * value)
 }
 
 #[cfg(test)]
@@ -425,5 +530,50 @@ mod tests {
         assert!(prusa_values_equal("1e400", "1e400"));
         assert!(!prusa_values_equal("1e400", "1e401"));
         assert!(!prusa_values_equal("X-Plus 4", "x-plus 4"));
+    }
+
+    #[test]
+    fn compares_hex_floats_numerically_like_go() {
+        assert!(prusa_values_equal("0x1p-2", "0.25"));
+        assert!(prusa_values_equal("0X1.8P1", "3"));
+        assert!(prusa_values_equal("-0x1p0", "-1"));
+        assert!(prusa_values_equal("+0x1p+1", "2"));
+        assert!(prusa_values_equal("0x0p0", "-0"));
+        // A long mantissa keeps its value: 0x1 followed by 40 zeros, scaled by 2^-160.
+        assert!(prusa_values_equal(
+            &format!("0x1{}p-160", "0".repeat(40)),
+            "1"
+        ));
+        // The smallest subnormal, reachable only through the stepped scaling.
+        assert!(prusa_values_equal("0x1p-1074", "5e-324"));
+        // Go requires the p exponent, so these are text and only equal as text.
+        assert!(!prusa_values_equal("0x1.8", "1.5"));
+        assert!(prusa_values_equal("0x1.8", "0x1.8"));
+        // Overflow is not a number in Go, so the text comparison decides.
+        assert!(!prusa_values_equal("0x1p1024", "0x1p1025"));
+        assert!(prusa_values_equal("0x1p1024", "0x1p1024"));
+        assert!(!prusa_values_equal("0xp1", "1"));
+        assert!(!prusa_values_equal("0x.p1", "0"));
+    }
+
+    #[test]
+    fn signed_nan_compares_as_text() {
+        assert!(prusa_values_equal("-nan", "-nan"));
+        assert!(!prusa_values_equal("-nan", "NaN"));
+        // Unsigned NaN is still a number, and NaN never equals NaN.
+        assert!(!prusa_values_equal("NaN", "NaN"));
+    }
+
+    #[test]
+    fn go_numeric_underscore_placements_are_source_locked() {
+        assert!(prusa_values_equal("1_0", "10"));
+        assert!(prusa_values_equal("1e1_0", "1e10"));
+        assert!(prusa_values_equal("0x_1p0", "1"));
+        assert!(prusa_values_equal("0x1e_2p0", "482"));
+        assert!(prusa_values_equal("-0x_1p0", "-1"));
+        assert!(!prusa_values_equal("1e_2", "100"));
+        assert!(!prusa_values_equal("1_.0", "1"));
+        assert!(!prusa_values_equal("0x1_p0", "1"));
+        assert!(!prusa_values_equal("0x1p_0", "1"));
     }
 }
