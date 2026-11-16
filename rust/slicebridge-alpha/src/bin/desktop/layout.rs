@@ -295,7 +295,6 @@ pub(super) fn render_window(
     let locale = view.locale;
     let rtl = locale.rtl();
     let status = view.commands.snapshot();
-    let source = status["source"].as_str().map(str::to_owned);
     let display_files = queue_display_paths(&status, view.suppressed_source.as_deref());
     // Both staged files and the lone directly selected 3MF are removable.
     // The Registry handles either without ever deleting a source file.
@@ -458,9 +457,7 @@ pub(super) fn render_window(
     // main/native/frontend/dist/app.js renderQueue hides an empty fileList.
     // Keep the source list empty as well; only the drop zone and footnote remain.
     for path in display_files.iter() {
-        let open_path = path.clone();
         let remove_path = path.clone();
-        let active = source.as_deref() == Some(path.as_str());
         queue_items = queue_items.child(
             line(rtl)
                 .items_center()
@@ -504,29 +501,9 @@ pub(super) fn render_window(
                                 .child(short_path(path, 80)),
                         ),
                 )
-                .child({
-                    let button = Button::new(file_button_id("source-open", path))
-                        .label(if active {
-                            if rtl {
-                                "פעיל"
-                            } else {
-                                "Active"
-                            }
-                        } else if rtl {
-                            "בחר"
-                        } else {
-                            "Select"
-                        })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.run("source.select", json!({"path":open_path.clone()}), cx);
-                        }));
-                    if active {
-                        button.primary()
-                    } else {
-                        button
-                    }
-                })
-                // A peer of the open button, not nested in it. Disabled during a conversion, as in app.js.
+                // Go app.js renderQueue exposes just the remove control on each
+                // source row. source.select remains available in the Registry for
+                // internal inspection, never as an extra user-facing button.
                 .child(
                     Button::new(file_button_id("source-remove", path))
                         .disabled(running)
