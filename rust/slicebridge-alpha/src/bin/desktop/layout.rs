@@ -485,6 +485,8 @@ pub(super) fn render_window(
                 .child(
                     div()
                         .flex_1()
+                        .min_w(px(0.))
+                        .overflow_hidden()
                         .flex()
                         .flex_col()
                         .gap_1()
