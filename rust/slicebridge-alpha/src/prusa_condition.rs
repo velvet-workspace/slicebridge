@@ -278,8 +278,184 @@ impl ConditionParser<'_> {
     }
 }
 
+// Go regexp/RE2 treats Perl \d, \w, \s and word boundaries as ASCII. The
+// Rust regex crate defaults to Unicode for those shorthands. Translate just
+// their lexical forms while keeping Unicode \p classes and literal UTF-8 text.
+// Never enable backtracking or silently accept a Rust-only escape/flag.
+fn go_regex_pattern(pattern: &str) -> Result<String, String> {
+    let invalid = || "compatibility condition has an invalid regular expression".to_owned();
+    let mut translated = String::with_capacity(pattern.len());
+    let mut chars = pattern.chars().peekable();
+    let mut in_class = false;
+    let mut at_class_start = false;
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            let next = chars.next().ok_or_else(invalid)?;
+            if next == 'u' {
+                // Go's RE2 has \x{....}, not Rust's \u....
+                return Err(invalid());
+            }
+            if next == 'b' && !in_class && chars.peek() == Some(&'{') {
+                // Go treats \b{start} as an ASCII word boundary followed by
+                // literal braces, not Rust's named-boundary syntax.
+                let look: String = chars.clone().take(32).collect();
+                if let Some(end) = look.find('}') {
+                    let body = &look[1..end];
+                    if body.starts_with(|c: char| c.is_ascii_alphabetic()) {
+                        translated.push_str(r"(?-u:\b)\{");
+                        translated.push_str(&regex::escape(body));
+                        translated.push_str(r"\}");
+                        for _ in 0..=end {
+                            chars.next();
+                        }
+                        continue;
+                    }
+                }
+            }
+            if next == 'Q' {
+                // Go supports \Q...\E literal quoting; the Rust crate does not.
+                let mut literal = String::new();
+                let mut closed = false;
+                while let Some(c) = chars.next() {
+                    if c == '\\' && chars.peek() == Some(&'E') {
+                        chars.next();
+                        closed = true;
+                        break;
+                    }
+                    literal.push(c);
+                }
+                if !closed {
+                    return Err(invalid());
+                }
+                translated.push_str(&regex::escape(&literal));
+                continue;
+            }
+            let expansion = if in_class {
+                match next {
+                    'd' => Some("0-9"),
+                    'w' => Some("0-9A-Za-z_"),
+                    's' => Some(r"\t\n\f\r "),
+                    // A negated ASCII class cannot be inserted into a larger
+                    // character class safely. Reject instead of a false match.
+                    'D' | 'W' | 'S' => return Err(invalid()),
+                    _ => None,
+                }
+            } else {
+                match next {
+                    'd' => Some("[0-9]"),
+                    'D' => Some("[^0-9]"),
+                    'w' => Some("[0-9A-Za-z_]"),
+                    'W' => Some("[^0-9A-Za-z_]"),
+                    's' => Some(r"[\t\n\f\r ]"),
+                    'S' => Some(r"[^\t\n\f\r ]"),
+                    'b' => Some(r"(?-u:\b)"),
+                    'B' => Some(r"(?-u:\B)"),
+                    _ => None,
+                }
+            };
+            if let Some(expansion) = expansion {
+                translated.push_str(expansion);
+            } else {
+                translated.push('\\');
+                translated.push(next);
+            }
+            continue;
+        }
+        if ch == '[' && !in_class {
+            // A class containing only one negative ASCII shorthand can be
+            // represented exactly. Mixed complements remain rejected below.
+            let look: Vec<char> = chars.clone().take(4).collect();
+            let pair = if look.len() >= 3 && look[0] == '\\' && look[2] == ']' {
+                Some((false, look[1], 3))
+            } else if look.len() >= 4 && look[0] == '^' && look[1] == '\\' && look[3] == ']' {
+                Some((true, look[2], 4))
+            } else {
+                None
+            };
+            if let Some((inverted, code, count)) = pair {
+                let exact = match (inverted, code) {
+                    (false, 'D') | (true, 'd') => Some("[^0-9]"),
+                    (true, 'D') | (false, 'd') => Some("[0-9]"),
+                    (false, 'W') | (true, 'w') => Some("[^0-9A-Za-z_]"),
+                    (true, 'W') | (false, 'w') => Some("[0-9A-Za-z_]"),
+                    (false, 'S') | (true, 's') => Some(r"[^\t\n\f\r ]"),
+                    (true, 'S') | (false, 's') => Some(r"[\t\n\f\r ]"),
+                    _ => None,
+                };
+                if let Some(exact) = exact {
+                    translated.push_str(exact);
+                    for _ in 0..count {
+                        chars.next();
+                    }
+                    continue;
+                }
+            }
+        }
+        if ch == '(' && !in_class && chars.peek() == Some(&'?') {
+            let flags: String = chars
+                .clone()
+                .skip(1)
+                .take_while(|c| !matches!(c, ')' | ':' | '<'))
+                .take(20)
+                .collect();
+            // Go RE2 accepts i/m/s/U and named captures; Rust-only
+            // verbose or Unicode flags must not change printer eligibility.
+            if flags.chars().any(|flag| matches!(flag, 'x' | 'u')) {
+                return Err(invalid());
+            }
+        }
+        if ch == '{' && !in_class {
+            let rest: String = chars.clone().take(20).collect();
+            if let Some(end) = rest.find('}') {
+                let body = &rest[..end];
+                // Go accepts {,2} as literal braces, not a repetition.
+                if body.starts_with(',') && body[1..].bytes().all(|b| b.is_ascii_digit()) {
+                    translated.push_str(r"\{");
+                    translated.push_str(body);
+                    translated.push_str(r"\}");
+                    for _ in 0..=end {
+                        chars.next();
+                    }
+                    continue;
+                }
+                // RE2 bounds repetitions to 1000; Rust permits larger ones.
+                if body.split(',').any(|part| {
+                    !part.is_empty()
+                        && part.bytes().all(|b| b.is_ascii_digit())
+                        && part.parse::<u64>().map_or(true, |value| value > 1000)
+                }) {
+                    return Err(invalid());
+                }
+            }
+        }
+        if in_class && ch == '-' && chars.peek() == Some(&'-') && !at_class_start {
+            // Go reports an invalid range for [a--b], while Rust would treat
+            // -- as character-class set subtraction.
+            return Err(invalid());
+        }
+        if ch == '[' {
+            in_class = true;
+            at_class_start = true;
+        } else if ch == ']' {
+            in_class = false;
+            at_class_start = false;
+        } else if in_class && ch != '^' {
+            at_class_start = false;
+        }
+        if in_class && ch == '&' && chars.peek() == Some(&'&') {
+            // Go treats && as two literals; Rust uses set intersection.
+            translated.push_str(r"\&\&");
+            chars.next();
+            continue;
+        }
+        translated.push(ch);
+    }
+    Ok(translated)
+}
+
 fn compile_prusa_regex(pattern: &str) -> Result<regex::Regex, String> {
-    regex::RegexBuilder::new(pattern)
+    let compatible = go_regex_pattern(pattern)?;
+    regex::RegexBuilder::new(&compatible)
         .size_limit(MAX_PRUSA_REGEX_COMPILED_BYTES)
         .build()
         .map_err(|_| "compatibility condition has an invalid regular expression".to_owned())
@@ -519,6 +695,59 @@ mod tests {
         assert!(evaluate_prusa_condition(&at_limit, &printer).is_ok());
         let over_limit = format!("a=~/{}/", "x".repeat(MAX_PRUSA_REGEX_BYTES + 1));
         assert!(evaluate_prusa_condition(&over_limit, &printer).is_err());
+    }
+
+    #[test]
+    fn matches_go_re2_ascii_shorthands_and_literal_operators() {
+        // Go's regexp.Compile was executed on the same cases independently.
+        let cases = [
+            (r"^\d+$", "٣", false),
+            (r"^\d+$", "123", true),
+            (r"\w+", "é", false),
+            (r"\w+", "abc", true),
+            (r"X\sPlus", "X\u{00a0}Plus", false),
+            (r"X\sPlus", "X Plus", true),
+            (r"\bX", "éX", true),
+            (r"[a&&b]", "a", true),
+            (r"[a&&b]", "&", true),
+            (r"[\w]+", "é", false),
+            (r"\s", "\u{000b}", false),
+            (r"\s", "\u{00a0}", false),
+            (r"\S", "\u{00a0}", true),
+            (r"\W", "é", true),
+            (r"[\D]", "é", true),
+            (r"[\W]", "é", true),
+            (r"[\S]", "é", true),
+            (r"[^\D]", "3", true),
+            (r"\Qx\E", "x", true),
+            (r"a{,2}", "a{,2}", true),
+            (r"\b{start}X", "a{start}X", true),
+            (r"(?U)a.*b", "a___b___b", true),
+            (r"(?<n>x)", "x", true),
+            (r"\pL", "é", true),
+            (r"[[:alpha:]]", "é", false),
+        ];
+        for (pattern, model, expected) in cases {
+            let section = section(&[("printer_model", model)]);
+            let expression = format!("printer_model=~/{pattern}/");
+            assert_eq!(
+                evaluate_prusa_condition(&expression, &section),
+                Ok(expected),
+                "{expression:?} with {model:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_rust_only_go_invalid_regex_extensions() {
+        let section = section(&[("printer_model", "XPlus")]);
+        for pattern in [r"(?x)X Plus", r"\u0058", r"(?-u)\w+", "a{1001}", "[a--b]"] {
+            let expression = format!("printer_model=~/{pattern}/");
+            assert!(
+                evaluate_prusa_condition(&expression, &section).is_err(),
+                "Go rejects {pattern:?}, Rust must also reject"
+            );
+        }
     }
 
     #[test]
