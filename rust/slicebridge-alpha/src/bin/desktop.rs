@@ -87,6 +87,15 @@ fn remove_reply_ok(reply: &Value) -> bool {
     reply["ok"] == true && reply["data"]["removed"] == true
 }
 
+// Go's remove and clear reset memoryStatus, so the ready/idle summary returns instead of the echo.
+fn clears_activity_message(name: &str, reply: &Value) -> bool {
+    match name {
+        "batch.clear" => reply["ok"] == true,
+        "batch.remove" => remove_reply_ok(reply),
+        _ => false,
+    }
+}
+
 // Stable per file: the same path keeps its button id when other rows are added or removed.
 fn file_button_id(prefix: &str, path: &str) -> String {
     let mut hasher = DefaultHasher::new();
@@ -192,6 +201,10 @@ use desktop_printer_picker::PrinterCard;
 
 #[path = "desktop/printer_settings_ui.rs"]
 mod desktop_printer_settings_ui;
+
+// Idle last_message: layout's activity_detail_text maps it to Go's readyHint/idleHint.
+const IDLE_MESSAGE: &str =
+    "No UI action yet. Agent / CLI / MCP changes appear in the project fields above.";
 
 struct SliceBridgeWindow {
     commands: Registry,
@@ -722,9 +735,7 @@ impl SliceBridgeWindow {
                 .collect();
         Self {
             commands: registry,
-            last_message:
-                "No UI action yet. Agent / CLI / MCP changes appear in the project fields above."
-                    .into(),
+            last_message: IDLE_MESSAGE.into(),
             destination: None,
             destination_source: None,
             suppressed_source: None,
@@ -862,7 +873,9 @@ impl SliceBridgeWindow {
                 );
             }
         }
-        self.last_message = if result["ok"] == true {
+        self.last_message = if clears_activity_message(name, &result) {
+            IDLE_MESSAGE.into()
+        } else if result["ok"] == true {
             format!("{name}: {}", result["data"])
         } else {
             format!("Error: {}", result["error"].as_str().unwrap_or("unknown"))
@@ -1346,8 +1359,8 @@ impl SliceBridgeWindow {
                             cx,
                         );
                     }
-                    self.last_message =
-                        format!("{}: {}", self.locale.text("queuedFiles"), files.len());
+                    // Go's file staging resets memoryStatus; no "Queued files" echo is shown.
+                    self.last_message = IDLE_MESSAGE.into();
                 } else {
                     self.last_message = reply["error"]
                         .as_str()
@@ -1406,6 +1419,8 @@ impl SliceBridgeWindow {
         if !self.selected_batch_targets.remove(target) {
             self.selected_batch_targets.insert(target.to_owned());
         }
+        // Go target checkbox changes clear memoryStatus before renderTargets.
+        self.last_message = IDLE_MESSAGE.into();
         cx.notify();
     }
 
@@ -1417,16 +1432,21 @@ impl SliceBridgeWindow {
         .into_iter()
         .map(|(id, _)| id.to_owned())
         .collect();
-        if !visible.is_empty()
-            && visible
-                .iter()
-                .all(|id| self.selected_batch_targets.contains(id))
+        if visible.is_empty() {
+            // Go's selectAll returns without clearing memoryStatus when no
+            // selectable printer rows exist.
+            return;
+        }
+        if visible
+            .iter()
+            .all(|id| self.selected_batch_targets.contains(id))
         {
             // Go's button toggles between selecting and clearing shown targets.
             self.selected_batch_targets.clear();
         } else {
             self.selected_batch_targets.extend(visible);
         }
+        self.last_message = IDLE_MESSAGE.into();
         cx.notify();
     }
 
@@ -1979,8 +1999,60 @@ mod about_tests {
 
 #[cfg(test)]
 mod queue_remove_tests {
-    use super::{file_button_id, queue_display_paths, remove_reply_ok, snapshot_running};
+    use super::desktop_i18n::Locale;
+    use super::desktop_layout::activity_detail_text;
+    use super::{
+        clears_activity_message, file_button_id, queue_display_paths, remove_reply_ok,
+        snapshot_running, IDLE_MESSAGE,
+    };
     use serde_json::json;
+
+    #[test]
+    fn queue_remove_and_clear_return_to_go_ready_summary_only_on_success() {
+        assert!(clears_activity_message(
+            "batch.remove",
+            &json!({"ok":true,"data":{"removed":true,"staged":0,"paths":[]}})
+        ));
+        assert!(clears_activity_message(
+            "batch.clear",
+            &json!({"ok":true,"data":{}})
+        ));
+        // Failed or no-op replies keep their status line.
+        assert!(!clears_activity_message(
+            "batch.remove",
+            &json!({"ok":false,"error":"busy"})
+        ));
+        assert!(!clears_activity_message(
+            "batch.remove",
+            &json!({"ok":true,"data":{"removed":false}})
+        ));
+        assert!(!clears_activity_message(
+            "batch.clear",
+            &json!({"ok":false,"error":"busy"})
+        ));
+        // Other commands, including running or failed conversions, keep their message.
+        assert!(!clears_activity_message(
+            "conversion.start",
+            &json!({"ok":true,"data":{}})
+        ));
+        assert!(!clears_activity_message(
+            "conversion.cancel",
+            &json!({"ok":false,"error":"no conversion"})
+        ));
+    }
+
+    #[test]
+    fn idle_message_resolves_to_go_ready_summary_in_both_languages() {
+        // Literal Go strings in native/frontend/dist/app.js (readyHint); same as the layout test.
+        assert_eq!(
+            activity_detail_text(Locale::En, IDLE_MESSAGE, 2, 1),
+            "2 projects × 1 printers"
+        );
+        assert_eq!(
+            activity_detail_text(Locale::He, IDLE_MESSAGE, 2, 1),
+            "2 קבצים × 1 מדפסות"
+        );
+    }
 
     #[test]
     fn staged_files_are_the_list_and_source_stands_in_only_when_nothing_is_staged() {
