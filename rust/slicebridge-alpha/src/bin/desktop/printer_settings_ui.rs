@@ -349,7 +349,7 @@ impl SliceBridgeWindow {
             .as_array()
             .cloned()
             .unwrap_or_default();
-        let mut slicer_is_unavailable = saved_slicer != "auto";
+
         for entry in slicer_records {
             let Some(id) = entry["id"].as_str() else {
                 continue;
@@ -357,9 +357,7 @@ impl SliceBridgeWindow {
             let id = id.to_owned();
             let name = entry["name"].as_str().unwrap_or(&id).to_owned();
             let installed = entry["installed"] == true;
-            if installed && id == saved_slicer {
-                slicer_is_unavailable = false;
-            }
+
             let active = saved_slicer == id;
             let title = if installed {
                 name
@@ -390,8 +388,10 @@ impl SliceBridgeWindow {
             ));
         }
 
-        let allow_profile =
-            fixed_nozzle_allows_filament_picker(saved_nozzle) && !slicer_is_unavailable;
+        // Wails paintSettings: filaments.disabled depends on Auto physical nozzle only.
+        // Do not impose an extra disabled state for an unavailable saved slicer;
+        // the authoritative settings.save validation still rejects invalid profiles.
+        let allow_profile = fixed_nozzle_allows_filament_picker(saved_nozzle);
         let existing = self.settings_options["filaments"]
             .as_array()
             .cloned()
