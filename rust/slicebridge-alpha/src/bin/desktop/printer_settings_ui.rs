@@ -135,6 +135,17 @@ fn fixed_nozzle_allows_filament_picker(nozzle: &str) -> bool {
     !nozzle.is_empty() && nozzle != "auto"
 }
 
+// Wails paintSettings looks up installed Orca/QIDI/Prusa choices at 0.4 mm
+// for a physically Auto nozzle. This is discovery only; the saved physical
+// selection must remain Auto until the user explicitly chooses a fixed size.
+fn nozzle_for_profile_discovery(physical_nozzle: &str) -> &str {
+    if physical_nozzle.is_empty() || physical_nozzle == "auto" {
+        "0.4"
+    } else {
+        physical_nozzle
+    }
+}
+
 impl SliceBridgeWindow {
     pub(super) fn open_settings(&mut self, cx: &mut Context<Self>) {
         let reply = self.commands.execute("settings.get", &json!({}));
@@ -163,7 +174,9 @@ impl SliceBridgeWindow {
             "settings.options",
             &json!({
                 "target":self.settings_target,
-                "nozzle":self.settings_draft["nozzle"],
+                "nozzle":nozzle_for_profile_discovery(
+                    self.settings_draft["nozzle"].as_str().unwrap_or("auto")
+                ),
                 "slicer":self.settings_draft["slicer"],
                 "material":self.settings_material,
             }),
@@ -604,7 +617,10 @@ impl SliceBridgeWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::{baseline_nozzles, fixed_nozzle_allows_filament_picker, MATERIALS, TARGETS};
+    use super::{
+        baseline_nozzles, fixed_nozzle_allows_filament_picker, nozzle_for_profile_discovery,
+        MATERIALS, TARGETS,
+    };
     use serde_json::json;
 
     #[test]
@@ -615,6 +631,21 @@ mod tests {
         assert!(!fixed_nozzle_allows_filament_picker(""));
         for nozzle in ["0.2", "0.25", "0.4", "0.6", "0.8"] {
             assert!(fixed_nozzle_allows_filament_picker(nozzle));
+        }
+    }
+
+    #[test]
+    fn auto_nozzle_uses_wails_0_4_profile_lookup_without_changing_saved_hardware() {
+        // Wails app.js paintSettings: effectiveNozzle = auto ? "0.4" : nozzle.
+        let saved = json!({"nozzle":"auto"});
+        assert_eq!(
+            nozzle_for_profile_discovery(saved["nozzle"].as_str().unwrap()),
+            "0.4"
+        );
+        assert_eq!(saved["nozzle"], "auto");
+        assert_eq!(nozzle_for_profile_discovery(""), "0.4");
+        for nozzle in ["0.2", "0.25", "0.4", "0.6", "0.8"] {
+            assert_eq!(nozzle_for_profile_discovery(nozzle), nozzle);
         }
     }
 
