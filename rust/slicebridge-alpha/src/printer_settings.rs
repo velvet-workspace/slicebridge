@@ -145,6 +145,11 @@ pub fn parse(raw: &[u8]) -> Result<Value, String> {
             .ok_or("window settings must be an object")?;
         for (dimension, min, max) in [("width", 720, 2000), ("height", 500, 1400)] {
             if let Some(input) = window.get(dimension) {
+                // Go json.Unmarshal leaves a zero-valued int unchanged for null;
+                // loadSettings then retains the default window dimension.
+                if input.is_null() {
+                    continue;
+                }
                 let number = input
                     .as_i64()
                     .ok_or(format!("window {dimension} must be integer"))?;
@@ -543,6 +548,21 @@ mod tests {
         );
         assert_eq!(saved["window"], json!({"width":1280,"height":900}));
     }
+    #[test]
+    fn json_null_window_dimensions_match_go_settings_loader() {
+        // encoding/json unmarshals JSON null into zero-valued Go ints without
+        // error. Wails loadSettings keeps defaults for out-of-range zeros.
+        let first = parse(br#"{"version":1,"window":{"width":null,"height":730}}"#).unwrap();
+        assert_eq!(first["window"], json!({"width":1280,"height":730}));
+        let second = parse(br#"{"version":1,"window":{"width":1500,"height":null}}"#).unwrap();
+        assert_eq!(second["window"], json!({"width":1500,"height":900}));
+        let both = parse(br#"{"version":1,"window":{"width":null,"height":null}}"#).unwrap();
+        assert_eq!(both["window"], json!({"width":1280,"height":900}));
+        // Wrong non-null types still fail closed, exactly as Go decoding does.
+        assert!(parse(br#"{"version":1,"window":{"width":"null"}}"#).is_err());
+        assert!(parse(br#"{"version":1,"window":{"height":false}}"#).is_err());
+    }
+
     #[test]
     fn json_null_nozzle_and_slicer_read_as_auto_like_go_loader() {
         // Go json.Unmarshal keeps "" for JSON null in string fields, and
