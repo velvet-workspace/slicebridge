@@ -13,6 +13,17 @@ const TARGETS: &[(&str, &str)] = &[
 ];
 const MATERIALS: &[&str] = &["PLA", "PETG", "ABS", "ASA", "TPU"];
 
+// The Wails baseline exposes physical nozzle choices even when no slicer or
+// OEM profile is installed. Do not derive this hardware catalog from the
+// fallible settings.options discovery response.
+fn baseline_nozzles(target: &str) -> &'static [&'static str] {
+    match target {
+        "u1" | "cc2" | "qidi" => &["0.2", "0.4", "0.6", "0.8"],
+        "c5" => &["0.25", "0.4", "0.6", "0.8"],
+        _ => &[],
+    }
+}
+
 fn line(rtl: bool) -> Div {
     if rtl {
         div().flex().flex_row_reverse()
@@ -278,22 +289,19 @@ impl SliceBridgeWindow {
         }
 
         let mut nozzles = line(rtl).gap_2().flex_wrap();
-        let choices = self.settings_options["nozzles"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        for nozzle in std::iter::once("auto".to_string()).chain(
-            choices
-                .into_iter()
-                .filter_map(|n| n.as_str().map(str::to_owned)),
-        ) {
+        // Wails native/frontend/dist/app.js defines these as a static hardware
+        // catalog; missing installed Orca/QIDI/Prusa profiles must not hide
+        // valid physical nozzle choices in either English or Hebrew.
+        for nozzle in
+            std::iter::once("auto").chain(baseline_nozzles(&self.settings_target).iter().copied())
+        {
             let active = saved_nozzle == nozzle;
             let label = if nozzle == "auto" {
                 locale.text("autoNozzle")
             } else {
                 format!("{nozzle} mm")
             };
-            let value = nozzle.clone();
+            let value = nozzle.to_owned();
             nozzles = nozzles.child(choice_button(
                 format!("settings-nozzle-{nozzle}"),
                 label,
@@ -579,8 +587,20 @@ impl SliceBridgeWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::{MATERIALS, TARGETS};
+    use super::{baseline_nozzles, MATERIALS, TARGETS};
     use serde_json::json;
+
+    #[test]
+    fn physical_nozzles_match_wails_hardware_catalog_without_installed_profiles() {
+        // Source authority: native/frontend/dist/app.js nozzleChoices.
+        for target in ["u1", "cc2", "qidi"] {
+            assert_eq!(baseline_nozzles(target), &["0.2", "0.4", "0.6", "0.8"]);
+        }
+        assert_eq!(baseline_nozzles("c5"), &["0.25", "0.4", "0.6", "0.8"]);
+        assert!(baseline_nozzles("unknown").is_empty());
+        assert_eq!(TARGETS.len(), 4);
+    }
+
     #[test]
     fn target_readiness_follows_saved_physical_nozzle_not_hardcoded_default() {
         let mut saved = slicebridge_alpha::printer_settings::defaults();
