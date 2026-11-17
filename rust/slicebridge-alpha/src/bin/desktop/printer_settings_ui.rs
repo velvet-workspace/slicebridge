@@ -129,6 +129,12 @@ fn auto_nozzle_has_filament_override(draft: &Value) -> bool {
     })
 }
 
+// Wails paintSettings disables installed filament selection for an Auto
+// physical nozzle: a named preset cannot be saved without fixed hardware.
+fn fixed_nozzle_allows_filament_picker(nozzle: &str) -> bool {
+    !nozzle.is_empty() && nozzle != "auto"
+}
+
 impl SliceBridgeWindow {
     pub(super) fn open_settings(&mut self, cx: &mut Context<Self>) {
         let reply = self.commands.execute("settings.get", &json!({}));
@@ -204,6 +210,11 @@ impl SliceBridgeWindow {
         cx.notify();
     }
     pub(super) fn choose_settings_filament(&mut self, preset: &str, cx: &mut Context<Self>) {
+        if !fixed_nozzle_allows_filament_picker(
+            self.settings_draft["nozzle"].as_str().unwrap_or("auto"),
+        ) {
+            return;
+        }
         let Some(filaments) = self.settings_draft["filaments"].as_object_mut() else {
             return;
         };
@@ -366,7 +377,8 @@ impl SliceBridgeWindow {
             ));
         }
 
-        let allow_profile = saved_nozzle != "auto" && !slicer_is_unavailable;
+        let allow_profile =
+            fixed_nozzle_allows_filament_picker(saved_nozzle) && !slicer_is_unavailable;
         let existing = self.settings_options["filaments"]
             .as_array()
             .cloned()
@@ -376,7 +388,7 @@ impl SliceBridgeWindow {
             "settings-filament-auto".into(),
             locale.text("autoFilament"),
             selected_preset == "auto" || selected_preset.is_empty(),
-            true,
+            fixed_nozzle_allows_filament_picker(saved_nozzle),
             |this, _, _, cx| this.choose_settings_filament("auto", cx),
             cx,
         ));
@@ -417,6 +429,11 @@ impl SliceBridgeWindow {
             locale.text("autoPresetWarning")
         } else if saved_nozzle == "auto" {
             locale.text("autoPresetHint")
+        } else if let Some(reason) = self.settings_options["error"]
+            .as_str()
+            .filter(|reason| !reason.is_empty())
+        {
+            reason.to_owned()
         } else if existing.is_empty() {
             locale.text("noNativeProfiles")
         } else {
@@ -587,8 +604,19 @@ impl SliceBridgeWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::{baseline_nozzles, MATERIALS, TARGETS};
+    use super::{baseline_nozzles, fixed_nozzle_allows_filament_picker, MATERIALS, TARGETS};
     use serde_json::json;
+
+    #[test]
+    fn auto_nozzle_disables_filament_picker_matching_wails_en_and_he() {
+        // Wails app.js paintSettings: filaments.disabled = autoNozzle.
+        // This UI rule must not change with locale, slicer installation or material.
+        assert!(!fixed_nozzle_allows_filament_picker("auto"));
+        assert!(!fixed_nozzle_allows_filament_picker(""));
+        for nozzle in ["0.2", "0.25", "0.4", "0.6", "0.8"] {
+            assert!(fixed_nozzle_allows_filament_picker(nozzle));
+        }
+    }
 
     #[test]
     fn physical_nozzles_match_wails_hardware_catalog_without_installed_profiles() {
