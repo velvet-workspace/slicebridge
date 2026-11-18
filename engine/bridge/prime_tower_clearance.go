@@ -27,10 +27,11 @@ func primeTowerProfileEnabled(settings map[string]any) bool {
 	}
 }
 
-// towerPlatePositionAudit is a structural warning, never a placement solution
-// or clearance certification. Coordinates are read from the CONVERTED project
-// (not imported from the source printer); empty/unknown plate metadata still
-// triggers the existing generic prime tower review.
+// towerPlatePositionAudit is a structural diagnostic, never a placement
+// solution or clearance certification. Read the converted target project's
+// native model_settings plate declarations first. Some valid Bambu/Orca 3MFs
+// have none but already declare plates in slice_info.config: use those
+// existing entries as the fallback, never invent or inject a new plate.
 type towerPlatePositionAudit struct {
 	plates, xEntries, yEntries int
 }
@@ -62,6 +63,7 @@ func (a towerPlatePositionAudit) status(primeTowerReview bool) string {
 // pair per plate sliced. No coordinate or other slicer setting is inferred.
 // For unsupported/malformed/non-Bambu metadata return unknown (zero plates),
 // rather than preventing a previously valid editable project from converting.
+// Read-only fallback to existing slice_info plates must not alter any 3MF bytes.
 func auditTargetTowerPlatePositions(filename string) towerPlatePositionAudit {
 	var result towerPlatePositionAudit
 	zr, err := zip.OpenReader(filename)
@@ -70,43 +72,69 @@ func auditTargetTowerPlatePositions(filename string) towerPlatePositionAudit {
 	}
 	defer zr.Close()
 	const maxMetadata = 16 << 20
-	var platesData, projectData []byte
+	var platesData, projectData, sliceInfoData []byte
 	for _, file := range zr.File {
-		if file.Name != "Metadata/model_settings.config" && file.Name != "Metadata/project_settings.config" {
+		if file.Name != "Metadata/model_settings.config" &&
+			file.Name != "Metadata/project_settings.config" &&
+			file.Name != "Metadata/slice_info.config" {
 			continue
 		}
 		if file.UncompressedSize64 > maxMetadata {
+			if file.Name == "Metadata/slice_info.config" {
+				continue // optional fallback must not invalidate valid model_settings plates
+			}
 			return result
 		}
 		rc, err := file.Open()
 		if err != nil {
+			if file.Name == "Metadata/slice_info.config" {
+				continue
+			}
 			return result
 		}
 		data, err := io.ReadAll(io.LimitReader(rc, maxMetadata+1))
 		rc.Close()
 		if err != nil || len(data) > maxMetadata {
+			if file.Name == "Metadata/slice_info.config" {
+				continue // keep authoritative native plate count if slice_info is bad
+			}
 			return result
 		}
-		if file.Name == "Metadata/model_settings.config" {
+		switch file.Name {
+		case "Metadata/model_settings.config":
 			platesData = data
-		} else {
+		case "Metadata/project_settings.config":
 			projectData = data
+		case "Metadata/slice_info.config":
+			sliceInfoData = data
 		}
 	}
-	if len(platesData) == 0 || len(projectData) == 0 {
+	if len(projectData) == 0 {
 		return result
 	}
-	var modelSettings struct {
-		XMLName xml.Name   `xml:"config"`
-		Plates  []struct{} `xml:"plate"`
+	if len(platesData) > 0 {
+		var modelSettings struct {
+			XMLName xml.Name   `xml:"config"`
+			Plates  []struct{} `xml:"plate"`
+		}
+		if err := xml.Unmarshal(platesData, &modelSettings); err != nil ||
+			modelSettings.XMLName.Local != "config" {
+			return result // malformed primary metadata must not be silently overridden
+		}
+		result.plates = len(modelSettings.Plates)
 	}
-	if err := xml.Unmarshal(platesData, &modelSettings); err != nil ||
-		modelSettings.XMLName.Local != "config" {
-		return result
+	if result.plates == 0 && len(sliceInfoData) > 0 {
+		var sliceInfo struct {
+			XMLName xml.Name   `xml:"config"`
+			Plates  []struct{} `xml:"plate"`
+		}
+		if err := xml.Unmarshal(sliceInfoData, &sliceInfo); err == nil &&
+			sliceInfo.XMLName.Local == "config" {
+			result.plates = len(sliceInfo.Plates)
+		}
 	}
-	result.plates = len(modelSettings.Plates)
 	if result.plates == 0 {
-		return result
+		return result // no authoritative plate entry in either metadata part
 	}
 	var settings map[string]json.RawMessage
 	if err := json.Unmarshal(projectData, &settings); err != nil {

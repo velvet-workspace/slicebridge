@@ -1,0 +1,38 @@
+name: Archive internal CI builds as experimental Releases
+
+# This workflow lives on protected main. It never checks out or runs code from
+# the triggering PR/branch. Only internal (not fork) build artifacts are copied.
+on:
+  workflow_run:
+    workflows:
+      - Native WebView Windows and macOS
+      - Windows portable beta
+      - Printer profile registry QA
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: ci-release-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    name: Preserve original Actions artifact ZIPs in GitHub Pre-release
+    if: ${{ github.event.workflow_run.head_repository.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout trusted release automation from main only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Publish or extend experimental pre-release and verify SHA-256
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN_ID: ${{ github.event.workflow_run.id }}
+          BUILD_REPOSITORY: ${{ github.repository }}
+        run: python3 tools/publish_ci_artifacts.py --repo "$BUILD_REPOSITORY" --run-id "$BUILD_RUN_ID"

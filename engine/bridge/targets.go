@@ -108,6 +108,7 @@ func bindNativeFilamentSettings(bundle *targetBundle, filaments []converter.Fila
 		return fmt.Errorf("invalid number of source filaments")
 	}
 	presets := make([]map[string]any, len(filaments))
+	nativeProfileIDs := make([]any, len(filaments))
 	for i, filament := range filaments {
 		name := bundle.Profile.FilamentProfiles[filament.Type]
 		preset := bundle.MaterialSettings[filament.Type]
@@ -115,6 +116,7 @@ func bindNativeFilamentSettings(bundle *targetBundle, filaments []converter.Fila
 			return fmt.Errorf("no installed %s filament preset for material type %q", bundle.Target, filament.Type)
 		}
 		presets[i] = preset
+		nativeProfileIDs[i] = name
 	}
 	keys := make(map[string]bool)
 	for _, preset := range presets {
@@ -130,6 +132,13 @@ func bindNativeFilamentSettings(bundle *targetBundle, filaments []converter.Fila
 	}
 	sort.Strings(names)
 	for _, key := range names {
+		// The installed machine's filament profile mapping is authoritative.
+		// Raw filament JSON may omit filament_settings_id or contain an empty
+		// placeholder, while Profile.FilamentProfiles provides the explicitly
+		// resolved native preset for each material. Never infer a PLA fallback.
+		if bundle.Target == "qidi" && bundle.Profile.ModelID == "X-Plus 5" && key == "filament_settings_id" {
+			continue
+		}
 		// Hardware-only settings such as nozzle diameter remain owned by
 		// the *machine* profile, even if a material preset also sets them.
 		if key == "nozzle_diameter" || key == "extruder_offset" ||
@@ -165,6 +174,9 @@ func bindNativeFilamentSettings(bundle *targetBundle, filaments []converter.Fila
 	// The printer/print system IDs come from its installed slicer, whereas
 	// these arrays are source slot-specific and must match exactly.
 	bundle.Profile.ProjectSettings["filament_type"] = materialTypes(filaments)
+	if bundle.Target == "qidi" && bundle.Profile.ModelID == "X-Plus 5" {
+		bundle.Profile.ProjectSettings["filament_settings_id"] = nativeProfileIDs
+	}
 	return nil
 }
 func materialTypes(filaments []converter.Filament) []any {
