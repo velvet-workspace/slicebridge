@@ -32,7 +32,7 @@ jobs:
         with:
           submodules: true
       - name: Go toolchain
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: native/go.mod
           cache: false
@@ -140,7 +140,7 @@ jobs:
         with:
           submodules: true
       - name: Go toolchain
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: native/go.mod
           cache: false
