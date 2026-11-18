@@ -27,3 +27,7 @@ An empty output folder outside the repository is required. To inspect ZIPs that 
 - `release-evidence.json`, `SHA256SUMS.txt`; with local draft ZIPs, also `DRAFT_ASSET_SHA256SUMS.txt`.
 
 This isn't a certificate of correct printing, license compliance or platform trust. **Digital signing/notarization are optional for a hobby distribution**, although unsigned apps may trigger or be blocked by OS security warnings. For the actual simple steps to share a build, see [the community release checklist](DISTRIBUTION_CHECKLIST.md).
+
+## Experimental CI build releases (owner directive, 2026-11-15)
+
+The read-only Release preflight remains **evidence only**; it does not publish Releases. A **separate** default-branch `auto-release-builds.yml` workflow implements the owner's standing approval to publish internal build artifacts as experimental GitHub Pre-releases. It archives original Actions ZIP bytes, verifies SHA-256 and ZIP integrity, and never promotes a build to production. See [CI_RELEASE_POLICY.md](CI_RELEASE_POLICY.md) for scope, exclusions and failure handling. The workflow is not operational until reviewed and merged into `main`.

@@ -81,14 +81,30 @@ they do **not** certify native Wails, a real file dialog or printer operation.
 When a Bambu project has five or more original color/material slots, keep
 all source channels independent in the converted 3MF project, along with
 their color names/types and painted/object filament assignments. The
-target hardware still has four physical toolheads. SliceBridge cannot
-decide which channels should merge: this is an explicit user decision
-in the destination slicer. Mark the output for user mapping review, never
-start a physical print and never silently map a fifth color onto another.
+physical print nozzle count varies by printer model and is
+independent of the number of project material slots. SliceBridge never
+merges or discards source channels based on physical nozzle count. A
+successful conversion is shown as converted without a noisy material-to-
+toolhead warning: the user decides material/feeder mapping in the
+destination slicer. The app never dispatches a physical print.
 Valid installed vendor presets are still required for each material; do
 not silently substitute a wrong temperature/material profile.
 A successful structural round-trip of virtual 3MF slots is not proof
 every slicer UI will retain extra channels after importing it.
+
+### Plate count and prime tower diagnostics
+
+The converted project already contains the plate declarations in
+`Metadata/slice_info.config` when supplied by the source. The backend
+uses explicit `Metadata/model_settings.config` plates first and falls
+back to existing `slice_info.config` plate records where missing.
+Neither a single 3MF build element nor the number of objects is proof
+of a particular number of plates. Do not inject guessed `<plate>`
+instance associations or prime-tower X/Y coordinates into converted
+3MF files, and never rewrite user-owned slicer presets. The UI reports
+successful conversions without repetitive tower warnings; structural
+tower diagnostic fields remain in the backend conversion report for QA.
+The target slicer owns any tower placement or physical printing decisions.
 
 ### QA
 

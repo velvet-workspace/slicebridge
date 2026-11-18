@@ -129,6 +129,12 @@ func inspectPackage(filename string) (packageFacts, error) {
 }
 
 func stripSliceCache(source, dest string, preserved []string) (int, error) {
+	return stripSliceCacheForQIDI(source, dest, preserved, false)
+}
+
+// stripSliceCacheForQIDI carries the same cache removal and atomic output
+// semantics; only QIDI's final 3D model gets the tested importer metadata.
+func stripSliceCacheForQIDI(source, dest string, preserved []string, qidi bool) (int, error) {
 	zr, err := zip.OpenReader(source)
 	if err != nil {
 		return 0, err
@@ -141,9 +147,44 @@ func stripSliceCache(source, dest string, preserved []string) (int, error) {
 	defer out.Close()
 	zw := zip.NewWriter(out)
 	removed := 0
+	qidiModelAdded := false
 	for _, f := range zr.File {
 		if isCache(f.Name) {
 			removed++
+			continue
+		}
+		if qidi && f.Name == "3D/3dmodel.model" {
+			if qidiModelAdded {
+				return removed, fmt.Errorf("duplicate primary QIDI 3MF model part")
+			}
+			if f.UncompressedSize64 > 200<<20 {
+				return removed, fmt.Errorf("QIDI model XML exceeds 200 MiB")
+			}
+			rc, err := f.Open()
+			if err != nil {
+				return removed, err
+			}
+			data, err := io.ReadAll(io.LimitReader(rc, 200<<20+1))
+			rc.Close()
+			if err != nil {
+				return removed, err
+			}
+			if len(data) > 200<<20 {
+				return removed, fmt.Errorf("QIDI model XML exceeds 200 MiB")
+			}
+			edited, err := setQIDIApplicationMetadata(data)
+			if err != nil {
+				return removed, err
+			}
+			header := f.FileHeader
+			w, err := zw.CreateHeader(&header)
+			if err != nil {
+				return removed, err
+			}
+			if _, err := w.Write(edited); err != nil {
+				return removed, err
+			}
+			qidiModelAdded = true
 			continue
 		}
 		if f.Name == "Metadata/project_settings.config" && len(preserved) > 0 {
@@ -205,6 +246,9 @@ func stripSliceCache(source, dest string, preserved []string) (int, error) {
 		if _, err := io.Copy(writer, raw); err != nil {
 			return removed, err
 		}
+	}
+	if qidi && !qidiModelAdded {
+		return removed, fmt.Errorf("QIDI conversion is missing primary 3D/3dmodel.model")
 	}
 	if err := zw.Close(); err != nil {
 		return removed, err

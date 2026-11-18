@@ -150,7 +150,17 @@ func buildPlan(source, destination string, resolve profileResolver) (conversionP
 	if resolved.bundle != nil {
 		// The machine's physical tools remain unchanged. Extra slots are virtual
 		// project filaments for manual slicer review.
-		if len(slots) > resolved.bundle.Profile.FilamentSlots {
+		//
+		// QIDIStudio's installed X-Plus 5 vendor bundle begins with four
+		// *virtual* default palette slots even though the hardware has one
+		// printing nozzle. When the source has ONE filament, emitting the
+		// remaining three synthetic/white fillers is misleading and can cause
+		// spurious GUI materials. For QIDI only, size the PROJECT palette to
+		// exactly the preserved source filaments, without altering the
+		// manufacturer-owned nozzle arrays or installed preset on disk.
+		if resolved.Kind == ProfileInstalledVendor && resolved.ID == "qidi" && resolved.ExpectedModel == "X-Plus 5" {
+			resolved.bundle.Profile.FilamentSlots = len(slots)
+		} else if len(slots) > resolved.bundle.Profile.FilamentSlots {
 			resolved.bundle.Profile.FilamentSlots = len(slots)
 		}
 		if err = bindNativeFilamentSettings(resolved.bundle, insp.Filaments); err != nil {
@@ -227,8 +237,17 @@ func resolveBuiltinTarget(target, profileFile, requestedNozzle, sourceNozzle str
 	} else if !validTargetNozzle(target, nozzle) {
 		return nil, fail("TARGET_NOZZLE_UNAVAILABLE", "target %s does not support physical nozzle %q", target, requestedNozzle)
 	}
+	// Built-in aliases historically reported four physical tools for all
+	// machines. X-Plus 5 has one print nozzle/tool; an optional QIDI BOX
+	// expands filament feeding, NOT the number of physical print tools.
+	// The installed OEM project's default four palette slots are virtual
+	// project metadata and must not determine this count.
+	physicalTools := 4
+	if target == "qidi" && model == "X-Plus 5" {
+		physicalTools = 1
+	}
 	resolved := &ResolvedTargetProfile{
-		ID: target, ExpectedModel: model, Nozzle: nozzle, NozzleOrigin: origin, PhysicalTools: 4,
+		ID: target, ExpectedModel: model, Nozzle: nozzle, NozzleOrigin: origin, PhysicalTools: physicalTools,
 	}
 	if target == "u1" && nozzle == "0.4" && profileFile == "" {
 		// Only use the legacy fallback when no complete installed vendor

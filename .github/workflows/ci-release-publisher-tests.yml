@@ -1,0 +1,38 @@
+name: CI release publisher contract tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'tools/publish_ci_artifacts.py'
+      - 'tools/publish_local_build.py'
+      - 'tests/test_publish_ci_artifacts.py'
+      - 'tests/test_publish_local_build.py'
+      - '.github/workflows/**'
+      - 'docs/release/CI_RELEASE_POLICY.md'
+  push:
+    branches: [main]
+    paths:
+      - 'tools/publish_ci_artifacts.py'
+      - 'tools/publish_local_build.py'
+      - 'tests/test_publish_ci_artifacts.py'
+      - 'tests/test_publish_local_build.py'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publisher-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Verify provenance, builder coverage and retries
+        run: python3 -m unittest discover -s tests -p 'test_publish_*.py' -v
