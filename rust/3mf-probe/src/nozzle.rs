@@ -222,12 +222,9 @@ mod tests {
         assert_eq!(from_preset["source_nozzle"], "0.6");
         assert_eq!(from_preset["source_nozzle_source"], "printer_settings_id");
         assert_eq!(from_raw(&json!([0.2000001, "0.2"])).unwrap(), Some("0.2"));
-        assert_eq!(
-            from_raw(&json!(["0.6", "0.8"]))
-                .unwrap_err()
-                .contains("mixed nozzle diameters"),
-            true
-        );
+        assert!(from_raw(&json!(["0.6", "0.8"]))
+            .unwrap_err()
+            .contains("mixed nozzle diameters"));
     }
 
     #[test]
