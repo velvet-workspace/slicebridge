@@ -892,12 +892,14 @@ impl SliceBridgeWindow {
             .border_color(rgb(0xD9E8E0))
             .child(
                 Button::new("cancel-myprinters")
+                    .accessibility_label(copy(locale, "cancel"))
                     .label(copy(locale, "cancel"))
                     .on_click(cx.listener(|this, _, _, cx| this.cancel_printers(cx))),
             )
             .child(
                 Button::new("save-myprinters")
                     .primary()
+                    .accessibility_label(copy(locale, "save"))
                     .label(copy(locale, "save"))
                     .on_click(cx.listener(|this, _, _, cx| this.save_printers(cx))),
             );
