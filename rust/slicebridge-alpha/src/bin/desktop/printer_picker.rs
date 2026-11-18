@@ -720,7 +720,11 @@ impl SliceBridgeWindow {
                 entry.manufacturer,
                 entry.model,
                 if is_selected {
-                    if rtl { "נבחר" } else { "Selected" }
+                    if rtl {
+                        "נבחר"
+                    } else {
+                        "Selected"
+                    }
                 } else if rtl {
                     "לא נבחר"
                 } else {
