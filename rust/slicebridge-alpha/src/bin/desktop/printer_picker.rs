@@ -713,6 +713,20 @@ impl SliceBridgeWindow {
         }
         for (idx, entry) in entries.iter().enumerate() {
             let is_selected = selected(entry, &saved);
+            // The checkbox glyph alone is not a usable accessibility name. Include the
+            // exact catalogue model and its current selection state in both locales.
+            let accessible_model = format!(
+                "{} {} — {}",
+                entry.manufacturer,
+                entry.model,
+                if is_selected {
+                    if rtl { "נבחר" } else { "Selected" }
+                } else if rtl {
+                    "לא נבחר"
+                } else {
+                    "Not selected"
+                }
+            );
             let ids = entry.ids.clone();
             let preferred = entry.id.clone();
             let card = line(rtl)
@@ -726,6 +740,7 @@ impl SliceBridgeWindow {
                 .child(
                     Button::new(format!("my-printer-pick-{idx}"))
                         .disabled(!is_selected && saved.len() >= MAX_PICKS)
+                        .accessibility_label(accessible_model)
                         .label(if is_selected { "☑" } else { "☐" })
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.toggle_printer(&ids, &preferred, cx)
@@ -806,6 +821,7 @@ impl SliceBridgeWindow {
             )
             .child(
                 Button::new("close-myprinters-dialog")
+                    .accessibility_label(copy(locale, "close"))
                     .label("×")
                     .on_click(cx.listener(|this, _, _, cx| this.cancel_printers(cx))),
             );
