@@ -415,6 +415,36 @@ fn persist_settings_in_context(
     read_from_paths(alpha, fallbacks)
 }
 
+// Wails RememberWindowSize: remember user-chosen dimensions only within the
+// existing 720x500..2000x1400 bounds. Never rewrite unchanged or malformed
+// preferences, and never write to the stable Wails settings fallback.
+fn remember_window_size_in_context(
+    alpha: &Path,
+    fallbacks: &[PathBuf],
+    width: i64,
+    height: i64,
+) -> Result<Value, String> {
+    if !(720..=2000).contains(&width) || !(500..=1400).contains(&height) {
+        return Ok(json!({"saved":false,"ignored":true}));
+    }
+    let mut state = read_from_paths(alpha, fallbacks)?;
+    if state["window"]["width"].as_i64() == Some(width)
+        && state["window"]["height"].as_i64() == Some(height)
+    {
+        return Ok(json!({"saved":false,"window":state["window"]}));
+    }
+    state["window"] = json!({"width":width,"height":height});
+    let persisted = persist_settings_in_context(alpha, fallbacks, &state)?;
+    if persisted["window"] != json!({"width":width,"height":height}) {
+        return Err("window size persistence was not verified".into());
+    }
+    Ok(json!({"saved":true,"window":persisted["window"]}))
+}
+
+pub fn remember_window_size(width: i64, height: i64) -> Result<Value, String> {
+    remember_window_size_in_context(&experiment_path()?, &stable_paths()?, width, height)
+}
+
 fn set_developer_mode_in_context(
     alpha: &Path,
     fallbacks: &[PathBuf],
@@ -607,6 +637,49 @@ mod tests {
         assert_eq!(initial["window"], json!({"width":1280,"height":900}));
         assert_eq!(initial["developerMode"], false);
     }
+    #[test]
+    fn original_window_size_remember_preserves_stable_prefs_and_skips_unchanged_or_invalid() {
+        let root = std::env::temp_dir().join(format!(
+            "sb-window-size-{}-{}",
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let alpha = root.join("alpha/settings.json");
+        let stable = root.join("stable.json");
+        let original = r#"{"version":1,"window":{"width":1100,"height":750},"printers":{"u1":{"nozzle":"auto","slicer":"auto","filaments":{}}},"developerMode":true}"#;
+        fs::write(&stable, original).unwrap();
+        let sources = [stable.clone()];
+        let unchanged = remember_window_size_in_context(&alpha, &sources, 1100, 750).unwrap();
+        assert_eq!(unchanged["saved"], false);
+        assert!(
+            !alpha.exists(),
+            "unchanged size must not create alpha settings"
+        );
+        let saved = remember_window_size_in_context(&alpha, &sources, 1150, 790).unwrap();
+        assert_eq!(saved["saved"], true);
+        assert_eq!(saved["window"], json!({"width":1150,"height":790}));
+        let loaded = read_from_paths(&alpha, &sources).unwrap();
+        assert_eq!(loaded["window"], saved["window"]);
+        assert_eq!(loaded["developerMode"], true);
+        assert_eq!(loaded["printers"]["u1"]["nozzle"], "auto");
+        assert_eq!(fs::read_to_string(&stable).unwrap(), original);
+        let bytes = fs::read(&alpha).unwrap();
+        for (width, height) in [(719, 790), (1150, 499), (2001, 790), (1150, 1401)] {
+            let ignored = remember_window_size_in_context(&alpha, &sources, width, height).unwrap();
+            assert_eq!(ignored["ignored"], true);
+            assert_eq!(fs::read(&alpha).unwrap(), bytes);
+        }
+        let same = remember_window_size_in_context(&alpha, &sources, 1150, 790).unwrap();
+        assert_eq!(same["saved"], false);
+        assert_eq!(fs::read(&alpha).unwrap(), bytes);
+        fs::write(&alpha, b"{broken").unwrap();
+        assert!(remember_window_size_in_context(&alpha, &sources, 1200, 800).is_err());
+        assert_eq!(fs::read(&alpha).unwrap(), b"{broken");
+        assert_eq!(fs::read_to_string(&stable).unwrap(), original);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn saved_schema_retains_nozzle_slicer_filament_and_window_preferences() {
         let raw=br#"{"version":1,"printers":{"u1":{"nozzle":"0.6","slicer":"snapmaker-orca","filaments":{"PLA":"OEM PLA","TPU":"Generic TPU"}}},"window":{"width":1000,"height":700},"developerMode":true}"#;
