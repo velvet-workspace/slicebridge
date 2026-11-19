@@ -18,6 +18,10 @@ fn schema(name: &str) -> Value {
         "slicer.open" => vec!["executable"],
         "slicer.open_batch_output" => vec!["source", "target"],
         "settings.recover" => vec!["confirmed"],
+        "settings.developer.set" => vec!["enabled"],
+        "settings.options" => vec!["target"],
+        "settings.save" => vec!["target", "pref"],
+        "printers.save" => vec!["ids"],
         _ => vec![],
     };
     json!({"type":"object","properties":{
@@ -34,7 +38,11 @@ fn schema(name: &str) -> Value {
         "slot":{"type":"integer","minimum":1,"maximum":64},
         "paths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":32},
         "output_dir":{"type":"string"},
-        "confirmed":{"type":"boolean"}
+        "confirmed":{"type":"boolean"},
+        "enabled":{"type":"boolean"},
+        "slicer":{"type":"string"},
+        "pref":{"type":"object"},
+        "ids":{"type":"array","items":{"type":"string"},"maxItems":32}
     },"required":required,"additionalProperties":false})
 }
 
@@ -214,6 +222,36 @@ mod tests {
         )
         .unwrap();
         assert_eq!(rejected["result"]["isError"], true);
+    }
+
+    #[test]
+    fn existing_preferences_and_saved_printers_mcp_schemas_advertise_required_inputs() {
+        let tools = mcp_reply(
+            &Registry::new(),
+            &json!({"jsonrpc":"2.0","id":55,"method":"tools/list"}),
+        )
+        .unwrap();
+        let listed = tools["result"]["tools"].as_array().unwrap();
+        for (name, expected_required) in [
+            ("settings.developer.set", json!(["enabled"])),
+            ("settings.options", json!(["target"])),
+            ("settings.save", json!(["target", "pref"])),
+            ("printers.save", json!(["ids"])),
+            ("settings.recover", json!(["confirmed"])),
+        ] {
+            let tool = listed.iter().find(|tool| tool["name"] == name).unwrap();
+            assert_eq!(tool["inputSchema"]["required"], expected_required, "{name}");
+            assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+        }
+        let settings = schema("settings.save");
+        assert_eq!(settings["properties"]["pref"]["type"], "object");
+        let options = schema("settings.options");
+        assert_eq!(options["properties"]["slicer"]["type"], "string");
+        let developer = schema("settings.developer.set");
+        assert_eq!(developer["properties"]["enabled"]["type"], "boolean");
+        let printers = schema("printers.save");
+        assert_eq!(printers["properties"]["ids"]["items"]["type"], "string");
+        assert_eq!(printers["properties"]["ids"]["maxItems"], 32);
     }
 
     #[test]
