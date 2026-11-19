@@ -249,7 +249,9 @@ fn recover_invalid_in_context(alpha: &Path, fallbacks: &[PathBuf]) -> Result<Val
         return Err("settings backup is unexpectedly large".into());
     }
     let original = fs::read(source).map_err(|error| format!("read original settings: {error}"))?;
-    if parse(&original).is_ok() {
+    // read_one also rejects files over 64 KiB even when their JSON parses.
+    // Wails can back up and reset those files too, after explicit confirmation.
+    if original.len() as u64 <= MAX_BYTES && parse(&original).is_ok() {
         return Err("settings changed during recovery; reopen settings".into());
     }
 
@@ -961,6 +963,30 @@ mod tests {
         assert_eq!(reply["settings"], defaults());
         assert_eq!(read_from_paths(&alpha, &[]).unwrap(), defaults());
         assert_ne!(backup, alpha);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn confirmed_recovery_accepts_oversized_but_valid_json_like_wails() {
+        let root = std::env::temp_dir().join(format!(
+            "sb-confirmed-recovery-oversize-{}-{}",
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let alpha = root.join("GPUI-Alpha").join("settings.json");
+        fs::create_dir_all(alpha.parent().unwrap()).unwrap();
+        let original = format!(r#"{{"version":1,"padding":"{}"}}"#, "x".repeat(65_536));
+        assert!(serde_json::from_slice::<Value>(original.as_bytes()).is_ok());
+        assert!(parse(original.as_bytes()).is_err());
+        fs::write(&alpha, original.as_bytes()).unwrap();
+        assert!(read_one(&alpha).is_err());
+
+        let reply = recover_invalid_in_context(&alpha, &[]).unwrap();
+        let backup = PathBuf::from(reply["backupPath"].as_str().unwrap());
+        assert_eq!(fs::read(&backup).unwrap(), original.as_bytes());
+        assert_eq!(reply["settings"], defaults());
+        assert_eq!(read_one(&alpha).unwrap().unwrap(), defaults());
         fs::remove_dir_all(root).unwrap();
     }
 
