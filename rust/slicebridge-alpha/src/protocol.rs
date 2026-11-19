@@ -17,6 +17,7 @@ fn schema(name: &str) -> Value {
         "batch.stage" => vec!["paths"],
         "slicer.open" => vec!["executable"],
         "slicer.open_batch_output" => vec!["source", "target"],
+        "settings.recover" => vec!["confirmed"],
         _ => vec![],
     };
     json!({"type":"object","properties":{
@@ -32,7 +33,8 @@ fn schema(name: &str) -> Value {
         "preset":{"type":"string"},
         "slot":{"type":"integer","minimum":1,"maximum":64},
         "paths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":32},
-        "output_dir":{"type":"string"}
+        "output_dir":{"type":"string"},
+        "confirmed":{"type":"boolean"}
     },"required":required,"additionalProperties":false})
 }
 
@@ -184,6 +186,34 @@ mod tests {
             json!(["auto", "0.2", "0.25", "0.4", "0.6", "0.8"])
         );
         assert_eq!(schema["additionalProperties"], false);
+    }
+
+    #[test]
+    fn settings_recovery_mcp_schema_requires_explicit_boolean_confirmation() {
+        let registry = Registry::new();
+        let reply = mcp_reply(
+            &registry,
+            &json!({"jsonrpc":"2.0","id":42,"method":"tools/list"}),
+        )
+        .unwrap();
+        let tools = reply["result"]["tools"].as_array().unwrap();
+        let tool = tools
+            .iter()
+            .find(|tool| tool["name"] == "settings.recover")
+            .unwrap();
+        assert_eq!(tool["inputSchema"]["required"], json!(["confirmed"]));
+        assert_eq!(
+            tool["inputSchema"]["properties"]["confirmed"]["type"],
+            "boolean"
+        );
+        assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+        let rejected = mcp_reply(
+            &registry,
+            &json!({"jsonrpc":"2.0","id":43,"method":"tools/call",
+                "params":{"name":"settings.recover","arguments":{"confirmed":false}}}),
+        )
+        .unwrap();
+        assert_eq!(rejected["result"]["isError"], true);
     }
 
     #[test]
