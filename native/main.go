@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/nocturney/slicebridge/engine/bridge"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
@@ -16,6 +17,16 @@ import (
 var assets embed.FS
 
 func main() {
+	// The actual packaged executable probes its adjacent Rust-native worker
+	// without launching a GUI, slicing a project, or writing G-code.
+	if len(os.Args) == 2 && os.Args[1] == "--verify-bundled-rust" {
+		if err := bridge.VerifyRustNativeBundle(); err != nil {
+			fmt.Fprintln(os.Stderr, "RUST_NATIVE_BUNDLE_FAILED", err)
+			os.Exit(2)
+		}
+		fmt.Println("RUST_NATIVE_BUNDLE_OK")
+		return
+	}
 	// Headless release smoke probe. The Windows single-file executable must
 	// initialize its embedded Prusa engine without opening a WebView.
 	if len(os.Args) == 2 && os.Args[1] == "--verify-bundled-prusa" {

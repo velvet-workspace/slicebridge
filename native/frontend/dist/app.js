@@ -65,6 +65,7 @@ const translations = {
     unsupportedPlatform:'אין עדכונים זמינים למערכת זו.',authRequired:'מאגר פרטי — נדרש GitHub CLI מחובר.',
     updateError:'בדיקת עדכונים נכשלה',openRelease:'פתיחת Release',
     openReleases:'צפייה בגרסאות',openPreviewBuilds:'צפייה בבניות Beta',
+    rustNativeExperimental:'Rust Native · ניסיוני',cancelRustConversion:'בטל Rust',
     prusaProjectName:'פרויקט PrusaSlicer',prusaProjectSummary:'כללי · בחירת מדפסת ב־PrusaSlicer',
     prusaGenericReview:'פרויקט PrusaSlicer כללי: יש לבחור את המדפסת המדויקת ב־PrusaSlicer ולבדוק את כל ערוצי החומר לפני חיתוך והדפסה.'
   },
@@ -130,6 +131,7 @@ const translations = {
     unsupportedPlatform:'No update package exists for this platform.',authRequired:'Private repo — connect GitHub CLI.',
     updateError:'Update check failed',openRelease:'Open release',
     openReleases:'View releases',openPreviewBuilds:'View beta builds',
+    rustNativeExperimental:'Rust Native · experimental',cancelRustConversion:'Cancel Rust',
     prusaProjectName:'PrusaSlicer project',prusaProjectSummary:'Generic · choose printer in PrusaSlicer',
     prusaGenericReview:'Generic PrusaSlicer project: choose the exact printer in PrusaSlicer and review every material slot before slicing or printing.'
   }
@@ -166,6 +168,9 @@ let files=[];
 let available=[];
 let settings=null;
 let busy=false;
+let developerModeEnabled=false;
+let rustNativeSelected=false;
+let runningRustNative=false;
 let lastBatch=null;
 let progress=null;
 let currentTarget='u1';
@@ -253,6 +258,13 @@ function renderActionBar(){
   const work=files.length*selected;
   dom.convertCount.textContent=work>0?'('+work+')':'';
   dom.convertBtn.disabled=busy||!work;
+  const pilotControl=el('rustNativeDevControl');
+  pilotControl.hidden=!developerModeEnabled;
+  el('rustNativeOptIn').checked=developerModeEnabled&&rustNativeSelected;
+  el('rustNativeOptIn').disabled=busy;
+  const cancelRust=el('cancelRustConversionBtn');
+  cancelRust.hidden=!(busy&&runningRustNative);
+  if(!busy)cancelRust.disabled=false;
   el('addFilesBtn').disabled=el('addFolderBtn').disabled=el('clearQueueBtn').disabled=busy;
   el('selectAllBtn').disabled=busy;
   el('settingsBtn').disabled=busy;
@@ -643,11 +655,15 @@ async function runBatch(){
   if(files.length===0){setActivity(t('noSource'),'','warning');return;}
   const targets=getSelectedTargets();
   if(!targets.length){setActivity(t('noTargets'),'','warning');return;}
+  runningRustNative=developerModeEnabled&&rustNativeSelected;
   busy=true;progress=null;memoryStatus=null;lastBatch=null;
   completedBatchFiles=0;totalBatchFiles=files.length;progressPhase='working';
   renderResults();renderQueue();renderTargets();renderActionBar();
   try{
-    const response=await api().ConvertBatch({filePaths:files.map((f)=>f.path),targets});
+    const response=await api().ConvertBatch({
+      filePaths:files.map((f)=>f.path),targets,
+      engine:runningRustNative?'rust-native':'go'
+    });
     lastBatch=response;
     completedBatchFiles=Math.min(totalBatchFiles,response.filesDone||0);
     progressPhase=response.error?'error':'done';
@@ -668,7 +684,7 @@ async function runBatch(){
     progressPhase='error';
     setActivity(t('convertError'),e?.message||String(e),'warning');
   }finally{
-    busy=false;progress=null;
+    busy=false;progress=null;runningRustNative=false;
     renderResults();renderQueue();renderTargets();renderActionBar();
   }
 }
@@ -865,6 +881,25 @@ function registerHandlers(){
   });
   el('selectAllBtn').addEventListener('click',selectAll);
   el('convertBtn').addEventListener('click',runBatch);
+  el('rustNativeOptIn').addEventListener('change',(event)=>{
+    if(busy||!developerModeEnabled){
+      event.target.checked=false;
+      return;
+    }
+    rustNativeSelected=event.target.checked===true;
+    renderActionBar();
+  });
+  document.addEventListener('slicebridge:developer-mode',(event)=>{
+    developerModeEnabled=event.detail?.enabled===true;
+    if(!developerModeEnabled)rustNativeSelected=false;
+    renderActionBar();
+  });
+  el('cancelRustConversionBtn').addEventListener('click',async()=>{
+    if(!busy||!runningRustNative||!api()?.CancelConversion)return;
+    el('cancelRustConversionBtn').disabled=true;
+    try{await api().CancelConversion();}
+    catch(e){setActivity(t('convertError'),e?.message||String(e),'warning');}
+  });
   el('openFolderBtn').addEventListener('click',openFolder);
   el('clearResultsBtn').addEventListener('click',()=>{if(!busy)clearResults();});
   el('settingsBtn').addEventListener('click',()=>openSettings('u1'));

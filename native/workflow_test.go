@@ -191,8 +191,8 @@ func TestInstalledPreferencesAndFourWayBatch(t *testing.T) {
 	}
 }
 
-// On a host with the vendor slicers installed, validate that even targets
-// with four physical toolheads preserve all five virtual palette entries.
+// On a host with the vendor slicers installed, validate that targets
+// with four or one physical tool preserve all five virtual palette entries.
 // No slicer UI, printer, or personal settings are changed by this test.
 func TestFiveVirtualFilamentsAcrossInstalledFourTargets(t *testing.T) {
 	if os.Getenv("BRIDGE_TEST_INSTALLED") != "1" {

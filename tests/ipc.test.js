@@ -56,6 +56,7 @@ function fakeVendorBundle(target, sourceNozzle = '0.4') {
     material_settings: {
       PLA: { filament_type: ['PLA'], filament_colour: ['#FFFFFF'],
         filament_density: ['1.24'], nozzle_temperature: ['210'],
+        filament_flow_ratio: ['0.98'], filament_max_volumetric_speed: ['18'],
         filament_settings_id: ['Synthetic PLA'] }
     }
   };

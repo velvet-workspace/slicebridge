@@ -305,7 +305,7 @@ test('successful five-material conversion stays quiet when tower QA flags are se
       {type:'PLA',color:'#FFFFFF'},
       {type:'PETG',color:'#E5E5E5'},
     ]};
-  async function perform(mappingRequired, toolUsageRequired=false, physicalTools=1, filamentCount=4, towerRequired=false, perPlateMissing=false, unknownPlateCount=false){
+  async function perform(mappingRequired, toolUsageRequired=false, physicalTools=1, filamentCount=4, towerRequired=false, perPlateMissing=false, unknownPlateCount=false, nativeMaterialReview=false){
     const chosenSource={...source,filaments:source.filaments.slice(0,filamentCount)};
     const app=startApp({
       InstalledOrcaTargets:()=>({targets:[orca],rejected:[]}),
@@ -318,6 +318,7 @@ test('successful five-material conversion stays quiet when tower QA flags are se
           report:{source_filament_slots:filamentCount,target_filament_slots:filamentCount,virtual_filament_slots:filamentCount,
             physical_toolheads:physicalTools,target_nozzle:'0.4',user_slot_mapping_required:mappingRequired,
             tool_usage_verification_required:toolUsageRequired,
+            native_slicer_material_review_required:nativeMaterialReview,
             prime_tower_clearance_review_required:towerRequired,
             prime_tower_plate_coordinate_review_required:perPlateMissing,
             prime_tower_plate_position_audit_status:unknownPlateCount?'plate_count_unknown':
@@ -383,6 +384,19 @@ test('successful five-material conversion stays quiet when tower QA flags are se
   assert.equal(hebrewResult.querySelector('.status-pill').textContent,'הומר בהצלחה');
   assert.equal(hebrewResult.querySelector('.tower-clearance-warning'),null);
   assert.equal(hebrewResult.querySelector('.tower-plate-unknown-warning'),null);
+
+  const singleQidi=await perform(false,false,1,1,false,false,false,true);
+  const qidiRow=singleQidi.dom('resultList').querySelector('.result-row');
+  const qidiPill=qidiRow.querySelector('.status-pill');
+  // Successful 3MF conversion is success, without a hardware-specific
+  // filament or importer warning; user chooses inside the native slicer.
+  assert.ok(qidiPill.classList.contains('good'));
+  assert.equal(qidiPill.textContent,'Converted');
+  assert.equal(qidiRow.querySelector('.native-material-warning'),null);
+  assert.equal(qidiRow.querySelector('.material-mapping-warning'),null,
+    'a single source slot should not claim extra-slot mapping');
+  assert.equal(qidiRow.querySelector('.tool-usage-warning'),null,
+    'one source slot must not get a false multicolour tool-use warning');
 
   const ordinary=await perform(false,false,1,1);
   const ordinaryRow=ordinary.dom('resultList').querySelector('.result-row');

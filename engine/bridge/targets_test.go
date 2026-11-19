@@ -28,24 +28,27 @@ func syntheticMaterialBundle() *targetBundle {
 		},
 		MaterialSettings: map[string]map[string]any{
 			"PLA": {
-				"nozzle_temperature":           []any{"210"},
-				"filament_flow_ratio":          []any{"0.98"},
-				"filament_type":                []any{"PLA"},
-				"filament_settings_id":         []any{"Native PLA"},
-				"additional_cooling_fan_speed": []any{"60"},
+				"nozzle_temperature":            []any{"210"},
+				"filament_flow_ratio":           []any{"0.98"},
+				"filament_max_volumetric_speed": []any{"18"},
+				"filament_type":                 []any{"PLA"},
+				"filament_settings_id":          []any{"Native PLA"},
+				"additional_cooling_fan_speed":  []any{"60"},
 			},
 			"PETG": {
-				"nozzle_temperature":   []any{"240"},
-				"filament_flow_ratio":  []any{"0.97"},
-				"filament_type":        []any{"PETG"},
-				"filament_settings_id": []any{"Native PETG"},
+				"nozzle_temperature":            []any{"240"},
+				"filament_flow_ratio":           []any{"0.97"},
+				"filament_max_volumetric_speed": []any{"12"},
+				"filament_type":                 []any{"PETG"},
+				"filament_settings_id":          []any{"Native PETG"},
 			},
 			"ABS": {
-				"nozzle_temperature":           []any{"255"},
-				"filament_flow_ratio":          []any{"0.99"},
-				"filament_type":                []any{"ABS"},
-				"filament_settings_id":         []any{"Native ABS"},
-				"additional_cooling_fan_speed": []any{"20"},
+				"nozzle_temperature":            []any{"255"},
+				"filament_flow_ratio":           []any{"0.99"},
+				"filament_max_volumetric_speed": []any{"16"},
+				"filament_type":                 []any{"ABS"},
+				"filament_settings_id":          []any{"Native ABS"},
+				"additional_cooling_fan_speed":  []any{"20"},
 			},
 		},
 	}
@@ -127,6 +130,61 @@ func TestMissingCriticalMaterialValuesFailClosed(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "nozzle_temperature") {
 		t.Fatalf("expected missing temperature refusal, got %v", err)
+	}
+}
+
+func TestAllNativeMaterialPresetsMissingCriticalValuesFailClosed(t *testing.T) {
+	for _, key := range []string{"nozzle_temperature", "filament_flow_ratio", "filament_max_volumetric_speed"} {
+		t.Run(key, func(t *testing.T) {
+			bundle := syntheticMaterialBundle()
+			delete(bundle.MaterialSettings["PLA"], key)
+			delete(bundle.MaterialSettings["PETG"], key)
+			err := bindNativeFilamentSettings(bundle, []converter.Filament{
+				{ID: 1, Type: "PLA"}, {ID: 2, Type: "PETG"},
+			})
+			if err == nil || !strings.Contains(err.Error(), key) {
+				t.Fatalf("missing every installed %s value must refuse conversion, got %v", key, err)
+			}
+			if _, changed := bundle.Profile.ProjectSettings["nozzle_temperature"]; changed {
+				t.Fatal("invalid material mapping mutated project settings before refusing")
+			}
+		})
+	}
+}
+
+func TestBlankOrNullNativeTemperatureFailsClosed(t *testing.T) {
+	for _, value := range []any{"", "  ", nil, float64(0), "0", "-5", "abc", "NaN", "Infinity"} {
+		bundle := syntheticMaterialBundle()
+		bundle.MaterialSettings["PLA"]["nozzle_temperature"] = []any{value}
+		err := bindNativeFilamentSettings(bundle, []converter.Filament{{ID: 1, Type: "PLA"}})
+		if err == nil || !strings.Contains(err.Error(), "nozzle_temperature") {
+			t.Fatalf("unsafe native temperature value %v was accepted: %v", value, err)
+		}
+	}
+}
+
+func TestNativeFlowRatioAliasFromInstalledPreset(t *testing.T) {
+	bundle := syntheticMaterialBundle()
+	bundle.MaterialSettings["PLA"]["flow_ratio"] = bundle.MaterialSettings["PLA"]["filament_flow_ratio"]
+	delete(bundle.MaterialSettings["PLA"], "filament_flow_ratio")
+	if err := bindNativeFilamentSettings(bundle, []converter.Filament{{ID: 1, Type: "PLA"}}); err != nil {
+		t.Fatalf("installed flow_ratio alias should remain supported: %v", err)
+	}
+}
+
+func TestPartialNativePlateTemperatureFailsClosed(t *testing.T) {
+	bundle := syntheticMaterialBundle()
+	bundle.MaterialSettings["PLA"]["textured_plate_temp"] = []any{"60"}
+	filaments := []converter.Filament{{ID: 1, Type: "PLA"}, {ID: 2, Type: "PETG"}}
+	if err := bindNativeFilamentSettings(bundle, filaments); err == nil || !strings.Contains(err.Error(), "textured_plate_temp") {
+		t.Fatalf("a PLA-only bed temperature must not leak to PETG: %v", err)
+	}
+	bundle.MaterialSettings["PETG"]["textured_plate_temp"] = []any{"75"}
+	if err := bindNativeFilamentSettings(bundle, filaments); err != nil {
+		t.Fatalf("complete installed plate temperatures must map: %v", err)
+	}
+	if !reflect.DeepEqual(bundle.Profile.ProjectSettings["textured_plate_temp"], []any{"60", "75"}) {
+		t.Fatalf("per-material plate values not preserved: %v", bundle.Profile.ProjectSettings["textured_plate_temp"])
 	}
 }
 

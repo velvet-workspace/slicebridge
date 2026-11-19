@@ -8,6 +8,7 @@ on:
       - 'native/**'
       - 'browser-extension/**'
       - 'engine/**'
+      - 'rust/**'
       - 'third_party/**'
       - 'scripts/package-prusa-sidecar.py'
       - 'scripts/prusa-sidecar-requirements.txt'
@@ -36,6 +37,22 @@ jobs:
         with:
           go-version-file: native/go.mod
           cache: false
+      - name: Verify and compile experimental native Rust engine (Windows)
+        shell: pwsh
+        working-directory: rust/3mf-probe
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain setup failed' }
+          rustup default stable
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain activation failed' }
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) { throw 'Rust format check failed' }
+          cargo test --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Rust native tests failed' }
+          cargo clippy --locked --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Rust clippy refused warnings' }
+          cargo build --release --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Rust release build failed' }
       - name: Stage bundled extensions from source
         shell: pwsh
         run: |
@@ -56,6 +73,14 @@ jobs:
         shell: pwsh
         working-directory: engine
         run: go test -count=1 ./...
+      - name: Verify Rust-owned source planning in complete Go host conversion (Windows)
+        shell: pwsh
+        working-directory: engine
+        env:
+          SLICEBRIDGE_RUST_PROBE: ${{ github.workspace }}\rust\3mf-probe\target\release\slicebridge-3mf-probe.exe
+        run: |
+          go test -count=1 ./bridge -run '^TestRustAutonomousGoHostParitySynthetic$' -v
+          if ($LASTEXITCODE -ne 0) { throw 'Rust autonomous host conversion parity failed' }
       - name: Test native UI and browser handoff
         run: node --test ../browser-extension/build.test.cjs ../browser-extension/setup-flow.test.cjs tests/update-ui.test.js tests/brand-ui.test.js tests/my-printers-ui.test.js tests/manufacturer-slicer-ui.test.js tests/prusa-target-ui.test.js tests/printer-cards-ui.test.js tests/printer-release-dates-ui.test.js tests/printer-catalog-selection-ui.test.js tests/supported-targets-ui.test.js tests/main-destinations-ui.test.js
       - name: Verify short-window frontend interactions (headless Chromium/WebView2)
@@ -126,6 +151,44 @@ jobs:
           path: native/build/bin/SliceBridge.exe
           if-no-files-found: error
           retention-days: 14
+      - name: Assemble separate Rust-native opt-in Windows RC (Go default unchanged)
+        shell: pwsh
+        run: |
+          $rust = '../rust/3mf-probe/target/release/slicebridge-3mf-probe.exe'
+          if (!(Test-Path $rust)) { throw 'Compiled Rust-native worker is missing' }
+          $inspect = & $rust '../tests/fixtures/bambu-one-color.3mf' | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or !$inspect.ok -or $inspect.facts.triangles -le 0) {
+            throw 'Actual compiled Rust worker failed source 3MF inspection'
+          }
+          $rc = 'build/rc/rust-native-windows'
+          New-Item -ItemType Directory -Force -Path $rc | Out-Null
+          Copy-Item 'build/bin/SliceBridge.exe' (Join-Path $rc 'SliceBridge.exe')
+          Copy-Item $rust (Join-Path $rc 'slicebridge-3mf-probe.exe')
+          if ((Get-ChildItem $rc -File).Count -ne 2) { throw 'RC must contain exactly the Wails app and Rust worker' }
+          if ((Get-FileHash $rust).Hash -ne (Get-FileHash (Join-Path $rc 'slicebridge-3mf-probe.exe')).Hash) {
+            throw 'Packaged Rust executable differs from tested release worker'
+          }
+          $zip = 'build/bin/SliceBridge-Windows-RustNative-RC.zip'
+          Compress-Archive -Path "$rc/*" -DestinationPath $zip -CompressionLevel Optimal
+          $extract = 'build/rc/extracted-rust-native-windows'
+          Expand-Archive -LiteralPath $zip -DestinationPath $extract
+          $packedRust = Join-Path $extract 'slicebridge-3mf-probe.exe'
+          $packedApp = Join-Path $extract 'SliceBridge.exe'
+          if (!(Test-Path $packedRust) -or !(Test-Path $packedApp)) { throw 'Extracted RC omitted a native executable' }
+          $result = & $packedRust '../tests/fixtures/bambu-one-color.3mf' | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or !$result.ok -or $result.facts.triangles -le 0) { throw 'Extracted RC Rust-native worker failed real 3MF inspection' }
+          $appProbe = Start-Process -FilePath (Resolve-Path $packedApp).Path -ArgumentList '--verify-bundled-prusa' -Wait -PassThru
+          if ($appProbe.ExitCode -ne 0) { throw 'Extracted RC lost default Go/Prusa rollback functionality' }
+          $rustProbe = Start-Process -FilePath (Resolve-Path $packedApp).Path -ArgumentList '--verify-bundled-rust' -Wait -PassThru
+          if ($rustProbe.ExitCode -ne 0) { throw 'Actual extracted Wails executable failed its Rust-native sidecar handshake' }
+          Write-Output "Experimental Windows RC ready: $(Get-Item $zip | Select-Object -ExpandProperty Length) bytes"
+      - name: Upload experimental Rust-native Windows RC (not production)
+        uses: actions/upload-artifact@v4
+        with:
+          name: slicebridge-windows-rust-native-rc
+          path: native/build/bin/SliceBridge-Windows-RustNative-RC.zip
+          if-no-files-found: error
+          retention-days: 14
 
   macos-native:
     name: macOS native WebKit (Apple Silicon)
@@ -144,6 +207,15 @@ jobs:
         with:
           go-version-file: native/go.mod
           cache: false
+      - name: Verify and compile experimental native Rust engine (macOS ARM)
+        working-directory: rust/3mf-probe
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+          cargo fmt --all -- --check
+          cargo test --locked
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo build --release --locked
       - name: Stage bundled extensions from source
         run: |
           node ../browser-extension/build.cjs
@@ -157,6 +229,11 @@ jobs:
       - name: Test standalone conversion engine and synthetic printer matrix
         working-directory: engine
         run: go test -count=1 ./...
+      - name: Verify Rust-owned source planning in complete Go host conversion (macOS)
+        working-directory: engine
+        env:
+          SLICEBRIDGE_RUST_PROBE: ${{ github.workspace }}/rust/3mf-probe/target/release/slicebridge-3mf-probe
+        run: go test -count=1 ./bridge -run '^TestRustAutonomousGoHostParitySynthetic$' -v
       - name: Test native UI and browser handoff
         run: node --test ../browser-extension/build.test.cjs ../browser-extension/setup-flow.test.cjs tests/update-ui.test.js tests/brand-ui.test.js tests/my-printers-ui.test.js tests/manufacturer-slicer-ui.test.js tests/prusa-target-ui.test.js tests/printer-cards-ui.test.js tests/printer-release-dates-ui.test.js tests/printer-catalog-selection-ui.test.js tests/supported-targets-ui.test.js tests/main-destinations-ui.test.js
       - name: Verify 3MF compatibility and MakerWorld-style fixture integrity
@@ -194,4 +271,37 @@ jobs:
         with:
           name: slicebridge-macos-apple-silicon-adhoc
           path: native/build/bin/SliceBridge-macOS-Apple-Silicon.zip
+          retention-days: 14
+
+      - name: Assemble separate Rust-native opt-in macOS ARM RC (Go default unchanged)
+        run: |
+          RUST='../rust/3mf-probe/target/release/slicebridge-3mf-probe'
+          test -x "$RUST"
+          "$RUST" ../tests/fixtures/bambu-one-color.3mf | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["ok"] and data["facts"]["triangles"] > 0'
+          APP='build/bin/SliceBridge-Rust-Native-RC.app'
+          ditto 'build/bin/SliceBridge.app' "$APP"
+          cp "$RUST" "$APP/Contents/MacOS/slicebridge-3mf-probe"
+          chmod 755 "$APP/Contents/MacOS/slicebridge-3mf-probe"
+          test -x "$APP/Contents/MacOS/SliceBridge"
+          test -x "$APP/Contents/MacOS/slicebridge-3mf-probe"
+          # Re-sign the isolated, non-notarized RC after modifying the app
+          # bundle. Do not alter the original Go-default beta artifact.
+          codesign --force --deep --sign - --timestamp=none "$APP"
+          codesign --verify --deep --verbose=2 "$APP"
+          ZIP='build/bin/SliceBridge-Rust-Native-RC-macOS-Apple-Silicon.zip'
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
+          mkdir -p 'build/rc/extracted-rust-native-macos'
+          ditto -x -k "$ZIP" 'build/rc/extracted-rust-native-macos'
+          EXTRACTED='build/rc/extracted-rust-native-macos/SliceBridge-Rust-Native-RC.app'
+          test -x "$EXTRACTED/Contents/MacOS/SliceBridge"
+          "$EXTRACTED/Contents/MacOS/slicebridge-3mf-probe" ../tests/fixtures/bambu-one-color.3mf | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["ok"] and data["facts"]["triangles"] > 0'
+          "$EXTRACTED/Contents/MacOS/SliceBridge" --verify-bundled-rust
+          codesign --verify --deep --verbose=2 "$EXTRACTED"
+          du -sh "$APP" "$ZIP"
+      - name: Upload experimental Rust-native macOS RC (not production)
+        uses: actions/upload-artifact@v4
+        with:
+          name: slicebridge-macos-rust-native-rc
+          path: native/build/bin/SliceBridge-Rust-Native-RC-macOS-Apple-Silicon.zip
+          if-no-files-found: error
           retention-days: 14

@@ -3,8 +3,10 @@ package bridge
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/BryanSmee/bl_to_std/pkg/converter"
@@ -101,9 +103,49 @@ func loadTargetBundle(filename, target string) (*targetBundle, error) {
 	return &bundle, nil
 }
 
+// nativeMaterialSafetyValue requires an explicit installed material-preset value.
+// A missing or blank OEM leaf is never replaced with a guessed temperature/flow.
+func nativeMaterialSafetyValue(preset map[string]any, key string) bool {
+	values, ok := preset[key].([]any)
+	if !ok || len(values) == 0 {
+		return false
+	}
+	switch value := values[0].(type) {
+	case string:
+		number, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		return err == nil && number > 0 && !math.IsInf(number, 0) && !math.IsNaN(number)
+	case float64:
+		return value > 0 && !math.IsInf(value, 0) && !math.IsNaN(value)
+	case int:
+		return value > 0
+	default:
+		return false
+	}
+}
+
+func requireNativeMaterialSafetyValues(presets []map[string]any) error {
+	for i, preset := range presets {
+		for _, key := range []string{"nozzle_temperature", "filament_max_volumetric_speed"} {
+			if !nativeMaterialSafetyValue(preset, key) {
+				return fmt.Errorf("missing critical native material setting %q in source slot %d", key, i+1)
+			}
+		}
+		// Installed slicers may name the flow multiplier differently; require
+		// an authoritative per-material value, not a guessed 1.0 default.
+		if !nativeMaterialSafetyValue(preset, "filament_flow_ratio") &&
+			!nativeMaterialSafetyValue(preset, "flow_ratio") {
+			return fmt.Errorf("missing critical native material setting %q in source slot %d", "filament_flow_ratio/flow_ratio", i+1)
+		}
+	}
+	return nil
+}
+
 // Bind slicer's native filament parameters to every source material slot.
 // The upstream converter handles colors, slot IDs and painted triangle refs.
 func bindNativeFilamentSettings(bundle *targetBundle, filaments []converter.Filament) error {
+	if bundle == nil || bundle.Profile.ProjectSettings == nil {
+		return fmt.Errorf("target project settings missing")
+	}
 	if len(filaments) == 0 || len(filaments) > bundle.Profile.FilamentSlots {
 		return fmt.Errorf("invalid number of source filaments")
 	}
@@ -117,6 +159,12 @@ func bindNativeFilamentSettings(bundle *targetBundle, filaments []converter.Fila
 		}
 		presets[i] = preset
 		nativeProfileIDs[i] = name
+	}
+	// Validate every selected material before mutating project settings. If
+	// all OEM presets omit a critical key, the normal union-of-present-keys
+	// logic below cannot detect the omission and would silently succeed.
+	if err := requireNativeMaterialSafetyValues(presets); err != nil {
+		return err
 	}
 	keys := make(map[string]bool)
 	for _, preset := range presets {
@@ -161,6 +209,7 @@ func bindNativeFilamentSettings(bundle *targetBundle, filaments []converter.Fila
 			// presets; never apply a PLA-only override to PETG/ABS slots.
 			if strings.HasPrefix(key, "nozzle_temperature") ||
 				strings.HasPrefix(key, "bed_temperature") ||
+				strings.HasSuffix(key, "_plate_temp") || strings.Contains(key, "_plate_temp_") ||
 				key == "filament_max_volumetric_speed" ||
 				strings.Contains(key, "flow_ratio") ||
 				key == "filament_type" || key == "filament_settings_id" {

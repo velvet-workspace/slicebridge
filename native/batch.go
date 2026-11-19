@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"context"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -38,6 +39,7 @@ type SourceSummary struct {
 type BatchRequest struct {
 	FilePaths []string `json:"filePaths"`
 	Targets   []string `json:"targets"`
+	Engine    string   `json:"engine,omitempty"`
 }
 type FileBatchResult struct {
 	Source   SourceSummary   `json:"source"`
@@ -358,10 +360,21 @@ func selectSnapmakerProfile(target, nozzle string, preference PrinterSettings,
 // Every Bambu-based destination (built-in aliases and installed Orca profiles)
 // goes through the same resolver and the same 3MF conversion core.
 func configuredConvert(source, target, sourceNozzle string, preference PrinterSettings) ConvertResult {
-	return convertWithLoaders(source, target, sourceNozzle, preference, installedLoaders)
+	return configuredConvertContext(context.Background(), source, target, sourceNozzle, preference, "")
+}
+
+func configuredConvertContext(ctx context.Context, source, target, sourceNozzle string, preference PrinterSettings, engine string) ConvertResult {
+	return convertWithLoadersContext(ctx, source, target, sourceNozzle, preference, installedLoaders, engine)
 }
 
 func convertWithLoaders(source, target, sourceNozzle string, preference PrinterSettings, loaders targetLoaders) ConvertResult {
+	return convertWithLoadersContext(context.Background(), source, target, sourceNozzle, preference, loaders, "")
+}
+
+func convertWithLoadersContext(ctx context.Context, source, target, sourceNozzle string, preference PrinterSettings, loaders targetLoaders, engine string) ConvertResult {
+	if engine == "rust-native" && (target == prusaTargetID || presets.IsPrusaTargetID(target)) {
+		return ConvertResult{Target: target, Code: "RUST_NATIVE_UNSUPPORTED", Error: "Rust-native is not validated for Prusa-format output"}
+	}
 	// TODO(P0-A): the PrusaSlicer-format outputs are foreign-format adapters
 	// that still bypass the shared resolver and bridge core.
 	// The generic PrusaSlicer project has no per-printer settings entry, so the
@@ -379,7 +392,9 @@ func convertWithLoaders(source, target, sourceNozzle string, preference PrinterS
 	defer resolved.release()
 	result := ConvertResult{Target: target, Prefix: resolved.Prefix}
 	return writeConversion(result, source, resolved.Slicer, resolved.Overrides, func(out string) (map[string]any, error) {
-		return bridge.ConvertTarget(source, out, resolved.Request)
+		request := resolved.Request
+		request.Engine = engine
+		return bridge.ConvertTargetContext(ctx, source, out, request)
 	})
 }
 
@@ -502,6 +517,13 @@ func (a *App) emitProgress(progress BatchProgress) {
 }
 func (a *App) ConvertBatch(request BatchRequest) BatchReply {
 	report := BatchReply{StartedAt: time.Now().UTC().Format(time.RFC3339), Files: []FileBatchResult{}}
+	engine, err := effectiveConversionEngine(request.Engine)
+	if err != nil {
+		report.Error = err.Error()
+		return report
+	}
+	ctx, done := a.beginConversion(engine)
+	defer done()
 	if err := validateTargets(request.Targets); err != nil {
 		report.Error = err.Error()
 		return report
@@ -537,6 +559,10 @@ func (a *App) ConvertBatch(request BatchRequest) BatchReply {
 	// Bound conversions: one source project at a time, with at most four
 	// concurrent printer targets. Prevent large queues from exhausting RAM.
 	for index, source := range validated {
+		if ctx.Err() != nil {
+			report.Error = "Rust-native conversion canceled"
+			break
+		}
 		a.emitProgress(BatchProgress{FileIndex: index + 1, FileCount: len(validated), FileName: filepath.Base(source)})
 		entry := FileBatchResult{
 			Source:  SourceSummary{Path: source, Name: filepath.Base(source)},
@@ -562,7 +588,7 @@ func (a *App) ConvertBatch(request BatchRequest) BatchReply {
 					defer wg.Done()
 					permits <- struct{}{}
 					defer func() { <-permits }()
-					results[index] = configuredConvert(source, t, summary.Nozzle, settings.Printers[t])
+					results[index] = configuredConvertContext(ctx, source, t, summary.Nozzle, settings.Printers[t], engine)
 				}(i, target)
 			}
 			wg.Wait()

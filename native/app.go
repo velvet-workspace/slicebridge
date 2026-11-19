@@ -20,12 +20,14 @@ import (
 const max3MFSize = 250 << 20
 
 type App struct {
-	ctx         context.Context
-	mutex       sync.Mutex
-	settingsMu  sync.Mutex
-	lastFolder  string
-	generated   map[string]string
-	latestBatch BatchReply
+	ctx               context.Context
+	mutex             sync.Mutex
+	conversionSeq     uint64
+	conversionCancels map[uint64]context.CancelFunc
+	settingsMu        sync.Mutex
+	lastFolder        string
+	generated         map[string]string
+	latestBatch       BatchReply
 }
 
 func (a *App) startup(ctx context.Context) { a.ctx = ctx }
@@ -49,6 +51,7 @@ type FileSelection struct {
 type ConvertRequest struct {
 	FilePath string   `json:"filePath"`
 	Targets  []string `json:"targets"`
+	Engine   string   `json:"engine,omitempty"`
 }
 type ConvertResult struct {
 	OK         bool           `json:"ok"`
@@ -142,6 +145,10 @@ func tempVendorBundle(bundle *presets.Bundle) (string, func(), error) {
 	return file, cleanup, nil
 }
 func convertTarget(source, target, sourceNozzle string) ConvertResult {
+	return convertTargetWithContext(context.Background(), source, target, sourceNozzle, "")
+}
+
+func convertTargetWithContext(ctx context.Context, source, target, sourceNozzle, engine string) ConvertResult {
 	result := ConvertResult{Target: target, Prefix: outputs[target]}
 	dir := filepath.Dir(source)
 	basename := filepath.Base(source)
@@ -179,7 +186,9 @@ func convertTarget(source, target, sourceNozzle string) ConvertResult {
 			result.Error = err.Error()
 			return result
 		}
-		report, err := bridge.ConvertWithProfile(source, output, target, profileFile)
+		report, err := bridge.ConvertTargetContext(ctx, source, output, bridge.TargetRequest{
+			Target: target, ProfileFile: profileFile, Engine: engine,
+		})
 		if err != nil {
 			if bridge.ErrorCode(err) == "OUTPUT_EXISTS" {
 				continue
@@ -200,6 +209,13 @@ func convertTarget(source, target, sourceNozzle string) ConvertResult {
 }
 func (a *App) Convert(input ConvertRequest) ConvertReply {
 	reply := ConvertReply{Results: []ConvertResult{}, Failures: []ConvertResult{}}
+	engine, err := effectiveConversionEngine(input.Engine)
+	if err != nil {
+		reply.Error = err.Error()
+		return reply
+	}
+	ctx, done := a.beginConversion(engine)
+	defer done()
 	info, err := fileInfo(input.FilePath)
 	if err != nil {
 		reply.Error = err.Error()
@@ -236,7 +252,7 @@ func (a *App) Convert(input ConvertRequest) ConvertReply {
 		wg.Add(1)
 		go func(index int, printer string) {
 			defer wg.Done()
-			results[index] = convertTarget(info.Path, printer, sourceNozzle)
+			results[index] = convertTargetWithContext(ctx, info.Path, printer, sourceNozzle, engine)
 		}(i, target)
 	}
 	wg.Wait()

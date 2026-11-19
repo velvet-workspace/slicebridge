@@ -1,0 +1,317 @@
+package bridge
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+)
+
+// TestRustInstalledOEMProductionPlanParity checks the *actual production Go
+// ConvertTarget planning/publishing path*, including installed native material
+// binding, before comparing the complete experimental Rust output ZIP.
+// Previously the OEM Rust parity fixture used machine-only project settings,
+// which did not test material temperatures/flow/selected native profile IDs.
+//
+// This opt-in gate reads only copied installed OEM preset snapshots in a
+// caller-specified scratch directory. It writes only to t.TempDir and an
+// explicitly selected exclusive-create artifact export, never installed
+// slicer presets or printer commands.
+func TestRustInstalledOEMProductionPlanParity(t *testing.T) {
+	rust := os.Getenv("SLICEBRIDGE_RUST_PROBE")
+	root := os.Getenv("SLICEBRIDGE_INSTALLED_BUNDLE_DIR")
+	if rust == "" || root == "" {
+		t.Skip("set SLICEBRIDGE_RUST_PROBE and approved SLICEBRIDGE_INSTALLED_BUNDLE_DIR")
+	}
+	for _, target := range []string{"u1", "qidi"} {
+		for _, sourceKind := range []string{
+			"bambu-one-color.3mf",
+			"centered-one.3mf",
+			"bambu-five-colors.3mf",
+			"mixed-five.3mf",
+		} {
+			t.Run(target+"_"+sourceKind, func(t *testing.T) {
+				bundlePath := filepath.Join(root, fmt.Sprintf("scratch-%s-0.4-resolved.json", target))
+				bundle, err := loadTargetBundle(bundlePath, target)
+				if err != nil {
+					t.Fatalf("installed OEM identity/nozzle validation failed: %v", err)
+				}
+				if bundle.Nozzle != "0.4" {
+					t.Fatal("test requires exactly installed 0.4mm OEM nozzle")
+				}
+
+				dir := t.TempDir()
+				source := filepath.Join(dir, sourceKind)
+				if sourceKind == "mixed-five.3mf" {
+					createPinnedNativeReadableMixedFiveSource(t, source)
+				} else if sourceKind == "centered-one.3mf" {
+					createPinnedCenteredOneSource(t, source)
+				} else {
+					raw, err := os.ReadFile(filepath.Join("..", "..", "tests", "fixtures", sourceKind))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(source, raw, 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				sourceBefore, err := os.ReadFile(source)
+				if err != nil {
+					t.Fatal(err)
+				}
+				goOutput := filepath.Join(dir, "go-bound-final.3mf")
+				rustOutput := filepath.Join(dir, "rust-bound-final.3mf")
+
+				// Exercise exactly the same Go target resolution and material
+				// binding as the real active application conversion path.
+				result, err := ConvertTarget(source, goOutput, TargetRequest{
+					Target: target, ProfileFile: bundlePath, Nozzle: "0.4",
+				})
+				if target == "u1" && sourceKind == "mixed-five.3mf" {
+					if _, available := bundle.MaterialSettings["PETG"]["nozzle_temperature_range_low"]; !available {
+						// Historical installed U1 PETG snapshot had only the
+						// upper bound. Keep the negative safety regression
+						// even after discovering a complete manufacturer leaf.
+						if err == nil || !strings.Contains(err.Error(), "nozzle_temperature_range_low") {
+							t.Fatalf("incomplete PETG OEM safety range must fail closed: result=%v error=%v", result, err)
+						}
+						if _, statErr := os.Stat(goOutput); !os.IsNotExist(statErr) {
+							t.Fatal("refused PETG conversion still published a Go output")
+						}
+						current, readErr := os.ReadFile(source)
+						if readErr != nil || !bytes.Equal(sourceBefore, current) {
+							t.Fatal("rejected PETG conversion modified source")
+						}
+						t.Log("EXPECTED SAFE REJECTION: old installed U1 PETG base lacks lower temperature bound")
+						return
+					}
+					// The independent native resolver has now selected the
+					// installed U1 0.4mm-compatible Generic PETG leaf with
+					// manufacturer-supplied complete lower/upper bounds.
+					if bundle.Profile.FilamentProfiles["PETG"] != "Generic PETG" {
+						t.Fatalf("unreviewed PETG profile with lower range: %q", bundle.Profile.FilamentProfiles["PETG"])
+					}
+					if err != nil {
+						t.Fatalf("complete native U1 PETG profile rejected: %v", err)
+					}
+				}
+				if err != nil {
+					t.Fatalf("Go production target conversion: %v", err)
+				}
+				if result["target"] != target ||
+					result["target_nozzle"] != "0.4" ||
+					result["profile_kind"] != string(ProfileInstalledVendor) {
+					t.Fatalf("actual Go conversion used unexpected printer: %+v", result)
+				}
+				// The X-Plus 5 has one physical print nozzle, with or
+				// without a QIDI BOX; the OEM bundle's four virtual
+				// filament palette slots do not imply four toolheads.
+				wantPhysicalTools := 4
+				if target == "qidi" {
+					wantPhysicalTools = 1
+				}
+				multiMaterial := sourceKind == "bambu-five-colors.3mf" || sourceKind == "mixed-five.3mf"
+				if result["physical_toolheads"] != wantPhysicalTools ||
+					result["user_slot_mapping_required"] != multiMaterial ||
+					result["tool_usage_verification_required"] != multiMaterial {
+					t.Fatalf("OEM hardware tool/mapping reporting incorrect for %s/%s: %+v", target, sourceKind, result)
+				}
+				warnings, ok := result["warnings"].([]string)
+				if !ok {
+					t.Fatalf("production conversion omitted native-slicer warnings: %+v", result)
+				}
+				importWarningFound := false
+				for _, message := range warnings {
+					importWarningFound = importWarningFound || strings.Contains(message, "QIDIStudio may replace printer and material settings")
+				}
+				if expected := false; importWarningFound != expected {
+					t.Fatalf("QIDI native GUI import warning mismatch for %s/%s: got=%t want=%t; warnings=%v",
+						target, sourceKind, importWarningFound, expected, warnings)
+				}
+				if _, special := result["native_slicer_material_review_required"]; special {
+					t.Fatalf("production result must not reintroduce a special importer review flag for %s/%s",
+						target, sourceKind)
+				}
+
+				if target == "qidi" {
+					if got := project3MFApplication(t, goOutput); got != qidiStudioApplication {
+						t.Fatalf("QIDI importer metadata missing: %q", got)
+					}
+				}
+				plan, err := buildPlan(source, filepath.Join(dir, "unused-plan.3mf"),
+					func(src NozzleInfo) (*ResolvedTargetProfile, error) {
+						return resolveBuiltinTarget(target, bundlePath, "0.4", src.Nozzle)
+					})
+				if err != nil {
+					t.Fatalf("Go production plan is not reproducible: %v", err)
+				}
+				if plan.expectedModel != bundle.Profile.ModelID || plan.targetNozzle != "0.4" {
+					t.Fatalf("reconstructed Go plan has wrong target identity: %+v", plan)
+				}
+				merged, preserved, err := preservedProfile(source, plan.base)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := merged.Validate(); err != nil {
+					t.Fatal(err)
+				}
+				// Read Go's actual converted settings for a reliable SupportsAuto
+				// result. This is only used to derive the Rust test request.
+				var goSettings map[string]any
+				if err := json.Unmarshal(
+					inspectZipEntries(t, goOutput)["Metadata/project_settings.config"], &goSettings,
+				); err != nil {
+					t.Fatal(err)
+				}
+				if target == "qidi" {
+					for _, key := range []string{"filament_type", "filament_colour", "filament_settings_id"} {
+						list, ok := goSettings[key].([]any)
+						if !ok || len(list) != len(plan.filaments) {
+							t.Fatalf("QIDI native 3MF should have exactly %d source palette entries for %s, got %v",
+								len(plan.filaments), key, goSettings[key])
+						}
+					}
+				}
+
+				// Source snapshot must come from original 3MF, not the Go output.
+				var sourceSettings map[string]any
+				if err := json.Unmarshal(
+					inspectZipEntries(t, source)["Metadata/project_settings.config"], &sourceSettings,
+				); err != nil {
+					t.Fatal(err)
+				}
+				mapping := make(map[string]int, len(plan.mapping))
+				for src, dst := range plan.mapping {
+					mapping[strconv.Itoa(src)] = dst
+				}
+				supports := fmt.Sprint(goSettings["enable_support"]) == "1"
+				explicit := map[string]any{
+					"profile":         merged,
+					"slots":           plan.slots,
+					"slot_count":      merged.FilamentSlots,
+					"mapping":         mapping,
+					"source_settings": sourceSettings,
+					"supports":        supports,
+					"preserved":       preserved,
+				}
+				raw, err := json.Marshal(explicit)
+				if err != nil {
+					t.Fatal(err)
+				}
+				request := filepath.Join(dir, "verified-go-plan.json")
+				if err := os.WriteFile(request, raw, 0600); err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+				defer cancel()
+				stdout, runErr := exec.CommandContext(ctx, rust,
+					"--convert-archive", request, source, rustOutput).Output()
+				if ctx.Err() != nil {
+					t.Fatal(ctx.Err())
+				}
+				var reply struct {
+					OK           bool   `json:"ok"`
+					Removed      int    `json:"removed"`
+					Experimental bool   `json:"experimental"`
+					Error        string `json:"error"`
+				}
+				if err := json.Unmarshal(stdout, &reply); err != nil {
+					t.Fatalf("Rust returned invalid JSON: %v %s", err, stdout)
+				}
+				if runErr != nil || !reply.OK || !reply.Experimental {
+					t.Fatalf("Rust refused Go-validated OEM material binding: command=%v response=%+v", runErr, reply)
+				}
+				if expected, ok := result["removed_slice_cache_entries"].(int); ok && reply.Removed != expected {
+					t.Fatalf("Go/Rust stale slice removal count differs: Go=%d Rust=%d", expected, reply.Removed)
+				}
+				compareConverted3MFParts(t, goOutput, rustOutput)
+				if sourceKind == "mixed-five.3mf" || sourceKind == "centered-one.3mf" {
+					for _, converted := range []string{goOutput, rustOutput} {
+						model := inspectZipEntries(t, converted)["3D/3dmodel.model"]
+						if !bytes.Contains(model, []byte("120 120 0")) {
+							t.Fatalf("%s lost the source's verified in-bed 3MF build-item translation", filepath.Base(converted))
+						}
+					}
+				}
+
+				// Confirm selected material constraints really arrived from the
+				// installed target's native material presets, rather than
+				// silently falling back to a generic PLA template.
+				filaments := plan.filaments
+				for i, f := range filaments {
+					for key, expected := range map[string]any{
+						"filament_type":        f.Type,
+						"filament_settings_id": merged.FilamentProfiles[f.Type],
+						"filament_colour":      f.Color,
+					} {
+						values, ok := goSettings[key].([]any)
+						if !ok || len(values) <= i || !reflect.DeepEqual(values[i], expected) {
+							t.Fatalf("%s material slot %d differs from source/installed %s: got %v expected %v",
+								target, i, key, goSettings[key], expected)
+						}
+					}
+					preset, exists := bundle.MaterialSettings[f.Type]
+					if !exists {
+						t.Fatalf("missing installed %s preset %s", target, f.Type)
+					}
+					for _, key := range []string{
+						"nozzle_temperature", "filament_flow_ratio", "filament_max_volumetric_speed",
+					} {
+						values, exists := preset[key].([]any)
+						if !exists || len(values) == 0 {
+							continue
+						}
+						got, ok := goSettings[key].([]any)
+						if !ok || len(got) <= i || !reflect.DeepEqual(got[i], values[0]) {
+							t.Fatalf("%s material slot %d key %s not sourced from installed OEM preset: got %v want %v",
+								target, i, key, goSettings[key], values[0])
+						}
+					}
+				}
+				for _, key := range []string{
+					"printer_model", "printer_settings_id", "print_settings_id",
+					"nozzle_diameter", "machine_start_gcode", "machine_end_gcode",
+					"change_filament_gcode",
+				} {
+					want, exists := bundle.Profile.ProjectSettings[key]
+					if !exists {
+						t.Fatalf("OEM source profile missing machine key %s", key)
+					}
+					if !reflect.DeepEqual(goSettings[key], want) {
+						t.Fatalf("%s material binding modified machine-owned %s", target, key)
+					}
+				}
+				gotSource, err := os.ReadFile(source)
+				if err != nil || !bytes.Equal(gotSource, sourceBefore) {
+					t.Fatalf("source project modified in %s/%s", target, sourceKind)
+				}
+				if inspectPackageFacts, err := inspectPackage(rustOutput); err != nil ||
+					inspectPackageFacts.sliceCaches != 0 {
+					t.Fatalf("Rust OEM output left unverified cache or invalid package: %v", err)
+				}
+				if outputDir := os.Getenv("SLICEBRIDGE_BOUND_OEM_OUTPUT_DIR"); outputDir != "" {
+					if st, err := os.Stat(outputDir); err != nil || !st.IsDir() {
+						t.Fatalf("explicit material-bound OEM output directory unavailable: %v", err)
+					}
+					for _, entry := range [][2]string{
+						{source, "bound-source-" + target + "-" + sourceKind},
+						{goOutput, "bound-go-" + target + "-" + sourceKind},
+						{rustOutput, "bound-rust-" + target + "-" + sourceKind},
+					} {
+						exportSlicerFixtureNoOverwrite(t, entry[0], filepath.Join(outputDir, entry[1]))
+					}
+				}
+				t.Logf("Go production plan and Rust ZIP parity with installed %s profile, %d source materials, %d output slots; OEM material temperature/flow/profile IDs and machine identity verified",
+					target, len(filaments), merged.FilamentSlots)
+			})
+		}
+	}
+}
