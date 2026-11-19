@@ -1187,11 +1187,37 @@ pub(super) fn render_window(
 
     let mut root = div()
         .id("slicebridge-workspace")
+        .track_focus(&view.focus_handle)
         .relative()
         .size_full()
         .flex()
         .flex_col()
         .bg(rgb(BG))
+        .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+            if event.is_held {
+                return;
+            }
+            let shortcut = original_workspace_shortcut(
+                &event.keystroke,
+                this.settings_open || this.settings_recovery_pending,
+                snapshot_running(&this.commands.snapshot()),
+            );
+            match shortcut {
+                Some(WorkspaceShortcut::AddFiles) => {
+                    cx.stop_propagation();
+                    this.choose_batch_sources(cx);
+                }
+                Some(WorkspaceShortcut::AddFolder) => {
+                    cx.stop_propagation();
+                    this.choose_source_folder(cx);
+                }
+                Some(WorkspaceShortcut::Settings) => {
+                    cx.stop_propagation();
+                    this.open_settings(cx);
+                }
+                None => {}
+            }
+        }))
         .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
             this.handle_dropped_paths(paths.paths().to_vec(), cx);
         }))

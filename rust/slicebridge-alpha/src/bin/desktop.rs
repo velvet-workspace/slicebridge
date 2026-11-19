@@ -206,7 +206,39 @@ mod desktop_printer_settings_ui;
 const IDLE_MESSAGE: &str =
     "No UI action yet. Agent / CLI / MCP changes appear in the project fields above.";
 
+// Source: stable native/frontend/dist/app.js document keydown handler (Ctrl/Cmd+O,
+// Ctrl/Cmd+Shift+O, Ctrl/Cmd+,). Use the already-existing native picker/settings actions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkspaceShortcut {
+    AddFiles,
+    AddFolder,
+    Settings,
+}
+
+fn original_workspace_shortcut(
+    stroke: &Keystroke,
+    settings_or_recovery_open: bool,
+    conversion_running: bool,
+) -> Option<WorkspaceShortcut> {
+    let modifiers = stroke.modifiers;
+    if settings_or_recovery_open
+        || conversion_running
+        || !(modifiers.control || modifiers.platform)
+        || modifiers.alt
+        || modifiers.function
+    {
+        return None;
+    }
+    match (stroke.key.to_ascii_lowercase().as_str(), modifiers.shift) {
+        ("o", false) => Some(WorkspaceShortcut::AddFiles),
+        ("o", true) => Some(WorkspaceShortcut::AddFolder),
+        (",", _) => Some(WorkspaceShortcut::Settings),
+        _ => None,
+    }
+}
+
 struct SliceBridgeWindow {
+    focus_handle: FocusHandle,
     commands: Registry,
     last_message: String,
     destination: Option<String>,
@@ -683,6 +715,8 @@ fn integrations_still_open(open: bool, developer_on: bool) -> bool {
 
 impl SliceBridgeWindow {
     fn new(registry: Registry, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let focus_handle = cx.focus_handle();
+        window.focus(&focus_handle, cx);
         let locale = Locale::load();
         let placeholder = if locale.rtl() {
             "שם יצרן או דגם"
@@ -736,6 +770,7 @@ impl SliceBridgeWindow {
                 .map(|(id, _)| id.to_owned())
                 .collect();
         Self {
+            focus_handle,
             commands: registry,
             last_message: IDLE_MESSAGE.into(),
             destination: None,
@@ -1622,6 +1657,74 @@ impl SliceBridgeWindow {
                 cx,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod source_locked_keyboard_shortcut_tests {
+    use super::{original_workspace_shortcut, WorkspaceShortcut};
+    use gpui_kit::{Keystroke, Modifiers};
+
+    #[test]
+    fn original_wails_keyboard_shortcuts_and_guards() {
+        let stroke = |key: &str, modifiers: Modifiers| Keystroke {
+            key: key.into(),
+            modifiers,
+            key_char: None,
+        };
+        let ctrl = Modifiers {
+            control: true,
+            ..Default::default()
+        };
+        let cmd = Modifiers {
+            platform: true,
+            ..Default::default()
+        };
+        let shift_cmd = Modifiers { shift: true, ..cmd };
+        assert_eq!(
+            original_workspace_shortcut(&stroke("o", ctrl), false, false),
+            Some(WorkspaceShortcut::AddFiles)
+        );
+        assert_eq!(
+            original_workspace_shortcut(&stroke("O", cmd), false, false),
+            Some(WorkspaceShortcut::AddFiles)
+        );
+        assert_eq!(
+            original_workspace_shortcut(&stroke("o", shift_cmd), false, false),
+            Some(WorkspaceShortcut::AddFolder)
+        );
+        assert_eq!(
+            original_workspace_shortcut(&stroke(",", ctrl), false, false),
+            Some(WorkspaceShortcut::Settings)
+        );
+        assert_eq!(
+            original_workspace_shortcut(&stroke(",", cmd), false, false),
+            Some(WorkspaceShortcut::Settings)
+        );
+        assert_eq!(
+            original_workspace_shortcut(&stroke("o", ctrl), true, false),
+            None
+        );
+        assert_eq!(
+            original_workspace_shortcut(&stroke("o", ctrl), false, true),
+            None
+        );
+        assert_eq!(
+            original_workspace_shortcut(&stroke("o", Modifiers::default()), false, false),
+            None
+        );
+        assert_eq!(
+            original_workspace_shortcut(
+                &stroke("o", Modifiers { alt: true, ..ctrl }),
+                false,
+                false
+            ),
+            None
+        );
+        assert_eq!(
+            original_workspace_shortcut(&stroke("x", ctrl), false, false),
+            None
+        );
     }
 }
 
