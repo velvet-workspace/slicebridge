@@ -122,14 +122,15 @@ impl SliceBridgeWindow {
     pub(super) fn open_settings(&mut self, cx: &mut Context<Self>) {
         let reply = self.commands.execute("settings.get", &json!({}));
         if reply["ok"] != true {
-            self.last_message = format!(
-                "{}: {}",
-                self.locale.text("settingsError"),
-                reply["error"].as_str().unwrap_or("unknown")
-            );
+            self.settings_recovery_pending = true;
+            self.settings_recovery_error = reply["error"].as_str().unwrap_or("unknown").into();
+            self.settings_open = false;
+            self.last_message = self.locale.text("settingsError");
             cx.notify();
             return;
         }
+        self.settings_recovery_pending = false;
+        self.settings_recovery_error.clear();
         self.settings_loaded = reply["data"].clone();
         self.settings_target = "u1".into();
         self.settings_material = "PLA".into();
@@ -246,6 +247,115 @@ impl SliceBridgeWindow {
                 .into();
         }
         cx.notify();
+    }
+
+    pub(super) fn cancel_settings_recovery(&mut self, cx: &mut Context<Self>) {
+        self.settings_recovery_pending = false;
+        self.settings_recovery_error.clear();
+        cx.notify();
+    }
+
+    pub(super) fn confirm_settings_recovery(&mut self, cx: &mut Context<Self>) {
+        if !self.settings_recovery_pending {
+            return;
+        }
+        let reply = self
+            .commands
+            .execute("settings.recover", &json!({"confirmed":true}));
+        if reply["ok"] != true {
+            self.settings_recovery_error = reply["error"]
+                .as_str()
+                .unwrap_or("settings recovery failed")
+                .into();
+            cx.notify();
+            return;
+        }
+        self.settings_recovery_pending = false;
+        self.settings_recovery_error.clear();
+        let mut message = self.locale.text("recoveredSettings");
+        if let Some(path) = reply["data"]["backupPath"].as_str() {
+            message.push(' ');
+            message.push_str(&self.locale.text("backupSaved").replace("{path}", path));
+        }
+        let discovered = self.commands.execute("profiles.discover", &json!({}));
+        if discovered["ok"] == true {
+            self.ready_profiles = discovered["data"].clone();
+            self.ready_oem_targets = ready_from_preferences(
+                &self.ready_profiles,
+                &reply["data"]["settings"],
+                self.source_nozzle.as_deref(),
+            );
+        }
+        self.open_settings(cx);
+        self.last_message = message;
+        cx.notify();
+    }
+
+    // Native equivalent of the original window.confirm recovery prompt.
+    // The recovery command never runs from render or on opening the modal.
+    pub(super) fn render_settings_recovery(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let locale = self.locale;
+        let rtl = locale.rtl();
+        div()
+            .id("settingsRecoveryDialog")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(0x193F387F))
+            .child(
+                div()
+                    .w(px(560.))
+                    .max_w(relative(0.92))
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(rgb(0xD5E6DD))
+                    .bg(rgb(0xFFFFFF))
+                    .p_5()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .child(
+                        div()
+                            .text_lg()
+                            .text_color(rgb(0xB34940))
+                            .child(locale.text("settingsError")),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(0x193F38))
+                            .child(locale.text("recoverSettingsQuestion")),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0xB34940))
+                            .child(self.settings_recovery_error.clone()),
+                    )
+                    .child(
+                        line(rtl)
+                            .gap_3()
+                            .justify_end()
+                            .child(
+                                Button::new("cancelSettingsRecovery")
+                                    .label(locale.text("cancel"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.cancel_settings_recovery(cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new("confirmSettingsRecovery")
+                                    .primary()
+                                    .label(locale.text("confirmRecovery"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.confirm_settings_recovery(cx)
+                                    })),
+                            ),
+                    ),
+            )
     }
 
     pub(super) fn render_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {

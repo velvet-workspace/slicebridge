@@ -1207,6 +1207,9 @@ pub(super) fn render_window(
     if view.settings_open {
         root = root.child(view.render_settings(cx));
     }
+    if view.settings_recovery_pending {
+        root = root.child(view.render_settings_recovery(cx));
+    }
     if view.about_open {
         root = root.child(render_about(view, cx));
     }

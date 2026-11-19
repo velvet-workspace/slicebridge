@@ -201,6 +201,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "Read validated stable printer settings or defaults without modifying installed settings",
     ),
     (
+        "settings.recover",
+        "Explicitly confirm backing up malformed preferences and restore alpha-only defaults",
+    ),
+    (
         "settings.developer.set",
         "Persist verified Developer Mode flag only in isolated GPUI alpha settings",
     ),
@@ -499,6 +503,16 @@ impl Registry {
                 makerworld::parse_link(raw).map(|link| link.as_value())
             }
             "settings.get" => printer_settings::current(),
+            "settings.recover" => {
+                if params.get("confirmed").and_then(Value::as_bool) != Some(true) {
+                    return Err("settings recovery requires explicit confirmation".into());
+                }
+                let state = self.state.lock().map_err(|err| err.to_string())?;
+                if busy(&state) {
+                    return Err("cannot recover settings during conversion".into());
+                }
+                printer_settings::recover_invalid()
+            }
             "settings.developer.set" => {
                 let enabled = params
                     .get("enabled")
@@ -1510,6 +1524,23 @@ mod tests {
         assert_eq!(registry.snapshot()["source"], json!(one));
         assert!(one.is_file());
         assert!(five.is_file());
+    }
+
+    #[test]
+    fn settings_recovery_command_requires_explicit_boolean_confirmation() {
+        let registry = Registry::new();
+        for args in [
+            json!({}),
+            json!({"confirmed":false}),
+            json!({"confirmed":"true"}),
+        ] {
+            let reply = registry.execute("settings.recover", &args);
+            assert_eq!(reply["ok"], false);
+            assert!(reply["error"]
+                .as_str()
+                .unwrap()
+                .contains("explicit confirmation"));
+        }
     }
 
     #[test]

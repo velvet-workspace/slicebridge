@@ -219,6 +219,90 @@ pub fn current() -> Result<Value, String> {
     read_from_paths(&experiment_path()?, &stable_paths()?)
 }
 
+// The original Wails app asks before recovering malformed preferences. The GPUI
+// alpha always writes only its own file: even when a stable Wails file was corrupt,
+// preserve its original bytes and keep the installed app untouched.
+fn recover_invalid_in_context(alpha: &Path, fallbacks: &[PathBuf]) -> Result<Value, String> {
+    if let Ok(valid) = read_from_paths(alpha, fallbacks) {
+        return Ok(json!({"settings":valid,"backupPath":null}));
+    }
+
+    let mut selected: Option<&Path> = None;
+    for path in std::iter::once(alpha).chain(fallbacks.iter().map(PathBuf::as_path)) {
+        match fs::symlink_metadata(path) {
+            Ok(_) => {
+                selected = Some(path);
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("inspect original settings: {error}")),
+        }
+    }
+    let source = selected.ok_or("settings could not be read; no recoverable file was found")?;
+    let metadata = fs::symlink_metadata(source)
+        .map_err(|error| format!("inspect original settings: {error}"))?;
+    if !metadata.file_type().is_file() {
+        return Err("settings recovery requires a regular file, not a symlink".into());
+    }
+    // A maliciously large file should not be copied into the alpha profile.
+    if metadata.len() > 16 * 1024 * 1024 {
+        return Err("settings backup is unexpectedly large".into());
+    }
+    let original = fs::read(source).map_err(|error| format!("read original settings: {error}"))?;
+    // read_one also rejects files over 64 KiB even when their JSON parses.
+    // Wails can back up and reset those files too, after explicit confirmation.
+    if original.len() as u64 <= MAX_BYTES && parse(&original).is_ok() {
+        return Err("settings changed during recovery; reopen settings".into());
+    }
+
+    let parent = alpha.parent().ok_or("no alpha settings directory")?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("create settings backup directory: {error}"))?;
+    let backup = parent.join(format!(
+        "settings.json.invalid-{}-{}.bak",
+        std::process::id(),
+        NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let mut options = fs::OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&backup)
+        .map_err(|error| format!("create settings backup: {error}"))?;
+    let backup_result = (|| -> Result<(), String> {
+        use std::io::Write;
+        file.write_all(&original)
+            .map_err(|error| format!("copy settings backup: {error}"))?;
+        file.sync_all()
+            .map_err(|error| format!("sync settings backup: {error}"))?;
+        Ok(())
+    })();
+    drop(file);
+    if let Err(error) = backup_result {
+        let _ = fs::remove_file(&backup);
+        return Err(error);
+    }
+    // An external writer may have repaired the file while the backup was made.
+    // Refuse to overwrite its new bytes.
+    if fs::read(source).map_err(|error| format!("re-read original settings: {error}"))? != original
+    {
+        return Err("settings changed during recovery; reopen settings".into());
+    }
+    let restored = persist_settings_in_context(alpha, &[], &defaults())?;
+    Ok(json!({
+        "settings": restored,
+        "backupPath": backup.to_string_lossy()
+    }))
+}
+
+pub fn recover_invalid() -> Result<Value, String> {
+    recover_invalid_in_context(&experiment_path()?, &stable_paths()?)
+}
+
 fn native_profile_verifier(
     target: &str,
     nozzle: &str,
@@ -855,6 +939,125 @@ mod tests {
         assert!(set_developer_mode_in_context(&alpha, &fallbacks, true).is_err());
         assert!(!alpha.exists());
         assert_eq!(fs::read(&stable).unwrap(), corrupt_stable);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn confirmed_recovery_backs_up_corrupt_alpha_before_restoring_defaults() {
+        let root = std::env::temp_dir().join(format!(
+            "sb-confirmed-recovery-alpha-{}-{}",
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let alpha = root.join("GPUI-Alpha").join("settings.json");
+        fs::create_dir_all(alpha.parent().unwrap()).unwrap();
+        let original = br#"{"version":99,"printers":{"future":"keep exact bytes"}}"#;
+        fs::write(&alpha, original).unwrap();
+        assert!(read_from_paths(&alpha, &[]).is_err());
+        assert_eq!(fs::read(&alpha).unwrap(), original);
+
+        let reply = recover_invalid_in_context(&alpha, &[]).unwrap();
+        let backup = PathBuf::from(reply["backupPath"].as_str().unwrap());
+        assert_eq!(fs::read(&backup).unwrap(), original);
+        assert_eq!(reply["settings"], defaults());
+        assert_eq!(read_from_paths(&alpha, &[]).unwrap(), defaults());
+        assert_ne!(backup, alpha);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn confirmed_recovery_accepts_oversized_but_valid_json_like_wails() {
+        let root = std::env::temp_dir().join(format!(
+            "sb-confirmed-recovery-oversize-{}-{}",
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let alpha = root.join("GPUI-Alpha").join("settings.json");
+        fs::create_dir_all(alpha.parent().unwrap()).unwrap();
+        let original = format!(r#"{{"version":1,"padding":"{}"}}"#, "x".repeat(65_536));
+        assert!(serde_json::from_slice::<Value>(original.as_bytes()).is_ok());
+        assert!(parse(original.as_bytes()).is_err());
+        fs::write(&alpha, original.as_bytes()).unwrap();
+        assert!(read_one(&alpha).is_err());
+
+        let reply = recover_invalid_in_context(&alpha, &[]).unwrap();
+        let backup = PathBuf::from(reply["backupPath"].as_str().unwrap());
+        assert_eq!(fs::read(&backup).unwrap(), original.as_bytes());
+        assert_eq!(reply["settings"], defaults());
+        assert_eq!(read_one(&alpha).unwrap().unwrap(), defaults());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn confirmed_recovery_never_modifies_corrupt_stable_wails_file() {
+        let root = std::env::temp_dir().join(format!(
+            "sb-confirmed-recovery-stable-{}-{}",
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let alpha = root.join("GPUI-Alpha").join("settings.json");
+        let stable = root.join("stable-settings.json");
+        let original = b"{invalid stable settings!";
+        fs::write(&stable, original).unwrap();
+        assert!(!alpha.exists());
+        assert!(read_from_paths(&alpha, std::slice::from_ref(&stable)).is_err());
+
+        let reply = recover_invalid_in_context(&alpha, std::slice::from_ref(&stable)).unwrap();
+        let backup = PathBuf::from(reply["backupPath"].as_str().unwrap());
+        assert_eq!(fs::read(&backup).unwrap(), original);
+        assert_eq!(fs::read(&stable).unwrap(), original);
+        assert_eq!(reply["settings"], defaults());
+        assert_eq!(
+            read_from_paths(&alpha, std::slice::from_ref(&stable)).unwrap(),
+            defaults()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn valid_settings_never_trigger_recovery_or_alpha_write() {
+        let root = std::env::temp_dir().join(format!(
+            "sb-confirmed-recovery-valid-{}-{}",
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let alpha = root.join("GPUI-Alpha").join("settings.json");
+        let stable = root.join("stable-settings.json");
+        let original = br#"{"version":1,"printers":{"u1":{"nozzle":"0.6"}}}"#;
+        fs::write(&stable, original).unwrap();
+
+        let reply = recover_invalid_in_context(&alpha, std::slice::from_ref(&stable)).unwrap();
+        assert!(reply["backupPath"].is_null());
+        assert_eq!(reply["settings"]["printers"]["u1"]["nozzle"], "0.6");
+        assert_eq!(fs::read(&stable).unwrap(), original);
+        assert!(!alpha.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_preferences_cannot_be_recovered_or_overwritten() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!(
+            "sb-confirmed-recovery-link-{}-{}",
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("protected.json");
+        fs::write(&target, b"{invalid original").unwrap();
+        let alpha = root.join("settings.json");
+        symlink(&target, &alpha).unwrap();
+        assert!(recover_invalid_in_context(&alpha, &[]).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"{invalid original");
+        assert!(fs::symlink_metadata(&alpha)
+            .unwrap()
+            .file_type()
+            .is_symlink());
         fs::remove_dir_all(root).unwrap();
     }
 
