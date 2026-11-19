@@ -205,6 +205,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "Explicitly confirm backing up malformed preferences and restore alpha-only defaults",
     ),
     (
+        "settings.window.remember",
+        "Remember valid native window size only in isolated GPUI alpha settings",
+    ),
+    (
         "settings.developer.set",
         "Persist verified Developer Mode flag only in isolated GPUI alpha settings",
     ),
@@ -512,6 +516,18 @@ impl Registry {
                     return Err("cannot recover settings during conversion".into());
                 }
                 printer_settings::recover_invalid()
+            }
+            "settings.window.remember" => {
+                let width = params
+                    .get("width")
+                    .and_then(Value::as_i64)
+                    .ok_or("window width must be integer")?;
+                let height = params
+                    .get("height")
+                    .and_then(Value::as_i64)
+                    .ok_or("window height must be integer")?;
+                let _guard = self.state.lock().map_err(|err| err.to_string())?;
+                printer_settings::remember_window_size(width, height)
             }
             "settings.developer.set" => {
                 let enabled = params

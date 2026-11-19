@@ -18,6 +18,7 @@ fn schema(name: &str) -> Value {
         "slicer.open" => vec!["executable"],
         "slicer.open_batch_output" => vec!["source", "target"],
         "settings.recover" => vec!["confirmed"],
+        "settings.window.remember" => vec!["width", "height"],
         "settings.developer.set" => vec!["enabled"],
         "settings.options" => vec!["target"],
         "settings.save" => vec!["target", "pref"],
@@ -40,6 +41,8 @@ fn schema(name: &str) -> Value {
         "output_dir":{"type":"string"},
         "confirmed":{"type":"boolean"},
         "enabled":{"type":"boolean"},
+        "width":{"type":"integer","minimum":720,"maximum":2000},
+        "height":{"type":"integer","minimum":500,"maximum":1400},
         "slicer":{"type":"string"},
         "pref":{"type":"object"},
         "ids":{"type":"array","items":{"type":"string"},"maxItems":32}
@@ -252,6 +255,25 @@ mod tests {
         let printers = schema("printers.save");
         assert_eq!(printers["properties"]["ids"]["items"]["type"], "string");
         assert_eq!(printers["properties"]["ids"]["maxItems"], 32);
+    }
+
+    #[test]
+    fn original_window_size_mcp_requires_bounded_integer_dimensions() {
+        let schema = schema("settings.window.remember");
+        assert_eq!(schema["required"], json!(["width", "height"]));
+        assert_eq!(
+            schema["properties"]["width"],
+            json!({
+                "type":"integer","minimum":720,"maximum":2000
+            })
+        );
+        assert_eq!(
+            schema["properties"]["height"],
+            json!({
+                "type":"integer","minimum":500,"maximum":1400
+            })
+        );
+        assert_eq!(schema["additionalProperties"], false);
     }
 
     #[test]

@@ -202,6 +202,32 @@ use desktop_printer_picker::PrinterCard;
 #[path = "desktop/printer_settings_ui.rs"]
 mod desktop_printer_settings_ui;
 
+// Read only validated persisted dimensions, otherwise use Wails' 1280x900 defaults.
+fn initial_window_dimensions(settings_reply: &Value) -> (i64, i64) {
+    let window = &settings_reply["data"]["window"];
+    let width = window["width"].as_i64().unwrap_or(1280);
+    let height = window["height"].as_i64().unwrap_or(900);
+    (
+        if (720..=2000).contains(&width) {
+            width
+        } else {
+            1280
+        },
+        if (500..=1400).contains(&height) {
+            height
+        } else {
+            900
+        },
+    )
+}
+
+fn observed_window_dimensions(size: Size<Pixels>) -> (i64, i64) {
+    (
+        size.width.as_f32().round() as i64,
+        size.height.as_f32().round() as i64,
+    )
+}
+
 // Idle last_message: layout's activity_detail_text maps it to Go's readyHint/idleHint.
 const IDLE_MESSAGE: &str =
     "No UI action yet. Agent / CLI / MCP changes appear in the project fields above.";
@@ -239,6 +265,7 @@ fn original_workspace_shortcut(
 
 struct SliceBridgeWindow {
     focus_handle: FocusHandle,
+    window_resize_revision: u64,
     commands: Registry,
     last_message: String,
     destination: Option<String>,
@@ -717,6 +744,36 @@ impl SliceBridgeWindow {
     fn new(registry: Registry, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
+        // app.js remembers a user resize after 900ms, not on every repaint.
+        // GPUI's observer fires on native resize. Persist content size, not
+        // the outer frame: macOS titlebar adds 32px and would grow on restart.
+        cx.observe_window_bounds(window, |view, window, cx| {
+            let (width, height) = observed_window_dimensions(window.viewport_size());
+            view.window_resize_revision = view.window_resize_revision.wrapping_add(1);
+            let revision = view.window_resize_revision;
+            let commands = view.commands.clone();
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(900))
+                    .await;
+                let latest = this
+                    .update(cx, |view, _| view.window_resize_revision == revision)
+                    .unwrap_or(false);
+                if latest {
+                    // Persist outside the UI executor, only in GPUI-Alpha.
+                    cx.background_executor()
+                        .spawn(async move {
+                            commands.execute(
+                                "settings.window.remember",
+                                &json!({"width":width,"height":height}),
+                            )
+                        })
+                        .await;
+                }
+            })
+            .detach();
+        })
+        .detach();
         let locale = Locale::load();
         let placeholder = if locale.rtl() {
             "שם יצרן או דגם"
@@ -771,6 +828,7 @@ impl SliceBridgeWindow {
                 .collect();
         Self {
             focus_handle,
+            window_resize_revision: 0,
             commands: registry,
             last_message: IDLE_MESSAGE.into(),
             destination: None,
@@ -1739,6 +1797,8 @@ impl Render for SliceBridgeWindow {
 
 fn main() {
     let registry = Registry::new();
+    let saved_settings = registry.execute("settings.get", &json!({}));
+    let (initial_width, initial_height) = initial_window_dimensions(&saved_settings);
     let attach_status = protocol::start_attach(registry.clone(), "127.0.0.1:48637");
     if let Err(error) = attach_status {
         eprintln!("local attach not available: {error}");
@@ -1746,7 +1806,34 @@ fn main() {
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
         let commands = registry.clone();
-        gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
+        let bounds = Bounds::centered(
+            None,
+            size(px(initial_width as f32), px(initial_height as f32)),
+            cx,
+        );
+        // Exact stable Wails dimensions and minimum; never recenter on redraw.
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            window_min_size: Some(size(px(720.), px(500.))),
+            ..Default::default()
+        };
+        gpui_kit::open_window(options, cx, move |window, cx| {
+            let on_close = commands.clone();
+            window.on_window_should_close(cx, move |window, _| {
+                // Wails WindowGetSize is the drawable size, not macOS frame.
+                let (width, height) = observed_window_dimensions(window.viewport_size());
+                let result = on_close.execute(
+                    "settings.window.remember",
+                    &json!({"width":width,"height":height}),
+                );
+                if result["ok"] != true {
+                    eprintln!(
+                        "SliceBridge could not remember window size: {}",
+                        reply_error(&result)
+                    );
+                }
+                true // Never block closing, same as Wails OnBeforeClose.
+            });
             cx.new(|cx| {
                 let mut view = SliceBridgeWindow::new(commands, window, cx);
                 view.start_live_refresh(cx);
@@ -1755,6 +1842,37 @@ fn main() {
         })
         .expect("SliceBridge GPUI window failed to open");
     });
+}
+
+#[cfg(test)]
+mod original_window_geometry_tests {
+    use super::{initial_window_dimensions, observed_window_dimensions};
+    use gpui_kit::{px, size};
+    use serde_json::json;
+
+    #[test]
+    fn saved_wails_size_is_used_only_when_valid() {
+        assert_eq!(
+            initial_window_dimensions(&json!({"ok":true,"data":{"window":{
+                "width":1100,"height":750
+            }}})),
+            (1100, 750)
+        );
+        assert_eq!(
+            initial_window_dimensions(&json!({"ok":false,"error":"corrupt"})),
+            (1280, 900)
+        );
+        assert_eq!(
+            initial_window_dimensions(&json!({"data":{"window":{
+                "width":700,"height":1500
+            }}})),
+            (1280, 900)
+        );
+        assert_eq!(
+            observed_window_dimensions(size(px(1150.4), px(790.7))),
+            (1150, 791)
+        );
+    }
 }
 
 #[cfg(test)]
