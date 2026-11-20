@@ -32,6 +32,15 @@ fn first_supported_language(raw: &str) -> Option<&'static str> {
     match code.as_str() {
         "he" | "iw" => Some("he"),
         "en" => Some("en"),
+        // Wails only translates Hebrew and English: an otherwise valid French,
+        // Arabic, etc. FIRST browser language displays the English UI; do not
+        // substitute the later Hebrew system option or shell's LANG value.
+        unknown
+            if (2..=3).contains(&unknown.len())
+                && unknown.bytes().all(|byte| byte.is_ascii_alphabetic()) =>
+        {
+            Some("en")
+        }
         _ => None,
     }
 }
@@ -58,7 +67,10 @@ mod tests {
 
     #[test]
     fn unknown_first_language_does_not_select_later_hebrew() {
-        assert_eq!(first_supported_language("(\"fr-FR\", \"he-IL\")"), None);
+        assert_eq!(
+            first_supported_language("(\"fr-FR\", \"he-IL\")"),
+            Some("en")
+        );
         assert_eq!(first_supported_language("()"), None);
         assert_eq!(first_supported_language(""), None);
         assert_eq!(first_supported_language("(\"hello-IL\")"), None);
