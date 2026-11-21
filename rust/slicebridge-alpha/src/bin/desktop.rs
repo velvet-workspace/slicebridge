@@ -110,6 +110,70 @@ fn source_add_error_feedback(locale: Locale, detail: &str) -> String {
     format!("{}: {detail}", locale.text("addError"))
 }
 
+// A canceled native file picker must not be reported as an error; a failed
+// OS dialog must not disappear silently (file and folder pickers share this).
+enum SourcePickerResolution {
+    Selected(Vec<PathBuf>),
+    Canceled,
+    Failed(String),
+}
+
+fn source_picker_resolution<E: std::fmt::Display>(
+    locale: Locale,
+    result: Result<Option<Vec<PathBuf>>, E>,
+) -> SourcePickerResolution {
+    match result {
+        Ok(Some(paths)) => SourcePickerResolution::Selected(paths),
+        Ok(None) => SourcePickerResolution::Canceled,
+        Err(error) => {
+            SourcePickerResolution::Failed(source_add_error_feedback(locale, &error.to_string()))
+        }
+    }
+}
+
+#[cfg(test)]
+mod source_picker_resolution_tests {
+    use super::{source_picker_resolution, Locale, SourcePickerResolution};
+    use std::{io, path::PathBuf};
+
+    #[test]
+    fn native_file_and_folder_dialog_errors_report_localized_details_without_treating_cancel_as_failure(
+    ) {
+        for (locale, expected) in [
+            (
+                Locale::He,
+                "לא ניתן להוסיף קבצים: OS picker refused /tmp/source.3mf",
+            ),
+            (
+                Locale::En,
+                "Could not add projects: OS picker refused /tmp/source.3mf",
+            ),
+        ] {
+            let failure = Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "OS picker refused /tmp/source.3mf",
+            ));
+            match source_picker_resolution(locale, failure) {
+                SourcePickerResolution::Failed(message) => assert_eq!(message, expected),
+                _ => panic!("OS failure must display an error"),
+            }
+            let canceled: Result<Option<Vec<PathBuf>>, io::Error> = Ok(None);
+            assert!(matches!(
+                source_picker_resolution(locale, canceled),
+                SourcePickerResolution::Canceled
+            ));
+            let picked: Result<Option<Vec<PathBuf>>, io::Error> =
+                Ok(Some(vec![PathBuf::from("/tmp/source.3mf")]));
+            match source_picker_resolution(locale, picked) {
+                SourcePickerResolution::Selected(paths) => {
+                    assert_eq!(paths, vec![PathBuf::from("/tmp/source.3mf")]);
+                }
+                _ => panic!("successful OS selection must preserve paths"),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod source_add_error_feedback_tests {
     use super::{source_add_error_feedback, Locale};
@@ -1496,9 +1560,16 @@ impl SliceBridgeWindow {
             prompt: Some(batch_picker_title(self.locale, false).into()),
         });
         cx.spawn(async move |this, cx| {
-            if let Ok(Ok(Some(paths))) = picker.await {
+            if let Ok(result) = picker.await {
                 let _ = this.update(cx, |view, cx| {
-                    view.queue_add(paths, cx);
+                    match source_picker_resolution(view.locale, result) {
+                        SourcePickerResolution::Selected(paths) => view.queue_add(paths, cx),
+                        SourcePickerResolution::Canceled => {}
+                        SourcePickerResolution::Failed(message) => {
+                            view.last_message = message;
+                            cx.notify();
+                        }
+                    }
                 });
             }
         })
@@ -1513,8 +1584,17 @@ impl SliceBridgeWindow {
             prompt: Some(batch_picker_title(self.locale, true).into()),
         });
         cx.spawn(async move |this, cx| {
-            if let Ok(Ok(Some(paths))) = picker.await {
-                let _ = this.update(cx, |view, cx| view.queue_add(paths, cx));
+            if let Ok(result) = picker.await {
+                let _ = this.update(cx, |view, cx| {
+                    match source_picker_resolution(view.locale, result) {
+                        SourcePickerResolution::Selected(paths) => view.queue_add(paths, cx),
+                        SourcePickerResolution::Canceled => {}
+                        SourcePickerResolution::Failed(message) => {
+                            view.last_message = message;
+                            cx.notify();
+                        }
+                    }
+                });
             }
         })
         .detach();
