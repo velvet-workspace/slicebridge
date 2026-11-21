@@ -38,6 +38,12 @@ fn queue_display_paths(status: &Value, suppressed_source: Option<&str>) -> Vec<S
         .collect()
 }
 
+// A reselected folder contains file cache keys, not the folder path itself.
+// Match path components (not string prefixes), so /parts does not match /parts-old.
+fn selected_queue_file_needs_refresh(file: &Path, selections: &[PathBuf]) -> bool {
+    selections.iter().any(|selected| file.starts_with(selected))
+}
+
 // Same format as Go native/app.go bytesLabel: size < 1KiB is B, then
 // one decimal in KB or MB. The stable app captures this on input selection.
 fn source_bytes_label(size: u64) -> String {
@@ -1426,10 +1432,7 @@ impl SliceBridgeWindow {
 
     fn queue_add(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
         let snap = self.commands.snapshot();
-        let selected: Vec<String> = paths
-            .iter()
-            .map(|path| path.to_string_lossy().into_owned())
-            .collect();
+        let selected = paths.clone();
         let mut existing: Vec<PathBuf> =
             queue_display_paths(&snap, self.suppressed_source.as_deref())
                 .into_iter()
@@ -1447,11 +1450,16 @@ impl SliceBridgeWindow {
                     .execute("batch.stage", &json!({"paths":encoded}));
                 if reply["ok"] == true {
                     self.suppressed_source = None;
-                    // Newly selected paths are inspected again; an older file with the same name never lends its badge.
-                    for path in &selected {
-                        self.makerworld_origins.remove(path);
-                        self.makerworld_pending.remove(path);
-                        self.source_subtitles.remove(path);
+                    // Folder picks expand to files. Invalidate only selected
+                    // file keys, including descendants of a reselected folder.
+                    // Unrelated staged files keep their cached provenance.
+                    for file in &files {
+                        if selected_queue_file_needs_refresh(file, &selected) {
+                            let key = file.to_string_lossy();
+                            self.makerworld_origins.remove(key.as_ref());
+                            self.makerworld_pending.remove(key.as_ref());
+                            self.source_subtitles.remove(key.as_ref());
+                        }
                     }
                     if snap["source"].is_null() {
                         self.run(
@@ -2076,8 +2084,43 @@ mod layout_helper_tests {
 
 #[cfg(test)]
 mod queue_subtitle_tests {
-    use super::{source_bytes_label, source_queue_subtitle, sync_source_subtitles};
+    use super::{
+        selected_queue_file_needs_refresh, source_bytes_label, source_queue_subtitle,
+        sync_source_subtitles,
+    };
     use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    #[test]
+    fn reselecting_a_directory_refreshes_only_files_inside_it() {
+        let picked = PathBuf::from("/work/models");
+        let added_file = picked.join("sub/updated.3mf");
+        assert!(selected_queue_file_needs_refresh(
+            &added_file,
+            &[picked.clone()]
+        ));
+        assert!(selected_queue_file_needs_refresh(
+            &picked.join("single.3mf"),
+            &[picked.clone()]
+        ));
+        assert!(!selected_queue_file_needs_refresh(
+            &PathBuf::from("/work/models-other/unchanged.3mf"),
+            &[picked.clone()]
+        ));
+        assert!(!selected_queue_file_needs_refresh(
+            &PathBuf::from("/work/unrelated.3mf"),
+            &[picked]
+        ));
+        let direct = PathBuf::from("/work/direct.3mf");
+        assert!(selected_queue_file_needs_refresh(
+            &direct,
+            &[direct.clone()]
+        ));
+        assert!(!selected_queue_file_needs_refresh(
+            &PathBuf::from("/work/direct-other.3mf"),
+            &[direct]
+        ));
+    }
 
     #[test]
     fn source_size_uses_exact_go_bytes_label_thresholds() {

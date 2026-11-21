@@ -2,9 +2,11 @@
 //! Source queue operations never modify 3MF inputs, slice, or print.
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 const MAX_SOURCE_FILES: usize = 200;
+// Wails native/app.go fileInfo rejects empty 3MF files and files above 250 MiB.
+const MAX_SOURCE_BYTES: u64 = 250 * 1024 * 1024;
 const LEGACY_PREFIXES: &[&str] = &[
     "U1-",
     "C5-",
@@ -120,6 +122,23 @@ fn is_generated_sibling_output(path: &Path) -> bool {
     false
 }
 
+// Go filepath.Abs removes lexical parent components before deduplicating.
+// Do not use fs::canonicalize: its symlink resolution changes stable paths.
+fn lexical_absolute(path: &Path) -> PathBuf {
+    debug_assert!(path.is_absolute());
+    let mut cleaned = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                cleaned.pop();
+            }
+            other => cleaned.push(other.as_os_str()),
+        }
+    }
+    cleaned
+}
+
 pub(super) fn collect_source_files(inputs: Vec<PathBuf>) -> Result<Vec<PathBuf>, String> {
     if inputs.len() > MAX_SOURCE_FILES {
         return Err(format!("too many dropped items (limit {MAX_SOURCE_FILES})"));
@@ -166,6 +185,14 @@ pub(super) fn collect_source_files(inputs: Vec<PathBuf>) -> Result<Vec<PathBuf>,
         if from_folder && is_generated_sibling_output(&path) {
             continue;
         }
+        // Match Wails fileInfo for both folder imports and direct selection.
+        // A regular .3mf extension alone does not make an empty or oversized file queueable.
+        if metadata.len() == 0 || metadata.len() > MAX_SOURCE_BYTES {
+            return Err(format!(
+                "source must be a regular .3mf file up to 250 MB: {}",
+                path.display()
+            ));
+        }
         // Go filepath.Abs keeps symbolic parent spellings (e.g. /var on macOS).
         // Do not canonicalize returned source paths or silently rewrite user paths.
         let absolute = if path.is_absolute() {
@@ -175,7 +202,7 @@ pub(super) fn collect_source_files(inputs: Vec<PathBuf>) -> Result<Vec<PathBuf>,
                 .map_err(|error| error.to_string())?
                 .join(&path)
         };
-        let absolute: PathBuf = absolute.components().collect();
+        let absolute = lexical_absolute(&absolute);
         let key = if cfg!(windows) {
             absolute.to_string_lossy().to_lowercase()
         } else {
@@ -228,6 +255,19 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_parent_paths_match_go_filepath_abs() {
+        let dir = fixture("parent-dedup");
+        fs::create_dir_all(dir.join("nested")).unwrap();
+        let source = dir.join("source.3mf");
+        fs::write(&source, b"synthetic 3MF path fixture").unwrap();
+        let alias = dir.join("nested").join("..").join("source.3mf");
+        // Both spellings point to one original file, not two queued conversions.
+        let files = collect_source_files(vec![alias, source.clone()]).unwrap();
+        assert_eq!(files, vec![source]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn generated_outputs_are_excluded_only_for_folder_import() {
         let dir = fixture("generated");
         let source = dir.join("source.3mf");
@@ -260,6 +300,40 @@ mod tests {
         let error = collect_source_files(vec![wrong.clone()]).unwrap_err();
         assert!(error.contains("only .3mf"));
         assert!(collect_source_files(vec![wrong; 201]).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn source_size_gate_matches_wails_file_info() {
+        let dir = fixture("size-gate");
+        let empty = dir.join("empty.3mf");
+        let largest = dir.join("largest.3mf");
+        let oversized = dir.join("oversized.3mf");
+        fs::write(&empty, b"").unwrap();
+        // Sparse size-boundary fixtures avoid writing hundreds of MiB.
+        fs::File::create(&largest)
+            .unwrap()
+            .set_len(MAX_SOURCE_BYTES)
+            .unwrap();
+        fs::File::create(&oversized)
+            .unwrap()
+            .set_len(MAX_SOURCE_BYTES + 1)
+            .unwrap();
+
+        assert!(collect_source_files(vec![empty.clone()])
+            .unwrap_err()
+            .contains("up to 250 MB"));
+        assert!(collect_source_files(vec![oversized.clone()])
+            .unwrap_err()
+            .contains("up to 250 MB"));
+        assert_eq!(
+            collect_source_files(vec![largest.clone()]).unwrap(),
+            vec![largest.clone()]
+        );
+        // The same size check applies recursively during folder import.
+        assert!(collect_source_files(vec![dir.clone()])
+            .unwrap_err()
+            .contains("up to 250 MB"));
         fs::remove_dir_all(dir).unwrap();
     }
 

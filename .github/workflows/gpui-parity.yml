@@ -2,6 +2,19 @@ name: GPUI Rust 1:1 compatibility (QA only)
 
 on:
   workflow_dispatch:
+  # Validate Rust/GPUI changes before they reach the alpha branch, not only
+  # after a merge. Limit to the same sources already covered by push QA.
+  pull_request:
+    branches:
+      - feat/rust-gpui-agent-alpha-20261115
+    paths:
+      - 'rust/slicebridge-alpha/**'
+      - 'rust/3mf-probe/**'
+      - 'tests/nozzle-parity/**'
+      - 'tests/nozzle-parity-check.cjs'
+      - 'native/frontend/dist/brand-icon.png'
+      - 'native/frontend/dist/slicebridge-banner.png'
+      - '.github/workflows/gpui-parity.yml'
   push:
     branches:
       - feat/rust-gpui-agent-alpha-20261115

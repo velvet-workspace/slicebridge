@@ -253,10 +253,13 @@ fn unwrap_url(mut encoded: String) -> Result<String, String> {
         if !encoded.to_ascii_lowercase().starts_with("https%3a%2f%2f") {
             break;
         }
-        encoded = percent_encoding::percent_decode_str(&encoded)
+        // QueryUnescape treats a literal '+' as a space, but an encoded
+        // %2B must decode to a literal '+'. Normalize before percent-decoding.
+        let query_encoded = encoded.replace('+', " ");
+        encoded = percent_encoding::percent_decode_str(&query_encoded)
             .decode_utf8()
             .map_err(|_| "invalid encoded link")?
-            .replace('+', " ");
+            .into_owned();
     }
     Ok(encoded)
 }
@@ -415,6 +418,35 @@ mod tests {
         let signed = parse_link(cases[0].0).unwrap();
         assert!(signed.remote_url.ends_with("sig=SECRET"));
         assert!(!signed.source.origin_url.unwrap().contains("SECRET"));
+    }
+
+    #[test]
+    fn encoded_signed_url_plus_preserves_query_unescape_parity() {
+        // Native Go's url.QueryUnescape converts an encoded %2B to a
+        // literal '+', not a space. Signed URLs can depend on that byte.
+        let signed = parse_link(
+            "bambustudioopen://https%3A%2F%2Fmakerworld.com%2Fapi%2Fdownload%3Fsig%3Dabc%2Bdef",
+        )
+        .unwrap();
+        assert_eq!(
+            signed.remote_url,
+            "https://makerworld.com/api/download?sig=abc+def"
+        );
+        assert_eq!(signed.source.kind, "makerworld");
+        assert_eq!(
+            signed.source.origin_url.as_deref(),
+            Some("https://makerworld.com/api/download")
+        );
+        // Conversely, an unescaped '+' in the URL-encoded envelope is
+        // treated as a space by the existing Go parser.
+        let literal_plus = parse_link(
+            "bambustudioopen://https%3A%2F%2Fmakerworld.com%2Fapi%2Fdownload%3Fsig%3Dabc+def",
+        )
+        .unwrap();
+        assert_eq!(
+            literal_plus.remote_url,
+            "https://makerworld.com/api/download?sig=abc%20def"
+        );
     }
 
     #[test]
