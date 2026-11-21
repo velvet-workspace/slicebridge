@@ -200,6 +200,57 @@ mod source_add_error_feedback_tests {
     }
 }
 
+// Match stable app.js batch-start preflight: missing sources and missing
+// selected printers are different, localized actions for the user.
+fn batch_preflight_feedback(locale: Locale, sources: usize, targets: usize) -> Option<String> {
+    if sources == 0 {
+        Some(locale.text("noSource"))
+    } else if targets == 0 {
+        Some(locale.text("noTargets"))
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod batch_preflight_feedback_tests {
+    use super::{batch_preflight_feedback, Locale};
+
+    #[test]
+    fn active_batch_start_uses_source_locked_he_en_missing_target_feedback() {
+        for (locale, no_source, no_target) in [
+            (
+                Locale::He,
+                "הוסף לפחות קובץ אחד.",
+                "בחר מדפסת יעד אחת לפחות.",
+            ),
+            (
+                Locale::En,
+                "Add at least one source project.",
+                "Select one or more printers.",
+            ),
+        ] {
+            assert_eq!(
+                batch_preflight_feedback(locale, 0, 0).as_deref(),
+                Some(no_source)
+            );
+            assert_eq!(
+                batch_preflight_feedback(locale, 0, 2).as_deref(),
+                Some(no_source)
+            );
+            assert_eq!(
+                batch_preflight_feedback(locale, 1, 0).as_deref(),
+                Some(no_target)
+            );
+            assert_eq!(
+                batch_preflight_feedback(locale, 2, 0).as_deref(),
+                Some(no_target)
+            );
+            assert!(batch_preflight_feedback(locale, 1, 1).is_none());
+        }
+    }
+}
+
 // Same format as Go native/app.go bytesLabel: size < 1KiB is B, then
 // one decimal in KB or MB. The stable app captures this on input selection.
 fn source_bytes_label(size: u64) -> String {
@@ -1740,8 +1791,8 @@ impl SliceBridgeWindow {
         .filter(|(id, _)| self.selected_batch_targets.contains(*id))
         .map(|(id, _)| id.to_owned())
         .collect::<Vec<_>>();
-        if paths.is_empty() || targets.is_empty() {
-            self.last_message = self.locale.text("noSource");
+        if let Some(feedback) = batch_preflight_feedback(self.locale, paths.len(), targets.len()) {
+            self.last_message = feedback;
             cx.notify();
             return;
         }
