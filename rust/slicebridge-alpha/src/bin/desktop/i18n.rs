@@ -46,6 +46,14 @@ impl Locale {
                 return locale;
             }
         }
+        // Wails uses navigator.language; Finder-launched macOS apps need the
+        // first AppleLanguages preference, not a shell-specific LANG fallback.
+        #[cfg(target_os = "macos")]
+        if let Some(code) = super::desktop_macos_language::preferred_language() {
+            if let Some(locale) = Self::from_code(code) {
+                return locale;
+            }
+        }
         for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
             if let Ok(language) = std::env::var(key) {
                 let normalized = language.to_ascii_lowercase();

@@ -197,6 +197,10 @@ fn output_folder(status: &Value) -> Option<PathBuf> {
 mod source_queue;
 use source_queue::collect_source_files;
 
+#[cfg(target_os = "macos")]
+#[path = "desktop/macos_language.rs"]
+mod desktop_macos_language;
+
 #[path = "desktop/i18n.rs"]
 mod desktop_i18n;
 use desktop_i18n::Locale;
