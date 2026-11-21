@@ -54,6 +54,39 @@ fn batch_picker_title(locale: Locale, folder: bool) -> &'static str {
     }
 }
 
+// The stable Go/Wails input picker and drag/drop error display has a localized
+// addError title followed by the original diagnostic detail. Keep the detail
+// intact (especially paths and filesystem errors) while restoring that title.
+fn source_add_error_feedback(locale: Locale, detail: &str) -> String {
+    format!("{}: {detail}", locale.text("addError"))
+}
+
+#[cfg(test)]
+mod source_add_error_feedback_tests {
+    use super::{source_add_error_feedback, Locale};
+
+    #[test]
+    fn native_file_picker_and_drop_errors_have_source_locked_localized_titles() {
+        let detail = "only .3mf files may be added: /tmp/not-a-model.txt";
+        assert_eq!(
+            source_add_error_feedback(Locale::He, detail),
+            format!("לא ניתן להוסיף קבצים: {detail}")
+        );
+        assert_eq!(
+            source_add_error_feedback(Locale::En, detail),
+            format!("Could not add projects: {detail}")
+        );
+        // Exercise the actual OS filesystem rejection used by the live picker/drop
+        // path, not only a synthetic string: the current test executable is not 3MF.
+        let executable = std::env::current_exe().expect("current test executable");
+        let observed = super::source_queue::collect_source_files(vec![executable])
+            .expect_err("non-3MF regular executable must be rejected");
+        assert!(observed.starts_with("only .3mf files may be added: "));
+        assert!(source_add_error_feedback(Locale::He, &observed)
+            .starts_with("לא ניתן להוסיף קבצים: only .3mf files may be added: "));
+    }
+}
+
 // Same format as Go native/app.go bytesLabel: size < 1KiB is B, then
 // one decimal in KB or MB. The stable app captures this on input selection.
 fn source_bytes_label(size: u64) -> String {
@@ -1481,17 +1514,17 @@ impl SliceBridgeWindow {
                     // Go's file staging resets memoryStatus; no "Queued files" echo is shown.
                     self.last_message = IDLE_MESSAGE.into();
                 } else {
-                    self.last_message = reply["error"]
-                        .as_str()
-                        .unwrap_or("Could not stage sources")
-                        .to_owned();
+                    self.last_message = source_add_error_feedback(
+                        self.locale,
+                        reply["error"].as_str().unwrap_or("Could not stage sources"),
+                    );
                 }
             }
             Ok(_) => {
                 self.last_message = self.locale.text("queueEmpty");
             }
             Err(error) => {
-                self.last_message = error;
+                self.last_message = source_add_error_feedback(self.locale, &error);
             }
         }
         self.sync_makerworld_origins(cx);
