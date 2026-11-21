@@ -219,6 +219,12 @@ fn ensure_owned_dir(base: &Path, kind: &str) -> Result<PathBuf, String> {
     if !base.is_absolute() {
         return Err("extension output base must be absolute".into());
     }
+    // A symlinked configuration root would redirect alpha resources outside
+    // the selected user configuration directory before child checks run.
+    let root = fs::symlink_metadata(base).map_err(|_| "extension config root is unavailable")?;
+    if root.file_type().is_symlink() || !root.is_dir() {
+        return Err("extension config root cannot be a symlink or file".into());
+    }
     let mut dir = base.to_path_buf();
     for component in ["SliceBridge", "GPUI-Alpha", "BrowserExtensions", kind] {
         dir.push(component);
@@ -512,6 +518,27 @@ mod tests {
         assert!(prepare_in(&base, "chromium").is_err());
         assert_eq!(fs::read(&candidate).unwrap(), b"owner modified");
         fs::remove_dir_all(base).unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_config_root_is_refused_before_creating_any_alpha_files() {
+        use std::os::unix::fs::symlink;
+        let sandbox =
+            std::env::temp_dir().join(format!("sb-extension-root-symlink-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&sandbox);
+        fs::create_dir_all(&sandbox).unwrap();
+        let destination = sandbox.join("outside");
+        let alias = sandbox.join("config-alias");
+        fs::create_dir_all(&destination).unwrap();
+        symlink(&destination, &alias).unwrap();
+        let result = prepare_in(&alias, "chromium");
+        let outside_is_empty = fs::read_dir(&destination).unwrap().next().is_none();
+        fs::remove_dir_all(&sandbox).unwrap();
+        assert!(result.is_err(), "a linked config root must not be admitted");
+        assert!(
+            outside_is_empty,
+            "must not write through the config-root symlink"
+        );
     }
     #[cfg(unix)]
     #[test]
