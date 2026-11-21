@@ -44,6 +44,16 @@ fn selected_queue_file_needs_refresh(file: &Path, selections: &[PathBuf]) -> boo
     selections.iter().any(|selected| file.starts_with(selected))
 }
 
+// Exact native/batch.go SelectFiles/SelectFolder titles, including Hebrew.
+fn batch_picker_title(locale: Locale, folder: bool) -> &'static str {
+    match (locale, folder) {
+        (Locale::He, false) => "הוספת פרויקטים של Bambu 3MF",
+        (Locale::En, false) => "Add Bambu 3MF projects",
+        (Locale::He, true) => "הוספת כל קובצי 3MF מהתיקייה",
+        (Locale::En, true) => "Add all 3MF projects in folder",
+    }
+}
+
 // Same format as Go native/app.go bytesLabel: size < 1KiB is B, then
 // one decimal in KB or MB. The stable app captures this on input selection.
 fn source_bytes_label(size: u64) -> String {
@@ -1403,7 +1413,7 @@ impl SliceBridgeWindow {
             files: true,
             directories: false,
             multiple: true,
-            prompt: Some("Add 3MF source files".into()),
+            prompt: Some(batch_picker_title(self.locale, false).into()),
         });
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = picker.await {
@@ -1420,7 +1430,7 @@ impl SliceBridgeWindow {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("Add folder containing 3MF projects".into()),
+            prompt: Some(batch_picker_title(self.locale, true).into()),
         });
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = picker.await {
@@ -3127,5 +3137,30 @@ mod batch_result_tests {
             Some("Target Nozzle 0.4 mm · 2.0 MB")
         );
         assert_eq!(completed_target_detail(&Value::Null, "Target Nozzle"), None);
+    }
+}
+
+#[cfg(test)]
+mod batch_picker_title_tests {
+    use super::{batch_picker_title, Locale};
+
+    #[test]
+    fn native_file_and_folder_dialog_titles_match_stable_go_in_both_languages() {
+        assert_eq!(
+            batch_picker_title(Locale::He, false),
+            "הוספת פרויקטים של Bambu 3MF"
+        );
+        assert_eq!(
+            batch_picker_title(Locale::En, false),
+            "Add Bambu 3MF projects"
+        );
+        assert_eq!(
+            batch_picker_title(Locale::He, true),
+            "הוספת כל קובצי 3MF מהתיקייה"
+        );
+        assert_eq!(
+            batch_picker_title(Locale::En, true),
+            "Add all 3MF projects in folder"
+        );
     }
 }
