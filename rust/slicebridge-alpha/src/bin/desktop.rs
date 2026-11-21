@@ -54,6 +54,55 @@ fn batch_picker_title(locale: Locale, folder: bool) -> &'static str {
     }
 }
 
+// Preserve raw registry diagnostics while localizing the visible failure prefix.
+// This is used by the active SliceBridgeWindow::run UI command path.
+fn command_result_feedback(locale: Locale, name: &str, result: &Value) -> String {
+    if result["ok"] == true {
+        format!("{name}: {}", result["data"])
+    } else {
+        format!(
+            "{}: {}",
+            locale.text("commandError"),
+            result["error"].as_str().unwrap_or("unknown")
+        )
+    }
+}
+
+#[cfg(test)]
+mod command_result_feedback_tests {
+    use super::{command_result_feedback, desktop_layout, Locale, Registry};
+    use serde_json::json;
+
+    #[test]
+    fn active_registry_command_failure_uses_hebrew_or_english_title_without_losing_detail() {
+        let reply = Registry::new().execute("batch.remove", &json!({}));
+        assert_ne!(reply["ok"], true);
+        let detail = reply["error"]
+            .as_str()
+            .expect("registry error must include detail");
+        let he = command_result_feedback(Locale::He, "batch.remove", &reply);
+        let en = command_result_feedback(Locale::En, "batch.remove", &reply);
+        assert_eq!(he, format!("שגיאה: {detail}"));
+        assert_eq!(en, format!("Error: {detail}"));
+        assert_eq!(
+            desktop_layout::activity_detail_text(Locale::He, &he, 0, 0),
+            he
+        );
+        assert_eq!(
+            desktop_layout::activity_detail_text(Locale::En, &en, 0, 0),
+            en
+        );
+        assert_eq!(
+            command_result_feedback(
+                Locale::He,
+                "batch.clear",
+                &json!({"ok": true, "data": "done"})
+            ),
+            "batch.clear: \"done\""
+        );
+    }
+}
+
 // The stable Go/Wails input picker and drag/drop error display has a localized
 // addError title followed by the original diagnostic detail. Keep the detail
 // intact (especially paths and filesystem errors) while restoring that title.
@@ -1025,10 +1074,8 @@ impl SliceBridgeWindow {
         }
         self.last_message = if clears_activity_message(name, &result) {
             IDLE_MESSAGE.into()
-        } else if result["ok"] == true {
-            format!("{name}: {}", result["data"])
         } else {
-            format!("Error: {}", result["error"].as_str().unwrap_or("unknown"))
+            command_result_feedback(self.locale, name, &result)
         };
         self.sync_makerworld_origins(cx);
         cx.notify();
