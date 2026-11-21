@@ -106,6 +106,22 @@ mod tests {
             "עד 200 קובצי 3MF, כולל תיקיות משנה."
         );
         assert_eq!(Locale::En.text("resultsTitle"), "Conversion results");
+        assert_eq!(
+            Locale::He.text("outputFolderMissing"),
+            "תיקיית התוצרים אינה קיימת עוד"
+        );
+        assert_eq!(
+            Locale::En.text("outputFolderMissing"),
+            "Output folder no longer exists"
+        );
+        assert_eq!(
+            Locale::He.text("outputFolderOpenError"),
+            "לא ניתן לפתוח את תיקיית התוצרים"
+        );
+        assert_eq!(
+            Locale::En.text("outputFolderOpenError"),
+            "Could not open output folder"
+        );
     }
 
     #[test]

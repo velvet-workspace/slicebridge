@@ -1596,7 +1596,7 @@ impl SliceBridgeWindow {
             return;
         };
         if !folder.is_dir() {
-            self.last_message = "Output folder no longer exists".into();
+            self.last_message = self.locale.text("outputFolderMissing");
             cx.notify();
             return;
         }
@@ -1612,7 +1612,8 @@ impl SliceBridgeWindow {
                 self.last_message = folder.to_string_lossy().into_owned();
             }
             Err(error) => {
-                self.last_message = format!("Could not open output folder: {error}");
+                self.last_message =
+                    format!("{}: {error}", self.locale.text("outputFolderOpenError"));
             }
         }
         cx.notify();
