@@ -320,6 +320,85 @@ fn apply_origin_reply(
     eligible.len()
 }
 
+// Windows Explorer may remain resident; never wait on the shell process.
+// Unix file-manager opener commands normally terminate after dispatch and
+// expose a real nonzero exit status that spawn() alone cannot observe.
+fn observe_output_folder_opener(command: &mut Command) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        command
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        match command.status() {
+            Ok(status) if status.success() => Ok(()),
+            Ok(status) => Err(status.to_string()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+}
+
+// The OS opener can spawn successfully yet exit with failure. Surface that
+// failure in the existing localized result feedback, not as a false success.
+fn output_folder_opener_feedback(
+    locale: Locale,
+    folder: &Path,
+    outcome: Result<(), String>,
+) -> String {
+    match outcome {
+        Ok(()) => folder.to_string_lossy().into_owned(),
+        Err(detail) => format!("{}: {detail}", locale.text("outputFolderOpenError")),
+    }
+}
+
+#[cfg(test)]
+mod output_folder_opener_feedback_tests {
+    use super::{observe_output_folder_opener, output_folder_opener_feedback, Locale};
+    use std::{path::Path, process::Command};
+
+    #[test]
+    fn missing_os_opener_is_not_reported_as_launched() {
+        let mut command = Command::new("velvetos-n05-nonexistent-os-opener-20261122");
+        assert!(observe_output_folder_opener(&mut command).is_err());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn exiting_nonzero_after_successful_spawn_is_a_visible_failure() {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg("exit 7");
+        let observed = observe_output_folder_opener(&mut command)
+            .expect_err("a successfully spawned opener that exits 7 must not be success");
+        assert!(observed.contains('7'));
+        let feedback =
+            output_folder_opener_feedback(Locale::He, Path::new("converted"), Err(observed));
+        assert!(feedback.starts_with("לא ניתן לפתוח את תיקיית התוצרים: "));
+    }
+
+    #[test]
+    fn real_output_folder_action_distinguishes_success_from_opener_exit_or_spawn_failure() {
+        let folder = Path::new("converted");
+        for (locale, label) in [
+            (Locale::He, "לא ניתן לפתוח את תיקיית התוצרים"),
+            (Locale::En, "Could not open output folder"),
+        ] {
+            assert_eq!(
+                output_folder_opener_feedback(locale, folder, Ok(())),
+                "converted"
+            );
+            for detail in ["exit status: 7", "OS error: permission denied"] {
+                assert_eq!(
+                    output_folder_opener_feedback(locale, folder, Err(detail.to_owned())),
+                    format!("{label}: {detail}")
+                );
+            }
+        }
+    }
+}
+
 fn output_folder(status: &Value) -> Option<PathBuf> {
     let batch_output = status["batch"]["items"].as_array().and_then(|items| {
         items.iter().rev().find_map(|entry| {
@@ -1767,16 +1846,26 @@ impl SliceBridgeWindow {
         } else {
             "xdg-open"
         };
-        match Command::new(executable).arg(&folder).spawn() {
-            Ok(_) => {
-                self.last_message = folder.to_string_lossy().into_owned();
-            }
-            Err(error) => {
-                self.last_message =
-                    format!("{}: {error}", self.locale.text("outputFolderOpenError"));
-            }
-        }
-        cx.notify();
+        // Unlike spawn(), status() observes a failed OS opener after launch.
+        // Never block GPUI's UI thread waiting for Finder, Explorer or xdg-open.
+        let folder_to_open = folder.clone();
+        cx.spawn(async move |this, cx| {
+            let outcome = cx
+                .background_executor()
+                .spawn(async move {
+                    observe_output_folder_opener(Command::new(executable).arg(&folder_to_open))
+                })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                // If conversion results changed while opening, ignore stale UI feedback.
+                if output_folder(&view.commands.snapshot()).as_ref() != Some(&folder) {
+                    return;
+                }
+                view.last_message = output_folder_opener_feedback(view.locale, &folder, outcome);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn handle_dropped_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
