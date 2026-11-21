@@ -508,6 +508,52 @@ fn original_workspace_shortcut(
     }
 }
 
+// A slow OS browser launcher may finish after the About modal closes or another
+// link was clicked. Only the latest open-session request may change its feedback.
+#[derive(Default)]
+struct AboutLinkGate {
+    generation: u64,
+}
+
+impl AboutLinkGate {
+    fn invalidate(&mut self) -> u64 {
+        self.generation = self.generation.wrapping_add(1);
+        self.generation
+    }
+
+    fn accepts(&self, about_open: bool, request: u64) -> bool {
+        about_open && request == self.generation
+    }
+}
+
+#[cfg(test)]
+mod about_link_gate_tests {
+    use super::AboutLinkGate;
+
+    #[test]
+    fn late_reply_from_closed_and_reopened_about_cannot_replace_feedback() {
+        let mut gate = AboutLinkGate::default();
+        gate.invalidate(); // About opened.
+        let old = gate.invalidate(); // First link.
+        gate.invalidate(); // About closed.
+        assert!(!gate.accepts(false, old));
+        gate.invalidate(); // About reopened.
+        assert!(!gate.accepts(true, old));
+        let fresh = gate.invalidate();
+        assert!(gate.accepts(true, fresh));
+    }
+
+    #[test]
+    fn delayed_first_link_result_cannot_overwrite_newer_link_result() {
+        let mut gate = AboutLinkGate::default();
+        gate.invalidate();
+        let first = gate.invalidate();
+        let second = gate.invalidate();
+        assert!(!gate.accepts(true, first));
+        assert!(gate.accepts(true, second));
+    }
+}
+
 struct SliceBridgeWindow {
     focus_handle: FocusHandle,
     window_resize_revision: u64,
@@ -554,6 +600,7 @@ struct SliceBridgeWindow {
     about_developer_mode: bool,
     about_developer_error: bool,
     about_link_error: bool,
+    about_link_gate: AboutLinkGate,
     about_document: Option<AboutDocument>,
     update: UpdateCheck,
     // MakerWorld setup modal. Reachable only while the Registry reports developer mode as an explicit On.
@@ -1113,6 +1160,7 @@ impl SliceBridgeWindow {
             about_developer_mode: false,
             about_developer_error: false,
             about_link_error: false,
+            about_link_gate: AboutLinkGate::default(),
             about_document: None,
             update: UpdateCheck::default(),
             integrations_open: false,
@@ -1286,6 +1334,7 @@ impl SliceBridgeWindow {
         self.set_integrations_gate(self.about_developer_mode);
         self.about_developer_error = reply["ok"] != true;
         self.about_link_error = false;
+        self.about_link_gate.invalidate();
         self.about_document = None;
         self.about_open = true;
         cx.notify();
@@ -1294,6 +1343,8 @@ impl SliceBridgeWindow {
     // Launch only on a real click. The launcher's exit status is awaited off the UI thread, so a
     // spawn failure or a non-zero launcher exit shows the link error instead of a false success.
     fn open_about_link(&mut self, kind: &'static str, cx: &mut Context<Self>) {
+        // Invalidate any previous in-flight launch even if this URL is rejected.
+        let request = self.about_link_gate.invalidate();
         let Some(url) = about_page_url(kind) else {
             self.about_link_error = true;
             cx.notify();
@@ -1307,6 +1358,9 @@ impl SliceBridgeWindow {
                 .spawn(async move { command.status().is_ok_and(|status| status.success()) })
                 .await;
             let _ = this.update(cx, |view, cx| {
+                if !view.about_link_gate.accepts(view.about_open, request) {
+                    return;
+                }
                 view.about_link_error = !opened;
                 cx.notify();
             });
@@ -1334,6 +1388,7 @@ impl SliceBridgeWindow {
 
     fn close_about(&mut self, cx: &mut Context<Self>) {
         self.about_open = false;
+        self.about_link_gate.invalidate();
         self.about_link_error = false;
         self.about_document = None;
         self.update.close();
