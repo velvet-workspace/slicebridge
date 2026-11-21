@@ -200,57 +200,6 @@ mod source_add_error_feedback_tests {
     }
 }
 
-// Match stable app.js batch-start preflight: missing sources and missing
-// selected printers are different, localized actions for the user.
-fn batch_preflight_feedback(locale: Locale, sources: usize, targets: usize) -> Option<String> {
-    if sources == 0 {
-        Some(locale.text("noSource"))
-    } else if targets == 0 {
-        Some(locale.text("noTargets"))
-    } else {
-        None
-    }
-}
-
-#[cfg(test)]
-mod batch_preflight_feedback_tests {
-    use super::{batch_preflight_feedback, Locale};
-
-    #[test]
-    fn active_batch_start_uses_source_locked_he_en_missing_target_feedback() {
-        for (locale, no_source, no_target) in [
-            (
-                Locale::He,
-                "הוסף לפחות קובץ אחד.",
-                "בחר מדפסת יעד אחת לפחות.",
-            ),
-            (
-                Locale::En,
-                "Add at least one source project.",
-                "Select one or more printers.",
-            ),
-        ] {
-            assert_eq!(
-                batch_preflight_feedback(locale, 0, 0).as_deref(),
-                Some(no_source)
-            );
-            assert_eq!(
-                batch_preflight_feedback(locale, 0, 2).as_deref(),
-                Some(no_source)
-            );
-            assert_eq!(
-                batch_preflight_feedback(locale, 1, 0).as_deref(),
-                Some(no_target)
-            );
-            assert_eq!(
-                batch_preflight_feedback(locale, 2, 0).as_deref(),
-                Some(no_target)
-            );
-            assert!(batch_preflight_feedback(locale, 1, 1).is_none());
-        }
-    }
-}
-
 // Same format as Go native/app.go bytesLabel: size < 1KiB is B, then
 // one decimal in KB or MB. The stable app captures this on input selection.
 fn source_bytes_label(size: u64) -> String {
@@ -369,6 +318,85 @@ fn apply_origin_reply(
     }
     record_origin_reply(cache, &eligible, reply);
     eligible.len()
+}
+
+// Windows Explorer may remain resident; never wait on the shell process.
+// Unix file-manager opener commands normally terminate after dispatch and
+// expose a real nonzero exit status that spawn() alone cannot observe.
+fn observe_output_folder_opener(command: &mut Command) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        command
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        match command.status() {
+            Ok(status) if status.success() => Ok(()),
+            Ok(status) => Err(status.to_string()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+}
+
+// The OS opener can spawn successfully yet exit with failure. Surface that
+// failure in the existing localized result feedback, not as a false success.
+fn output_folder_opener_feedback(
+    locale: Locale,
+    folder: &Path,
+    outcome: Result<(), String>,
+) -> String {
+    match outcome {
+        Ok(()) => folder.to_string_lossy().into_owned(),
+        Err(detail) => format!("{}: {detail}", locale.text("outputFolderOpenError")),
+    }
+}
+
+#[cfg(test)]
+mod output_folder_opener_feedback_tests {
+    use super::{observe_output_folder_opener, output_folder_opener_feedback, Locale};
+    use std::{path::Path, process::Command};
+
+    #[test]
+    fn missing_os_opener_is_not_reported_as_launched() {
+        let mut command = Command::new("velvetos-n05-nonexistent-os-opener-20261122");
+        assert!(observe_output_folder_opener(&mut command).is_err());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn exiting_nonzero_after_successful_spawn_is_a_visible_failure() {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg("exit 7");
+        let observed = observe_output_folder_opener(&mut command)
+            .expect_err("a successfully spawned opener that exits 7 must not be success");
+        assert!(observed.contains('7'));
+        let feedback =
+            output_folder_opener_feedback(Locale::He, Path::new("converted"), Err(observed));
+        assert!(feedback.starts_with("לא ניתן לפתוח את תיקיית התוצרים: "));
+    }
+
+    #[test]
+    fn real_output_folder_action_distinguishes_success_from_opener_exit_or_spawn_failure() {
+        let folder = Path::new("converted");
+        for (locale, label) in [
+            (Locale::He, "לא ניתן לפתוח את תיקיית התוצרים"),
+            (Locale::En, "Could not open output folder"),
+        ] {
+            assert_eq!(
+                output_folder_opener_feedback(locale, folder, Ok(())),
+                "converted"
+            );
+            for detail in ["exit status: 7", "OS error: permission denied"] {
+                assert_eq!(
+                    output_folder_opener_feedback(locale, folder, Err(detail.to_owned())),
+                    format!("{label}: {detail}")
+                );
+            }
+        }
+    }
 }
 
 fn output_folder(status: &Value) -> Option<PathBuf> {
@@ -1791,8 +1819,8 @@ impl SliceBridgeWindow {
         .filter(|(id, _)| self.selected_batch_targets.contains(*id))
         .map(|(id, _)| id.to_owned())
         .collect::<Vec<_>>();
-        if let Some(feedback) = batch_preflight_feedback(self.locale, paths.len(), targets.len()) {
-            self.last_message = feedback;
+        if paths.is_empty() || targets.is_empty() {
+            self.last_message = self.locale.text("noSource");
             cx.notify();
             return;
         }
@@ -1818,16 +1846,26 @@ impl SliceBridgeWindow {
         } else {
             "xdg-open"
         };
-        match Command::new(executable).arg(&folder).spawn() {
-            Ok(_) => {
-                self.last_message = folder.to_string_lossy().into_owned();
-            }
-            Err(error) => {
-                self.last_message =
-                    format!("{}: {error}", self.locale.text("outputFolderOpenError"));
-            }
-        }
-        cx.notify();
+        // Unlike spawn(), status() observes a failed OS opener after launch.
+        // Never block GPUI's UI thread waiting for Finder, Explorer or xdg-open.
+        let folder_to_open = folder.clone();
+        cx.spawn(async move |this, cx| {
+            let outcome = cx
+                .background_executor()
+                .spawn(async move {
+                    observe_output_folder_opener(Command::new(executable).arg(&folder_to_open))
+                })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                // If conversion results changed while opening, ignore stale UI feedback.
+                if output_folder(&view.commands.snapshot()).as_ref() != Some(&folder) {
+                    return;
+                }
+                view.last_message = output_folder_opener_feedback(view.locale, &folder, outcome);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn handle_dropped_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
