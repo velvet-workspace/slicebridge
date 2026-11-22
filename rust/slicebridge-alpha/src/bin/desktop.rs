@@ -554,6 +554,53 @@ mod about_link_gate_tests {
     }
 }
 
+// A native save dialog resolves asynchronously. Bind its result to the input that
+// opened it, never to whichever 3MF the user (or CLI/MCP) selected meanwhile.
+#[derive(Default)]
+struct DestinationPickerGate {
+    revision: u64,
+}
+
+impl DestinationPickerGate {
+    fn begin(&mut self) -> u64 {
+        self.revision = self.revision.wrapping_add(1);
+        self.revision
+    }
+
+    fn invalidate(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    fn accepts(&self, request: u64, opened_for: &str, current_source: Option<&str>) -> bool {
+        self.revision == request && current_source == Some(opened_for)
+    }
+}
+
+#[cfg(test)]
+mod destination_picker_tests {
+    use super::DestinationPickerGate;
+
+    #[test]
+    fn completion_is_tied_to_source_at_dialog_open_not_new_active_source() {
+        let mut gate = DestinationPickerGate::default();
+        let request = gate.begin();
+        assert!(gate.accepts(request, "/sources/a.3mf", Some("/sources/a.3mf")));
+        assert!(!gate.accepts(request, "/sources/a.3mf", Some("/sources/b.3mf")));
+        assert!(!gate.accepts(request, "/sources/a.3mf", None));
+    }
+
+    #[test]
+    fn later_picker_or_same_path_reselection_invalidates_earlier_dialog() {
+        let mut gate = DestinationPickerGate::default();
+        let first = gate.begin();
+        let newer = gate.begin();
+        assert!(!gate.accepts(first, "/sources/a.3mf", Some("/sources/a.3mf")));
+        assert!(gate.accepts(newer, "/sources/a.3mf", Some("/sources/a.3mf")));
+        gate.invalidate(); // source.select may reselect a replaced file at the same path
+        assert!(!gate.accepts(newer, "/sources/a.3mf", Some("/sources/a.3mf")));
+    }
+}
+
 struct SliceBridgeWindow {
     focus_handle: FocusHandle,
     window_resize_revision: u64,
@@ -561,6 +608,7 @@ struct SliceBridgeWindow {
     last_message: String,
     destination: Option<String>,
     destination_source: Option<String>,
+    destination_picker_gate: DestinationPickerGate,
     // Set by `batch.remove` so a removed source is not shown again while the Registry still reports it.
     suppressed_source: Option<String>,
     // Go source-row folder and size captured when each path enters the queue.
@@ -1129,6 +1177,7 @@ impl SliceBridgeWindow {
             last_message: IDLE_MESSAGE.into(),
             destination: None,
             destination_source: None,
+            destination_picker_gate: DestinationPickerGate::default(),
             suppressed_source: None,
             source_subtitles: BTreeMap::new(),
             makerworld_origins: BTreeMap::new(),
@@ -1266,6 +1315,13 @@ impl SliceBridgeWindow {
                     None,
                 );
             }
+        }
+        // Any successful source change retires pending save dialogs. The
+        // equality check at dialog completion also catches CLI/MCP changes.
+        if result["ok"] == true
+            && (name == "source.select" || self.commands.snapshot()["source"] != source_before)
+        {
+            self.destination_picker_gate.invalidate();
         }
         self.last_message = if clears_activity_message(name, &result) {
             IDLE_MESSAGE.into()
@@ -1934,19 +1990,32 @@ impl SliceBridgeWindow {
 
     fn choose_destination(&mut self, cx: &mut Context<Self>) {
         let current = self.commands.snapshot();
-        let source = current["source"].as_str().unwrap_or("");
-        let directory = Path::new(source)
+        let Some(source_at_open) = current["source"].as_str().filter(|s| !s.is_empty()) else {
+            self.last_message = "Choose a source before selecting a destination.".into();
+            cx.notify();
+            return;
+        };
+        let source_at_open = source_at_open.to_owned();
+        let directory = Path::new(&source_at_open)
             .parent()
             .unwrap_or(Path::new("."))
             .to_owned();
+        let request = self.destination_picker_gate.begin();
         let picker = cx.prompt_for_new_path(&directory, Some("converted.3mf"));
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(path))) = picker.await {
                 let _ = this.update(cx, |view, cx| {
+                    let snapshot = view.commands.snapshot();
+                    if !view.destination_picker_gate.accepts(
+                        request,
+                        &source_at_open,
+                        snapshot["source"].as_str(),
+                    ) {
+                        // Source selection or a newer picker superseded this dialog.
+                        return;
+                    }
                     view.destination = Some(path.to_string_lossy().to_string());
-                    view.destination_source = view.commands.snapshot()["source"]
-                        .as_str()
-                        .map(str::to_owned);
+                    view.destination_source = Some(source_at_open);
                     view.last_message =
                         "Destination selected; original will never be overwritten.".into();
                     cx.notify();
