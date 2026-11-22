@@ -60,6 +60,8 @@ fn orca_discovery_reply(discovery: orca_profiles::OrcaDiscovery) -> Value {
 #[derive(Default)]
 struct Session {
     source: Option<PathBuf>,
+    // Changes even when an external CLI/MCP reselects the same path.
+    source_revision: u64,
     facts: Option<Value>,
     recent_projects: Vec<PathBuf>,
     bundle_path: Option<PathBuf>,
@@ -407,6 +409,7 @@ impl Registry {
         let state = self.state.lock().expect("registry mutex");
         json!({
             "source": state.source.as_ref().map(|p| p.to_string_lossy().to_string()),
+            "source_revision": state.source_revision,
             "facts": state.facts,
             "projects": state.recent_projects,
             "batch_selection": {
@@ -673,6 +676,7 @@ impl Registry {
                     state.recent_projects.insert(0, path.clone());
                     state.recent_projects.truncate(MAX_RECENT_PROJECTS);
                     state.source = Some(path);
+                    state.source_revision = state.source_revision.wrapping_add(1);
                     state.facts = Some(receipt.clone());
                     state.last_result = None;
                     state.output = None;
@@ -972,6 +976,13 @@ impl Registry {
         let mut state = self.state.lock().map_err(|e| e.to_string())?;
         if busy(&state) {
             return Err("conversion is already running".into());
+        }
+        // Optional GUI-only lease: an external source.select to the same path
+        // must not convert using a destination from the previous selection.
+        if let Some(expected) = params.get("expected_source_revision") {
+            if expected.as_u64() != Some(state.source_revision) {
+                return Err("source changed since destination was chosen".into());
+            }
         }
         let source = state.source.clone().ok_or("select a source 3MF first")?;
         let bundle = state
@@ -1325,9 +1336,15 @@ mod tests {
         assert_eq!(read["data"]["source_nozzle_source"], "nozzle_diameter");
         assert_eq!(read["data"]["source_nozzle_assumed"], false);
         assert!(registry.snapshot()["source"].is_null());
+        assert_eq!(registry.snapshot()["source_revision"], 0);
         let selected = registry.execute("source.select", &json!({"path":source}));
         assert_eq!(selected["ok"], true, "{selected}");
         assert_eq!(registry.snapshot()["facts"]["source_nozzle"], "0.6");
+        assert_eq!(registry.snapshot()["source_revision"], 1);
+        // This is a real path-validating Registry operation, not a mock.
+        let again = registry.execute("source.select", &json!({"path":source}));
+        assert_eq!(again["ok"], true, "{again}");
+        assert_eq!(registry.snapshot()["source_revision"], 2);
         let assumed =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/bambu-one-color.3mf");
         let legacy = registry.execute("source.inspect", &json!({"path":assumed}));
@@ -1341,6 +1358,28 @@ mod tests {
         let registry = Registry::new();
         let result = registry.execute("conversion.start", &json!({"output": "out.3mf"}));
         assert_eq!(result["ok"], false);
+        assert_eq!(registry.snapshot()["phase"], "idle");
+    }
+
+    #[test]
+    fn conversion_with_old_gui_revision_refuses_before_worker_launch() {
+        let registry = Registry::new();
+        let worker = std::env::current_exe().expect("test executable path");
+        let output = std::env::temp_dir().join(format!(
+            "slicebridge-source-revision-rejection-{}.3mf",
+            std::process::id()
+        ));
+        assert!(!output.exists(), "test must not touch an existing output");
+        let reply = registry.execute(
+            "conversion.start",
+            &json!({"output":output, "engine":worker, "expected_source_revision":7}),
+        );
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert!(reply["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("source changed since destination"));
+        assert!(!output.exists());
         assert_eq!(registry.snapshot()["phase"], "idle");
     }
 
