@@ -799,10 +799,11 @@ impl UpdateCheck {
         Some(self.request)
     }
 
-    // A reply for an older request still ends the wait, but it is never shown.
+    // Only the current generation's reply ends the logical wait or updates UI state.
     fn finish(&mut self, request: u64, reply: &Value) {
-        self.checking = false;
+        // A previous About session must not unlock or rewrite a newer check.
         if request == self.request {
+            self.checking = false;
             match update_check_outcome(reply) {
                 Ok(data) => self.data = Some(data),
                 Err(error) => self.error = error,
@@ -819,6 +820,9 @@ impl UpdateCheck {
     // Closing About abandons what was shown. A check still running can no longer show its result.
     fn close(&mut self) {
         self.request = self.request.wrapping_add(1);
+        // Closing About ends the *logical* wait immediately. The old read-only
+        // background request may complete later, but its generation is invalid.
+        self.checking = false;
         self.dismiss();
     }
 }
@@ -3110,6 +3114,40 @@ mod update_check_tests {
         check.dismiss();
         assert!(check.checking);
         assert_eq!(check.begin(), None);
+    }
+
+    #[test]
+    fn close_reopen_allows_new_check_and_stale_reply_cannot_unlock_it() {
+        let mut check = UpdateCheck::default();
+        let obsolete = check.begin().expect("initial About check");
+        check.close();
+        assert!(
+            !check.checking,
+            "closed About must not hold the next session"
+        );
+
+        let current = check.begin().expect("reopened About can check immediately");
+        assert_ne!(obsolete, current);
+        check.finish(
+            obsolete,
+            &json!({"ok":true,"data":{"status":"update_available","latestVersion":"9.9.9"}}),
+        );
+        assert!(check.checking, "old reply must not unlock current check");
+        assert_eq!(
+            check.begin(),
+            None,
+            "same-session duplicate check is forbidden"
+        );
+        assert_eq!(check.data, None, "old reply must not appear");
+        assert!(check.error.is_empty());
+
+        check.finish(current, &json!({"ok":true,"data":{"status":"up_to_date"}}));
+        assert!(!check.checking);
+        assert_eq!(check.data, Some(json!({"status":"up_to_date"})));
+        assert!(
+            check.begin().is_some(),
+            "only the current reply releases the wait"
+        );
     }
 
     #[test]
