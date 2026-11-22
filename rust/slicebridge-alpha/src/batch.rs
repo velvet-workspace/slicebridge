@@ -1046,6 +1046,7 @@ impl Registry {
             .max(usize::from(state.source.is_some()));
         state.batch_staged.clear();
         state.source = None;
+        state.source_revision = state.source_revision.wrapping_add(1);
         state.facts = None;
         state.bundle_path = None;
         state.bundle_label = None;
@@ -1086,6 +1087,7 @@ impl Registry {
         }
         if selected {
             state.source = None;
+            state.source_revision = state.source_revision.wrapping_add(1);
             state.facts = None;
             state.bundle_path = None;
             state.bundle_label = None;

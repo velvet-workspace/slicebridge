@@ -571,8 +571,17 @@ impl DestinationPickerGate {
         self.revision = self.revision.wrapping_add(1);
     }
 
-    fn accepts(&self, request: u64, opened_for: &str, current_source: Option<&str>) -> bool {
-        self.revision == request && current_source == Some(opened_for)
+    fn accepts(
+        &self,
+        request: u64,
+        opened_for: &str,
+        current_source: Option<&str>,
+        opened_revision: u64,
+        current_revision: Option<u64>,
+    ) -> bool {
+        self.revision == request
+            && current_source == Some(opened_for)
+            && current_revision == Some(opened_revision)
     }
 }
 
@@ -581,23 +590,57 @@ mod destination_picker_tests {
     use super::DestinationPickerGate;
 
     #[test]
-    fn completion_is_tied_to_source_at_dialog_open_not_new_active_source() {
+    fn completion_requires_same_source_and_picker() {
         let mut gate = DestinationPickerGate::default();
         let request = gate.begin();
-        assert!(gate.accepts(request, "/sources/a.3mf", Some("/sources/a.3mf")));
-        assert!(!gate.accepts(request, "/sources/a.3mf", Some("/sources/b.3mf")));
-        assert!(!gate.accepts(request, "/sources/a.3mf", None));
+        assert!(gate.accepts(
+            request,
+            "/sources/a.3mf",
+            Some("/sources/a.3mf"),
+            5,
+            Some(5)
+        ));
+        assert!(!gate.accepts(
+            request,
+            "/sources/a.3mf",
+            Some("/sources/b.3mf"),
+            5,
+            Some(5)
+        ));
+        assert!(!gate.accepts(request, "/sources/a.3mf", None, 5, Some(5)));
+        assert!(!gate.accepts(
+            request,
+            "/sources/a.3mf",
+            Some("/sources/a.3mf"),
+            5,
+            Some(6)
+        ));
     }
 
     #[test]
-    fn later_picker_or_same_path_reselection_invalidates_earlier_dialog() {
+    fn later_picker_or_local_reselection_invalidates_earlier_dialog() {
         let mut gate = DestinationPickerGate::default();
         let first = gate.begin();
         let newer = gate.begin();
-        assert!(!gate.accepts(first, "/sources/a.3mf", Some("/sources/a.3mf")));
-        assert!(gate.accepts(newer, "/sources/a.3mf", Some("/sources/a.3mf")));
-        gate.invalidate(); // source.select may reselect a replaced file at the same path
-        assert!(!gate.accepts(newer, "/sources/a.3mf", Some("/sources/a.3mf")));
+        assert!(!gate.accepts(first, "/sources/a.3mf", Some("/sources/a.3mf"), 5, Some(5)));
+        assert!(gate.accepts(newer, "/sources/a.3mf", Some("/sources/a.3mf"), 5, Some(5)));
+        gate.invalidate();
+        assert!(!gate.accepts(newer, "/sources/a.3mf", Some("/sources/a.3mf"), 5, Some(5)));
+    }
+
+    #[test]
+    fn external_same_path_reselection_retires_pending_dialog() {
+        let mut gate = DestinationPickerGate::default();
+        let dialog = gate.begin();
+        // An external Registry/CLI/MCP selection does not call the local
+        // picker gate, but still changes the shared Registry revision.
+        assert!(!gate.accepts(
+            dialog,
+            "/sources/a.3mf",
+            Some("/sources/a.3mf"),
+            9,
+            Some(10)
+        ));
     }
 }
 
@@ -608,6 +651,7 @@ struct SliceBridgeWindow {
     last_message: String,
     destination: Option<String>,
     destination_source: Option<String>,
+    destination_source_revision: Option<u64>,
     destination_picker_gate: DestinationPickerGate,
     // Set by `batch.remove` so a removed source is not shown again while the Registry still reports it.
     suppressed_source: Option<String>,
@@ -1177,6 +1221,7 @@ impl SliceBridgeWindow {
             last_message: IDLE_MESSAGE.into(),
             destination: None,
             destination_source: None,
+            destination_source_revision: None,
             destination_picker_gate: DestinationPickerGate::default(),
             suppressed_source: None,
             source_subtitles: BTreeMap::new(),
@@ -1290,6 +1335,7 @@ impl SliceBridgeWindow {
             }
             self.destination = None;
             self.destination_source = None;
+            self.destination_source_revision = None;
             self.suppressed_source = None;
             self.source_nozzle = result["data"]["source_nozzle"].as_str().map(str::to_owned);
             self.ready_oem_targets = desktop_printer_settings_ui::ready_from_preferences(
@@ -1996,6 +2042,9 @@ impl SliceBridgeWindow {
             return;
         };
         let source_at_open = source_at_open.to_owned();
+        let Some(revision_at_open) = current["source_revision"].as_u64() else {
+            return;
+        };
         let directory = Path::new(&source_at_open)
             .parent()
             .unwrap_or(Path::new("."))
@@ -2010,12 +2059,15 @@ impl SliceBridgeWindow {
                         request,
                         &source_at_open,
                         snapshot["source"].as_str(),
+                        revision_at_open,
+                        snapshot["source_revision"].as_u64(),
                     ) {
                         // Source selection or a newer picker superseded this dialog.
                         return;
                     }
                     view.destination = Some(path.to_string_lossy().to_string());
                     view.destination_source = Some(source_at_open);
+                    view.destination_source_revision = Some(revision_at_open);
                     view.last_message =
                         "Destination selected; original will never be overwritten.".into();
                     cx.notify();
@@ -2046,16 +2098,23 @@ impl SliceBridgeWindow {
     }
 
     fn start_conversion(&mut self, cx: &mut Context<Self>) {
-        let source = self.commands.snapshot()["source"]
-            .as_str()
-            .map(str::to_owned);
-        if source.is_none() || self.destination_source != source {
+        let current = self.commands.snapshot();
+        let source = current["source"].as_str().map(str::to_owned);
+        let revision = current["source_revision"].as_u64();
+        if source.is_none()
+            || self.destination_source != source
+            || self.destination_source_revision != revision
+        {
             self.last_message = "Choose a new destination for the selected source.".into();
             cx.notify();
             return;
         }
         if let Some(output) = &self.destination {
-            self.run("conversion.start", json!({"output": output}), cx);
+            self.run(
+                "conversion.start",
+                json!({"output": output, "expected_source_revision": revision}),
+                cx,
+            );
         } else {
             self.last_message = "Choose a destination before converting.".into();
             cx.notify();
