@@ -644,6 +644,65 @@ mod destination_picker_tests {
     }
 }
 
+// CLI/MCP uses the same Registry, but does not call GPUI's local run() handler.
+// A source selection can change the effective nozzle (even at the same path).
+// Refresh the GUI-derived eligible targets only on a new source revision.
+fn source_revision_nozzle_update(
+    previous: &Value,
+    current: &Value,
+) -> Option<(bool, Option<String>)> {
+    let current_revision = current["source_revision"].as_u64()?;
+    let previous_revision = previous["source_revision"].as_u64();
+    if previous_revision == Some(current_revision) {
+        return None;
+    }
+    let nozzle = current["source"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .and_then(|_| current["facts"]["source_nozzle"].as_str())
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    // The initial snapshot hydrates UI state; it must not cancel an already-open picker.
+    Some((previous_revision.is_some(), nozzle))
+}
+
+#[cfg(test)]
+mod source_revision_ui_tests {
+    use super::source_revision_nozzle_update;
+    use serde_json::json;
+
+    #[test]
+    fn external_same_path_reselect_recomputes_nozzle_and_target_eligibility_input() {
+        let old = json!({"source":"a.3mf", "source_revision":4, "facts":{"source_nozzle":"0.4"}});
+        let new = json!({"source":"a.3mf", "source_revision":5, "facts":{"source_nozzle":"0.6"}});
+        assert_eq!(
+            source_revision_nozzle_update(&old, &new),
+            Some((true, Some("0.6".into())))
+        );
+        // Unrelated progress and result snapshots must not reset the current GUI selection.
+        let progress = json!({"source":"a.3mf", "source_revision":4, "phase":"running"});
+        assert_eq!(source_revision_nozzle_update(&old, &progress), None);
+    }
+
+    #[test]
+    fn externally_cleared_source_drops_nozzle_and_initial_hydration_is_non_disruptive() {
+        let old = json!({"source":"a.3mf", "source_revision":5, "facts":{"source_nozzle":"0.6"}});
+        let cleared = json!({"source":null, "source_revision":6, "facts":null});
+        assert_eq!(
+            source_revision_nozzle_update(&old, &cleared),
+            Some((true, None))
+        );
+        assert_eq!(
+            source_revision_nozzle_update(&json!(null), &old),
+            Some((false, Some("0.6".into())))
+        );
+        assert_eq!(
+            source_revision_nozzle_update(&old, &json!({"source":"b.3mf"})),
+            None
+        );
+    }
+}
+
 struct SliceBridgeWindow {
     focus_handle: FocusHandle,
     window_resize_revision: u64,
@@ -1308,6 +1367,31 @@ impl SliceBridgeWindow {
                 let updated = this.update(cx, |view, cx| {
                     let current = view.commands.snapshot();
                     if current != previous {
+                        if let Some((changed, nozzle)) =
+                            source_revision_nozzle_update(&previous, &current)
+                        {
+                            view.source_nozzle = nozzle;
+                            view.ready_oem_targets =
+                                desktop_printer_settings_ui::ready_from_preferences(
+                                    &view.ready_profiles,
+                                    &view.settings_loaded,
+                                    view.source_nozzle.as_deref(),
+                                );
+                            if changed {
+                                // External Registry selection has the same UI invalidation
+                                // semantics as a local source.select, including same-path.
+                                view.destination = None;
+                                view.destination_source = None;
+                                view.destination_source_revision = None;
+                                view.destination_picker_gate.invalidate();
+                                if current["source"]
+                                    .as_str()
+                                    .is_some_and(|value| !value.is_empty())
+                                {
+                                    view.suppressed_source = None;
+                                }
+                            }
+                        }
                         previous = current;
                         // Queue changes from CLI or MCP also reach the badges here, never from render.
                         view.sync_makerworld_origins(cx);
