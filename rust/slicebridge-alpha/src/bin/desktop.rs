@@ -2064,8 +2064,8 @@ impl SliceBridgeWindow {
         .filter(|(id, _)| self.selected_batch_targets.contains(*id))
         .map(|(id, _)| id.to_owned())
         .collect::<Vec<_>>();
-        if paths.is_empty() || targets.is_empty() {
-            self.last_message = self.locale.text("noSource");
+        if let Some(key) = batch_start_refusal_key(paths.len(), targets.len()) {
+            self.last_message = self.locale.text(key);
             cx.notify();
             return;
         }
@@ -2385,6 +2385,55 @@ fn main() {
         })
         .expect("SliceBridge GPUI window failed to open");
     });
+}
+
+// Match the stable Wails runBatch() refusal order: missing source first,
+// then missing selected destination. Do not misreport a populated queue as
+// empty when the user simply deselected every printer.
+fn batch_start_refusal_key(source_count: usize, target_count: usize) -> Option<&'static str> {
+    if source_count == 0 {
+        Some("noSource")
+    } else if target_count == 0 {
+        Some("noTargets")
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod batch_start_refusal_tests {
+    use super::{batch_start_refusal_key, Locale};
+
+    #[test]
+    fn active_batch_start_matches_stable_no_source_and_no_target_messages() {
+        // Stable native/frontend/dist/app.js runBatch() checks sources before targets.
+        for (locale, source_message, target_message) in [
+            (
+                Locale::He,
+                "הוסף לפחות קובץ אחד.",
+                "בחר מדפסת יעד אחת לפחות.",
+            ),
+            (
+                Locale::En,
+                "Add at least one source project.",
+                "Select one or more printers.",
+            ),
+        ] {
+            assert_eq!(
+                locale.text(batch_start_refusal_key(0, 0).unwrap()),
+                source_message
+            );
+            assert_eq!(
+                locale.text(batch_start_refusal_key(0, 2).unwrap()),
+                source_message
+            );
+            assert_eq!(
+                locale.text(batch_start_refusal_key(2, 0).unwrap()),
+                target_message
+            );
+            assert_eq!(batch_start_refusal_key(2, 1), None);
+        }
+    }
 }
 
 #[cfg(test)]
