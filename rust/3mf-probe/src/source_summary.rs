@@ -1,7 +1,7 @@
 //! Read-only source plate/material inspection matching the pinned Go
 //! third_party/bl2std/pkg/converter/inspect.go contract. This is UI metadata,
 //! not conversion planning or OEM authorization.
-use crate::inspect_package;
+use crate::{inspect_package, PackageFacts};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 use serde_json::{json, Value};
@@ -200,8 +200,8 @@ fn fallback_settings(
 
 /// Go-compatible plate count and sorted material/color/usage overview.
 /// Validates source ZIP and editable geometry but never writes to it.
-pub fn inspect_source_summary(path: &Path) -> Result<Value, String> {
-    inspect_package(path)?;
+pub fn inspect_source_details(path: &Path) -> Result<(PackageFacts, Value), String> {
+    let facts = inspect_package(path)?;
     let file = File::open(path).map_err(|e| format!("source open: {e}"))?;
     let mut archive = ZipArchive::new(file).map_err(|e| format!("source ZIP: {e}"))?;
     let mut filaments = BTreeMap::new();
@@ -229,9 +229,17 @@ pub fn inspect_source_summary(path: &Path) -> Result<Value, String> {
             })
         })
         .collect::<Vec<_>>();
-    Ok(json!({
-        "plates": plates,
-        "filaments": filaments,
-        "printer_model_id": printer_model_id,
-    }))
+    Ok((
+        facts,
+        json!({
+            "plates": plates,
+            "filaments": filaments,
+            "printer_model_id": printer_model_id,
+        }),
+    ))
+}
+
+/// Existing read-only caller requiring only Go's source metadata overview.
+pub fn inspect_source_summary(path: &Path) -> Result<Value, String> {
+    inspect_source_details(path).map(|(_, summary)| summary)
 }
