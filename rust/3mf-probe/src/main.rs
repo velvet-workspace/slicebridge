@@ -81,6 +81,8 @@ fn run(args: &[OsString]) -> Result<Value, String> {
                 "facts": {
                     "vertices": facts.vertices,
                     "triangles": facts.triangles,
+                    "objects": facts.objects,
+                    "instances": facts.instances,
                     "slice_caches": facts.slice_caches,
                     "printer_model": facts.printer_model,
                 }

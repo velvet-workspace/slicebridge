@@ -65,6 +65,8 @@ fn real_editable_model_facts_match_go_contract() {
     let facts = inspect_package(file.as_ref()).unwrap();
     assert_eq!(facts.vertices, 3);
     assert_eq!(facts.triangles, 1);
+    assert_eq!(facts.objects, 1);
+    assert_eq!(facts.instances, 0);
     assert_eq!(facts.slice_caches, 2);
     assert_eq!(facts.printer_model, "U1");
     assert_eq!(
@@ -72,6 +74,37 @@ fn real_editable_model_facts_match_go_contract() {
         fs::read(file.as_ref()).unwrap(),
         "read-only inspection must not mutate"
     );
+}
+
+#[test]
+fn object_and_instance_totals_cover_every_model_member_like_go_inspect_file() {
+    let file = make_archive(&[
+        ("[Content_Types].xml", b"<Types/>"),
+        ("3D/3dmodel.model", MODEL),
+        (
+            "3D/components.model",
+            br#"<model><resources><object id="2"/></resources><build><item objectid="1"/><item objectid="2"/></build></model>"#,
+        ),
+    ]);
+    let facts = inspect_package(file).unwrap();
+    assert_eq!((facts.objects, facts.instances), (2, 2));
+    assert_eq!((facts.vertices, facts.triangles), (3, 1));
+}
+
+#[test]
+fn excessive_object_count_uses_the_original_go_source_inspector_limit() {
+    let mut xml = b"<model><resources>".to_vec();
+    for _ in 0..100_001 {
+        xml.extend_from_slice(b"<object/>");
+    }
+    xml.extend_from_slice(b"</resources></model>");
+    let file = make_archive(&[
+        ("[Content_Types].xml", b"<Types/>"),
+        ("3D/3dmodel.model", MODEL),
+        ("3D/too-many.model", xml.as_slice()),
+    ]);
+    let error = inspect_package(file).unwrap_err();
+    assert!(error.contains("unusual model object count"), "{error}");
 }
 
 #[test]
@@ -162,6 +195,8 @@ fn cli_emits_machine_readable_json() {
     let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(reply["ok"], true);
     assert_eq!(reply["facts"]["vertices"], 3);
+    assert_eq!(reply["facts"]["objects"], 1);
+    assert_eq!(reply["facts"]["instances"], 0);
     assert_eq!(reply["facts"]["printer_model"], "U1");
 }
 

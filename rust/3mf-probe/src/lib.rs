@@ -44,6 +44,9 @@ const MAX_SETTINGS_BYTES: u64 = 8 << 20;
 pub struct PackageFacts {
     pub vertices: u64,
     pub triangles: u64,
+    // Stable Go InspectFile counts these from every 3D/*.model XML member.
+    pub objects: u64,
+    pub instances: u64,
     pub slice_caches: u64,
     pub printer_model: String,
 }
@@ -110,6 +113,18 @@ pub fn inspect_package(path: impl AsRef<Path>) -> Result<PackageFacts, String> {
                     {
                         "vertex" => facts.vertices += 1,
                         "triangle" => facts.triangles += 1,
+                        "object" => {
+                            facts.objects += 1;
+                            if facts.objects > 100_000 {
+                                return Err("unusual model object count".into());
+                            }
+                        }
+                        "item" => {
+                            facts.instances += 1;
+                            if facts.instances > 100_000 {
+                                return Err("unusual model object count".into());
+                            }
+                        }
                         _ => {}
                     },
                     Ok(Event::Eof) => break,

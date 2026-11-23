@@ -659,6 +659,8 @@ impl Registry {
                     "path": path.to_string_lossy(),
                     "vertices": facts.vertices,
                     "triangles": facts.triangles,
+                    "objects": facts.objects,
+                    "instances": facts.instances,
                     "slice_caches": facts.slice_caches,
                     "printer_model": facts.printer_model,
                     "source_nozzle": nozzle["source_nozzle"],
@@ -1335,6 +1337,12 @@ mod tests {
         assert_eq!(read["data"]["source_nozzle"], "0.6");
         assert_eq!(read["data"]["source_nozzle_source"], "nozzle_diameter");
         assert_eq!(read["data"]["source_nozzle_assumed"], false);
+        // Go sourceSummary exposes model object and build instance counts.
+        // Registry inspect/select must preserve the Rust inspector's real facts.
+        let source_facts = slicebridge_3mf_probe::inspect_package(&source).unwrap();
+        assert_eq!(read["data"]["objects"], source_facts.objects);
+        assert_eq!(read["data"]["instances"], source_facts.instances);
+        assert!(source_facts.objects > 0);
         assert!(registry.snapshot()["source"].is_null());
         assert_eq!(registry.snapshot()["source_revision"], 0);
         let selected = registry.execute("source.select", &json!({"path":source}));
