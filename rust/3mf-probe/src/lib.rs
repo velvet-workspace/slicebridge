@@ -26,7 +26,7 @@ pub use paint::{remap_paint_hex, rewrite_model_paint_xml};
 pub use projectsettings::compose_project_settings;
 pub use sanitize::{strip_slice_cache, strip_slice_cache_preserving};
 pub use sliceinfo::{rewrite_slice_info_xml, Slot as SliceInfoSlot};
-pub use source_summary::inspect_source_summary;
+pub use source_summary::{inspect_source_details, inspect_source_summary};
 
 use quick_xml::events::Event;
 use quick_xml::Reader;

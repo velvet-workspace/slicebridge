@@ -235,6 +235,35 @@ pub(super) fn source_objects_text(locale: Locale, item: &Value) -> Option<String
     Some(format!("{}: {count}", label(locale, "objects")))
 }
 
+// Stable Go results show unique material types in their first encountered order.
+pub(super) fn source_materials_text(locale: Locale, item: &Value) -> Option<String> {
+    let filaments = item["source_summary"]["filaments"].as_array()?;
+    let mut materials = Vec::new();
+    for filament in filaments {
+        if let Some(material) = filament["type"].as_str() {
+            if !materials.contains(&material) {
+                materials.push(material);
+            }
+        }
+    }
+    Some(if materials.is_empty() {
+        label(locale, "unknown")
+    } else {
+        materials.join(", ")
+    })
+}
+
+// Go uses source.plates || '?' in the result card, not a presumed single plate.
+pub(super) fn source_plates_text(locale: Locale, item: &Value) -> Option<String> {
+    let plates = item["source_summary"]["plates"].as_u64()?;
+    let count = if plates == 0 {
+        "?".to_string()
+    } else {
+        plates.to_string()
+    };
+    Some(format!("{}: {count}", label(locale, "plates")))
+}
+
 // Completed conversions add target nozzle and output size, as the Go details grid does.
 pub(super) fn completed_target_detail(receipt: &Value, nozzle_label: &str) -> Option<String> {
     let mut parts = Vec::new();
@@ -828,8 +857,14 @@ pub(super) fn render_window(
                     MUTED,
                     rtl,
                 ));
+                if let Some(materials) = source_materials_text(locale, item) {
+                    file_report = file_report.child(caption(materials, MUTED, rtl));
+                }
                 if let Some(objects) = source_objects_text(locale, item) {
                     file_report = file_report.child(caption(objects, MUTED, rtl));
+                }
+                if let Some(plates) = source_plates_text(locale, item) {
+                    file_report = file_report.child(caption(plates, MUTED, rtl));
                 }
                 if assumed {
                     file_report =
