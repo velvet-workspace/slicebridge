@@ -3680,7 +3680,7 @@ mod integrations_tests {
 mod batch_result_tests {
     use super::desktop_layout::{
         batch_totals, completed_output_name, completed_target_detail, source_nozzle_facts,
-        target_display_name,
+        source_objects_text, target_display_name,
     };
     use serde_json::{json, Value};
 
@@ -3711,6 +3711,29 @@ mod batch_result_tests {
         assert_eq!(source_nozzle_facts(&multi), Some(("0.2".into(), true)));
         assert_eq!(source_nozzle_facts(&json!({"targets":[]})), None);
         assert_eq!(source_nozzle_facts(&json!({"source_nozzle":""})), None);
+    }
+
+    #[test]
+    fn source_object_result_metric_uses_go_copy_without_inventing_uninspected_counts() {
+        for (locale, expected) in [
+            (super::Locale::He, "אובייקטים: 3"),
+            (super::Locale::En, "Objects: 3"),
+        ] {
+            assert_eq!(
+                source_objects_text(locale, &json!({"source_facts":{"objects":3}})).as_deref(),
+                Some(expected)
+            );
+        }
+        assert_eq!(
+            source_objects_text(super::Locale::En, &json!({"source_facts":{"objects":0}}))
+                .as_deref(),
+            Some("Objects: ?")
+        );
+        assert_eq!(source_objects_text(super::Locale::En, &json!({})), None);
+        assert_eq!(
+            source_objects_text(super::Locale::He, &json!({"source_facts":null})),
+            None
+        );
     }
 
     #[test]
