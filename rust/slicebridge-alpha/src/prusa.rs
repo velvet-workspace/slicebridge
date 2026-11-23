@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use crate::prusa_condition::evaluate_prusa_condition;
 use crate::prusa_ini::{
     parse_prusa_ini, split_prusa_list, split_prusa_values, PrusaIni, PrusaSection,
+    MAX_PRUSA_INI_BYTES,
 };
 
 const MAX_PRUSA_REJECTIONS: usize = 50;
@@ -331,6 +332,47 @@ fn load_problem(machine: impl Into<String>, reason: impl Into<String>) -> PrusaR
     }
 }
 
+// Flat [kind:name] wrapping is allowed for trusted user preset directories.
+// A malformed sectioned file remains rejected, without a readiness shortcut.
+fn parse_prusa_indexed_file(file: &Path, user: bool, data: &[u8]) -> Result<PrusaIni, String> {
+    let result = parse_prusa_ini(data);
+    if result.is_ok() || !user {
+        return result;
+    }
+    let original = result.err().unwrap_or_default();
+    let kind = file
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    if !PRUSA_KINDS.contains(&kind) {
+        return Err(original);
+    }
+    let name = file
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    if name.is_empty() || name.len() > 180 || name.contains(['[', ']', '\r', '\n']) {
+        return Err(original);
+    }
+    let Ok(content) = std::str::from_utf8(data) else {
+        return Err(original);
+    };
+    if content
+        .lines()
+        .any(|line| line.trim_start().starts_with('['))
+    {
+        return Err(original);
+    }
+    let header = format!("[{kind}:{name}]\n");
+    if header.len().saturating_add(data.len()) > MAX_PRUSA_INI_BYTES {
+        return Err(original);
+    }
+    let mut wrapped = header.into_bytes();
+    wrapped.extend_from_slice(data);
+    parse_prusa_ini(&wrapped).map_err(|_| original)
+}
+
 fn load_prusa_files(
     index: &mut PrusaIndex,
     files: &[PathBuf],
@@ -353,7 +395,7 @@ fn load_prusa_files(
             }
         };
         *budget -= data.len();
-        match parse_prusa_ini(&data) {
+        match parse_prusa_indexed_file(file, user, &data) {
             Ok(ini) => index.add_sections(file, user, &ini),
             Err(error) => problems.push(load_problem(
                 file_stem_like_go(&base),
@@ -939,6 +981,31 @@ fn hex_lower(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flat_user_printer_file_resolves_like_go_without_export_ready() {
+        let (root, loc) = qidi_fixture("flat-printer");
+        root.write(
+            "user/printer/QIDI Plus5 0.4 nozzle.ini",
+            "inherits = X-Plus 4 0.4 nozzle\n",
+        );
+        let discovery = discover_prusa_at(&loc);
+        assert!(discovery.rejected.is_empty(), "{:?}", discovery.rejected);
+        assert_eq!(discovery.targets.len(), 1);
+        assert_eq!(discovery.targets[0].name, "QIDI Plus5 0.4 nozzle");
+        assert_eq!(discovery.targets[0].nozzle, "0.4");
+        assert!(!discovery.targets[0].ready);
+        root.write(
+            "user/printer/QIDI Plus5 0.4 nozzle.ini",
+            "inherits = X-Plus 4 0.4 nozzle\nnozzle_diameter = 0.77\n",
+        );
+        assert!(discover_prusa_at(&loc).targets.is_empty());
+        root.write(
+            "user/printer/QIDI Plus5 0.4 nozzle.ini",
+            "inherits = X-Plus 4 0.4 nozzle\n[printer:Injected]\nnozzle_diameter = 0.4\n",
+        );
+        assert!(discover_prusa_at(&loc).targets.is_empty());
+    }
 
     #[test]
     fn installed_reply_matches_go_and_never_claims_unverified_export() {
