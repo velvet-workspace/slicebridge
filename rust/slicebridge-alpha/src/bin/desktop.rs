@@ -3680,7 +3680,8 @@ mod integrations_tests {
 mod batch_result_tests {
     use super::desktop_layout::{
         batch_totals, completed_output_name, completed_target_detail, source_materials_text,
-        source_nozzle_facts, source_objects_text, source_plates_text, target_display_name,
+        source_metric_labels, source_nozzle_facts, source_objects_text, source_plates_text,
+        target_display_name,
     };
     use serde_json::{json, Value};
 
@@ -3771,6 +3772,33 @@ mod batch_result_tests {
         );
         assert_eq!(source_materials_text(super::Locale::En, &json!({})), None);
         assert_eq!(source_plates_text(super::Locale::He, &json!({})), None);
+    }
+
+    #[test]
+    fn source_metrics_one_wrap_row_matches_go_exact_order_and_bilingual_nozzle_copy() {
+        let item = json!({
+            "targets":[{"source_nozzle":"0.6","source_nozzle_assumed":false}],
+            "source_facts":{"objects":4,"instances":5},
+            "source_summary":{"plates":2,"filaments":[
+                {"id":1,"type":"PLA"},{"id":2,"type":"PETG"},{"id":3,"type":"PLA"}
+            ]}
+        });
+        assert_eq!(
+            source_metric_labels(super::Locale::En, &item),
+            vec!["Source: 0.6 mm", "PLA, PETG", "Objects: 4", "Plates: 2"]
+        );
+        assert_eq!(
+            source_metric_labels(super::Locale::He, &item),
+            vec!["מקור: 0.6 mm", "PLA, PETG", "אובייקטים: 4", "משטחים: 2"]
+        );
+        assert!(source_metric_labels(super::Locale::En, &json!({})).is_empty());
+        assert_eq!(
+            source_metric_labels(
+                super::Locale::En,
+                &json!({"source_nozzle":"0.4","source_facts":null,"source_summary":null})
+            ),
+            vec!["Source: 0.4 mm"]
+        );
     }
 
     #[test]

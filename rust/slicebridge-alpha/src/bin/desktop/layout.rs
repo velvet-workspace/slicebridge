@@ -264,6 +264,26 @@ pub(super) fn source_plates_text(locale: Locale, item: &Value) -> Option<String>
     Some(format!("{}: {count}", label(locale, "plates")))
 }
 
+// Stable Go app.js renderResults places source metrics in one wrapping chip row,
+// with "Source: {nozzle} mm" (not the longer conversion-detail label).
+// A source that failed nozzle inspection does not show a fabricated metrics row.
+pub(super) fn source_metric_labels(locale: Locale, item: &Value) -> Vec<String> {
+    let Some((nozzle, _)) = source_nozzle_facts(item) else {
+        return Vec::new();
+    };
+    let mut labels = vec![format!("{}: {nozzle} mm", label(locale, "source"))];
+    if let Some(materials) = source_materials_text(locale, item) {
+        labels.push(materials);
+    }
+    if let Some(objects) = source_objects_text(locale, item) {
+        labels.push(objects);
+    }
+    if let Some(plates) = source_plates_text(locale, item) {
+        labels.push(plates);
+    }
+    labels
+}
+
 // Completed conversions add target nozzle and output size, as the Go details grid does.
 pub(super) fn completed_target_detail(receipt: &Value, nozzle_label: &str) -> Option<String> {
     let mut parts = Vec::new();
@@ -799,7 +819,6 @@ pub(super) fn render_window(
                     .child(format!("× {failed}")),
             );
     }
-    let source_nozzle_label = format!("{} {}", label(locale, "source"), label(locale, "nozzle"));
     let target_nozzle_label = format!("{} {}", label(locale, "target"), label(locale, "nozzle"));
     let mut results_content = div()
         .id("sb-results-scroll")
@@ -851,21 +870,29 @@ pub(super) fn render_window(
                         .text_color(rgb(MUTED))
                         .child(phase.to_string()),
                 );
-            if let Some((nozzle, assumed)) = source_nozzle_facts(item) {
-                file_report = file_report.child(caption(
-                    format!("{source_nozzle_label} {nozzle} mm"),
-                    MUTED,
-                    rtl,
-                ));
-                if let Some(materials) = source_materials_text(locale, item) {
-                    file_report = file_report.child(caption(materials, MUTED, rtl));
+            if let Some((_, assumed)) = source_nozzle_facts(item) {
+                // Go .source-metrics: one flexible row of rounded, quiet chips
+                // in source / materials / objects / plates order, HE/RTL-aware.
+                let mut metrics = line(rtl)
+                    .flex_wrap()
+                    .gap_1()
+                    .px_3()
+                    .py_2()
+                    .bg(rgb(0xFCFDFC));
+                for value in source_metric_labels(locale, item) {
+                    metrics = metrics.child(align_text(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(0x62776E))
+                            .bg(rgb(0xEEF2F0))
+                            .rounded_md()
+                            .px_2()
+                            .py_1()
+                            .child(value),
+                        rtl,
+                    ));
                 }
-                if let Some(objects) = source_objects_text(locale, item) {
-                    file_report = file_report.child(caption(objects, MUTED, rtl));
-                }
-                if let Some(plates) = source_plates_text(locale, item) {
-                    file_report = file_report.child(caption(plates, MUTED, rtl));
-                }
+                file_report = file_report.child(metrics);
                 if assumed {
                     file_report =
                         file_report.child(caption(label(locale, "sourceAssumed"), INK, rtl));
