@@ -3679,8 +3679,8 @@ mod integrations_tests {
 #[cfg(test)]
 mod batch_result_tests {
     use super::desktop_layout::{
-        batch_totals, completed_output_name, completed_target_detail, source_nozzle_facts,
-        source_objects_text, target_display_name,
+        batch_totals, completed_output_name, completed_target_detail, source_materials_text,
+        source_nozzle_facts, source_objects_text, source_plates_text, target_display_name,
     };
     use serde_json::{json, Value};
 
@@ -3734,6 +3734,43 @@ mod batch_result_tests {
             source_objects_text(super::Locale::He, &json!({"source_facts":null})),
             None
         );
+    }
+
+    #[test]
+    fn source_material_and_plate_metrics_follow_go_bilingual_result_copy() {
+        let source = json!({"source_summary":{
+            "plates":2,
+            "filaments":[
+                {"id":1,"type":"PLA"},{"id":2,"type":"PETG"},{"id":3,"type":"PLA"}
+            ]
+        }});
+        assert_eq!(
+            source_materials_text(super::Locale::En, &source).as_deref(),
+            Some("PLA, PETG")
+        );
+        assert_eq!(
+            source_materials_text(super::Locale::He, &source).as_deref(),
+            Some("PLA, PETG")
+        );
+        assert_eq!(
+            source_plates_text(super::Locale::En, &source).as_deref(),
+            Some("Plates: 2")
+        );
+        assert_eq!(
+            source_plates_text(super::Locale::He, &source).as_deref(),
+            Some("משטחים: 2")
+        );
+        let empty = json!({"source_summary":{"plates":0,"filaments":[]}});
+        assert_eq!(
+            source_plates_text(super::Locale::En, &empty).as_deref(),
+            Some("Plates: ?")
+        );
+        assert_eq!(
+            source_materials_text(super::Locale::En, &empty).as_deref(),
+            Some("Not specified")
+        );
+        assert_eq!(source_materials_text(super::Locale::En, &json!({})), None);
+        assert_eq!(source_plates_text(super::Locale::He, &json!({})), None);
     }
 
     #[test]

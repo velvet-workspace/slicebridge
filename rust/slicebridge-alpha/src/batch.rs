@@ -3,7 +3,7 @@
 use crate::{arg, busy, engine_path, oem, printer_settings, same_path, Registry, Session};
 use serde_json::{json, Value};
 use slicebridge_3mf_probe::{
-    inspect_package, inspect_source_nozzle, validate_native_autonomous_input, PackageFacts,
+    inspect_source_details, inspect_source_nozzle, validate_native_autonomous_input, PackageFacts,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -46,6 +46,7 @@ struct PreparedSource {
     // Go's sourceSummary reports object/instance counts per source.
     // Capture them once before the Registry lock; invalid files remain per-file failures.
     source_facts: Option<PackageFacts>,
+    source_summary: Option<Value>,
     targets: Vec<PreparedTarget>,
 }
 
@@ -517,10 +518,19 @@ where
     }
     let mut sources = paths
         .iter()
-        .map(|source| PreparedSource {
-            source: source.clone(),
-            source_facts: inspect_package(source).ok(),
-            targets: Vec::with_capacity(targets.len()),
+        .map(|source| {
+            // One source inspection supplies geometry + Go metadata summary.
+            // No repeated large-model parse and no Registry lock held during I/O.
+            let (source_facts, source_summary) = match inspect_source_details(source) {
+                Ok((facts, summary)) => (Some(facts), Some(summary)),
+                Err(_) => (None, None),
+            };
+            PreparedSource {
+                source: source.clone(),
+                source_facts,
+                source_summary,
+                targets: Vec::with_capacity(targets.len()),
+            }
         })
         .collect::<Vec<_>>();
     for target in targets {
@@ -778,6 +788,7 @@ fn multi_batch_initial(sources: &[PreparedSource], targets: &[String]) -> Value 
             "source_facts":source.source_facts.as_ref().map(|facts|json!({
                 "objects":facts.objects, "instances":facts.instances
             })),
+            "source_summary":source.source_summary,
             "results":[], "failures":[],
             "targets":source.targets.iter().map(|pair| json!({
                 "target":pair.target,
@@ -1643,7 +1654,13 @@ mod tests {
         let pending = multi_batch_initial(&sources, &targets);
         assert_eq!(pending["items"][0]["source_facts"]["objects"], 1);
         assert_eq!(pending["items"][0]["source_facts"]["instances"], 1);
+        assert_eq!(pending["items"][0]["source_summary"]["plates"], 1);
+        assert_eq!(
+            pending["items"][0]["source_summary"]["filaments"][0]["type"],
+            "PLA"
+        );
         assert!(pending["items"][1]["source_facts"].is_null());
+        assert!(pending["items"][1]["source_summary"].is_null());
         assert_eq!(pending["items"][2]["source_facts"]["objects"], 1);
         assert_eq!(resolutions.len(), 4); // invalid source resolved for neither target
         assert!(sources[1].targets.iter().all(|t| t.ready.source_invalid
@@ -1737,7 +1754,8 @@ mod tests {
         .unwrap()
         .remove(0);
         let sources = vec![PreparedSource {
-            source_facts: inspect_package(&one).ok(),
+            source_facts: slicebridge_3mf_probe::inspect_package(&one).ok(),
+            source_summary: slicebridge_3mf_probe::inspect_source_summary(&one).ok(),
             source: one,
             targets: (0..8)
                 .map(|index| PreparedTarget {
