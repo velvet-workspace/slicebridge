@@ -13,6 +13,7 @@ mod projectsettings;
 mod qidi_origin;
 mod sanitize;
 mod sliceinfo;
+mod source_summary;
 pub use archive_convert::convert_archive_experimental;
 pub use materials::{map_native_material_settings, source_slot_plan, validate_native_bundle};
 pub use modelsettings::rewrite_model_settings;
@@ -25,6 +26,7 @@ pub use paint::{remap_paint_hex, rewrite_model_paint_xml};
 pub use projectsettings::compose_project_settings;
 pub use sanitize::{strip_slice_cache, strip_slice_cache_preserving};
 pub use sliceinfo::{rewrite_slice_info_xml, Slot as SliceInfoSlot};
+pub use source_summary::inspect_source_summary;
 
 use quick_xml::events::Event;
 use quick_xml::Reader;
