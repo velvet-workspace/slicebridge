@@ -2,7 +2,9 @@
 //! It orchestrates the existing verified Registry/3MF worker; no second converter.
 use crate::{arg, busy, engine_path, oem, printer_settings, same_path, Registry, Session};
 use serde_json::{json, Value};
-use slicebridge_3mf_probe::{inspect_source_nozzle, validate_native_autonomous_input};
+use slicebridge_3mf_probe::{
+    inspect_package, inspect_source_nozzle, validate_native_autonomous_input, PackageFacts,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -41,6 +43,9 @@ struct PreparedTarget {
 #[derive(Clone, Debug)]
 struct PreparedSource {
     source: PathBuf,
+    // Go's sourceSummary reports object/instance counts per source.
+    // Capture them once before the Registry lock; invalid files remain per-file failures.
+    source_facts: Option<PackageFacts>,
     targets: Vec<PreparedTarget>,
 }
 
@@ -514,6 +519,7 @@ where
         .iter()
         .map(|source| PreparedSource {
             source: source.clone(),
+            source_facts: inspect_package(source).ok(),
             targets: Vec::with_capacity(targets.len()),
         })
         .collect::<Vec<_>>();
@@ -768,6 +774,10 @@ fn multi_batch_initial(sources: &[PreparedSource], targets: &[String]) -> Value 
         "active_index":null, "error":null,
         "items":sources.iter().map(|source| json!({
             "source":source.source, "phase":"queued", "error":null,
+            // Null when the source is invalid; never invent a successful inspection.
+            "source_facts":source.source_facts.as_ref().map(|facts|json!({
+                "objects":facts.objects, "instances":facts.instances
+            })),
             "results":[], "failures":[],
             "targets":source.targets.iter().map(|pair| json!({
                 "target":pair.target,
@@ -1627,6 +1637,14 @@ mod tests {
         assert_eq!(sources[0].source, valid_a);
         assert_eq!(sources[1].source, corrupted);
         assert_eq!(sources[2].source, valid_b);
+        assert_eq!(sources[0].source_facts.as_ref().unwrap().objects, 1);
+        assert_eq!(sources[1].source_facts, None);
+        assert_eq!(sources[2].source_facts.as_ref().unwrap().objects, 1);
+        let pending = multi_batch_initial(&sources, &targets);
+        assert_eq!(pending["items"][0]["source_facts"]["objects"], 1);
+        assert_eq!(pending["items"][0]["source_facts"]["instances"], 1);
+        assert!(pending["items"][1]["source_facts"].is_null());
+        assert_eq!(pending["items"][2]["source_facts"]["objects"], 1);
         assert_eq!(resolutions.len(), 4); // invalid source resolved for neither target
         assert!(sources[1].targets.iter().all(|t| t.ready.source_invalid
             && t.ready.resolved.is_err()
@@ -1719,6 +1737,7 @@ mod tests {
         .unwrap()
         .remove(0);
         let sources = vec![PreparedSource {
+            source_facts: inspect_package(&one).ok(),
             source: one,
             targets: (0..8)
                 .map(|index| PreparedTarget {

@@ -223,6 +223,18 @@ pub(super) fn source_nozzle_facts(item: &Value) -> Option<(String, bool)> {
     Some((nozzle.to_owned(), origin["source_nozzle_assumed"] == true))
 }
 
+// Source metrics in Go's renderResults show the actual object count, not a
+// guessed count from triangles. Zero objects display as '?' in the original UI.
+pub(super) fn source_objects_text(locale: Locale, item: &Value) -> Option<String> {
+    let objects = item["source_facts"]["objects"].as_u64()?;
+    let count = if objects == 0 {
+        "?".to_string()
+    } else {
+        objects.to_string()
+    };
+    Some(format!("{}: {count}", label(locale, "objects")))
+}
+
 // Completed conversions add target nozzle and output size, as the Go details grid does.
 pub(super) fn completed_target_detail(receipt: &Value, nozzle_label: &str) -> Option<String> {
     let mut parts = Vec::new();
@@ -816,6 +828,9 @@ pub(super) fn render_window(
                     MUTED,
                     rtl,
                 ));
+                if let Some(objects) = source_objects_text(locale, item) {
+                    file_report = file_report.child(caption(objects, MUTED, rtl));
+                }
                 if assumed {
                     file_report =
                         file_report.child(caption(label(locale, "sourceAssumed"), INK, rtl));
