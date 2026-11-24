@@ -651,7 +651,7 @@ impl PrusaIndex {
             else {
                 continue;
             };
-            if height <= 0.0 || height > diameter * 0.8 {
+            if !height.is_finite() || height <= 0.0 || height > diameter * 0.8 {
                 continue;
             }
             let choice = PrusaChoice {
@@ -1005,6 +1005,20 @@ mod tests {
             "inherits = X-Plus 4 0.4 nozzle\n[printer:Injected]\nnozzle_diameter = 0.4\n",
         );
         assert!(discover_prusa_at(&loc).targets.is_empty());
+    }
+
+    #[test]
+    fn nonfinite_saved_print_layer_height_falls_back_to_valid_preset() {
+        let (root, loc) = qidi_fixture("nonfinite-layer");
+        root.write("user/print/Invalid layer.ini", "layer_height = NaN\n");
+        root.write(
+            "user/PrusaSlicer.ini",
+            "[presets]\nprinter = QIDI Plus5 0.4 nozzle\nprint = Invalid layer\n",
+        );
+        let discovery = discover_prusa_at(&loc);
+        assert_eq!(discovery.targets.len(), 1);
+        assert_eq!(discovery.targets[0].print, "0.20mm Standard @X-Plus 4");
+        assert!(!discovery.targets[0].ready);
     }
 
     #[test]

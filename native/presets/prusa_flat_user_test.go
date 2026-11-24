@@ -32,3 +32,13 @@ func TestDiscoverPrusaFlatUserPrinterPreservesSafety(t *testing.T) {
 		t.Fatalf("mixed malformed file became ready: %+v", got.Targets)
 	}
 }
+
+func TestPrusaNonfiniteSavedPrintLayerHeightFallsBackToValidPreset(t *testing.T) {
+	loc, _ := prusaFixture(t)
+	writePrusaFile(t, filepath.Join(loc.user, "print", "Invalid layer.ini"), "layer_height = NaN\n")
+	writePrusaFile(t, filepath.Join(loc.user, "PrusaSlicer.ini"), "[presets]\nprinter = QIDI Plus5 0.4 nozzle\nprint = Invalid layer\n")
+	discovery := discoverPrusa(loc)
+	if len(discovery.Targets) != 1 || discovery.Targets[0].Print != "0.20mm Standard @X-Plus 4" {
+		t.Fatalf("expected valid fallback print, got %+v", discovery)
+	}
+}
