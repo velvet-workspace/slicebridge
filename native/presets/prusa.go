@@ -477,7 +477,7 @@ func (index *prusaIndex) pickPrint(printerName string, printer prusaSection, noz
 			continue
 		}
 		height, err := strconv.ParseFloat(strings.TrimSpace(values["layer_height"]), 64)
-		if err != nil || height <= 0 || height > diameter*0.8 {
+		if err != nil || math.IsNaN(height) || math.IsInf(height, 0) || height <= 0 || height > diameter*0.8 {
 			continue
 		}
 		choice := prusaChoice{
