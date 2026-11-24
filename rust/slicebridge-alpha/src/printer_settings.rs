@@ -309,10 +309,11 @@ fn native_profile_verifier(
     slicer: &str,
     preset: Option<(&str, &str)>,
 ) -> Result<(), String> {
+    let Some((material, name)) = preset else {
+        return crate::oem::verify_preference_source(target, nozzle, slicer);
+    };
     let mut selected = std::collections::BTreeMap::new();
-    if let Some((material, name)) = preset {
-        selected.insert(material.to_owned(), name.to_owned());
-    }
+    selected.insert(material.to_owned(), name.to_owned());
     // Validate through the selected installed vendor/fork, never through a
     // different source chosen by auto. This also covers Creator5, CC2 and
     // genuine OrcaSlicer fallback without any generated profiles.

@@ -832,20 +832,44 @@ pub fn choices_configured(
     let index = load_index(&location.root, item.vendor)?;
     Ok(material_choices(&index, item, kind))
 }
-// Expose the exact trusted slicer IDs and their installed readiness to GPUI.
-// With BRIDGE_SLICER_PROFILE_* set, 'system' is the ONLY valid installed source
-// (there is deliberately no executable path in that override).
+// Preferences match Go Slicers/ResolveSlicer: installed means the trusted
+// vendor directory is present, not that this nozzle can already convert.
+// Conversion and material overrides still require the full resolver.
+fn preference_source_present(item: Target, slicer_id: &str, locations: &[Location]) -> bool {
+    locations.iter().any(|loc| {
+        (slicer_id == "auto" || loc.id == slicer_id)
+            && loc.root.is_absolute()
+            && loc.root.join(item.vendor).is_dir()
+    })
+}
+
+pub(crate) fn verify_preference_source(
+    target: &str,
+    nozzle: &str,
+    slicer_id: &str,
+) -> Result<(), String> {
+    let item = spec(target, nozzle)?;
+    if preference_source_present(item, slicer_id, &locations(item)) {
+        Ok(())
+    } else {
+        Err(format!(
+            "no installed {} slicer matching preference {:?}",
+            item.slicer, slicer_id
+        ))
+    }
+}
+
 pub fn slicer_options(target: &str, nozzle: &str) -> Result<Vec<Value>, String> {
     let item = spec(target, nozzle)?;
+    let locations = locations(item);
     let mut seen = BTreeSet::new();
     let mut rows = Vec::new();
-    for loc in locations(item) {
+    for loc in &locations {
         if seen.insert(loc.id) {
-            let installed = resolve_configured(target, nozzle, loc.id, &BTreeMap::new()).is_ok();
             rows.push(json!({
                 "id": loc.id,
                 "name": loc.name,
-                "installed": installed
+                "installed": preference_source_present(item, loc.id, &locations)
             }));
         }
     }
@@ -1030,6 +1054,38 @@ mod tests {
             }]
         )
         .is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn installed_preference_does_not_imply_conversion_ready() {
+        let root = temp_dir();
+        let item = spec("qidi", "0.6").unwrap();
+        let present = root.join("installed");
+        fs::create_dir_all(present.join(item.vendor)).unwrap();
+        let locations = vec![
+            Location {
+                id: "qidi-studio",
+                name: "QIDIStudio",
+                root: root.join("missing"),
+                executable: PathBuf::new(),
+            },
+            Location {
+                id: "qidi-studio",
+                name: "QIDIStudio",
+                root: present,
+                executable: PathBuf::new(),
+            },
+            Location {
+                id: "orca-slicer",
+                name: "OrcaSlicer",
+                root: root.join("missing-orca"),
+                executable: PathBuf::new(),
+            },
+        ];
+        assert!(preference_source_present(item, "qidi-studio", &locations));
+        assert!(!preference_source_present(item, "orca-slicer", &locations));
+        assert!(resolve_from_locations(item, "qidi-studio", &BTreeMap::new(), locations).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 
