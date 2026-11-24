@@ -253,6 +253,59 @@ pub(super) fn source_materials_text(locale: Locale, item: &Value) -> Option<Stri
     })
 }
 
+// The stable result detail preserves every source filament slot (not just
+// unique materials). Invalid colors retain their text and a neutral swatch.
+pub(super) fn result_filament_colors(item: &Value) -> Vec<(String, Option<u32>)> {
+    let Some(filaments) = item["source_summary"]["filaments"].as_array() else {
+        return Vec::new();
+    };
+    filaments
+        .iter()
+        .filter_map(|filament| {
+            let material = filament["type"].as_str()?;
+            let color = filament["color"].as_str().unwrap_or("");
+            let swatch = color
+                .strip_prefix('#')
+                .filter(|hex| hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+                .and_then(|hex| u32::from_str_radix(hex, 16).ok());
+            Some((format!("{material} · {color}"), swatch))
+        })
+        .collect()
+}
+
+fn result_filament_row(locale: Locale, item: &Value, rtl: bool) -> Option<Div> {
+    let colors = result_filament_colors(item);
+    if colors.is_empty() {
+        return None;
+    }
+    let mut tokens = line(rtl).flex_wrap().gap_2();
+    for (text, swatch) in colors {
+        tokens = tokens.child(
+            line(rtl)
+                .items_center()
+                .gap_1()
+                .child(
+                    div()
+                        .w(px(10.))
+                        .h(px(10.))
+                        .rounded_full()
+                        .border_1()
+                        .border_color(rgb(STROKE))
+                        .bg(rgb(swatch.unwrap_or(WHITE))),
+                )
+                .child(caption(text, INK, rtl)),
+        );
+    }
+    Some(
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(caption(label(locale, "materials"), MUTED, rtl))
+            .child(tokens),
+    )
+}
+
 // Go uses source.plates || '?' in the result card, not a presumed single plate.
 pub(super) fn source_plates_text(locale: Locale, item: &Value) -> Option<String> {
     let plates = item["source_summary"]["plates"].as_u64()?;
@@ -958,6 +1011,9 @@ pub(super) fn render_window(
                         target_report = target_report.child(caption(error, RED, rtl));
                     }
                     if state == "completed" {
+                        if let Some(colors) = result_filament_row(locale, item, rtl) {
+                            target_report = target_report.child(colors);
+                        }
                         if let (Some(source), Some(target_id)) =
                             (item_source.as_ref(), target["target"].as_str())
                         {
@@ -1021,6 +1077,11 @@ pub(super) fn render_window(
                 }
                 for metric in completed_target_metrics(locale, receipt) {
                     file_report = file_report.child(caption(metric, MUTED, rtl));
+                }
+                if phase == "completed" {
+                    if let Some(colors) = result_filament_row(locale, item, rtl) {
+                        file_report = file_report.child(colors);
+                    }
                 }
             }
             if !message.is_empty() {
