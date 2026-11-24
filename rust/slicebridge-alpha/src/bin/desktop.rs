@@ -3825,14 +3825,14 @@ mod batch_result_tests {
     fn completed_metrics_use_native_receipt_and_existing_translations() {
         let receipt = json!({"conversion":{"engine":{"removed":3,"preserved":["layer_height","wall_loops"]}}});
         assert_eq!(
-            completed_target_metrics(Locale::En, &receipt),
+            completed_target_metrics(super::Locale::En, &receipt),
             vec!["Stale sliced files removed: 3", "Preserved settings: 2"]
         );
         assert_eq!(
-            completed_target_metrics(Locale::He, &receipt),
+            completed_target_metrics(super::Locale::He, &receipt),
             vec!["קובצי Slice ישנים שהוסרו: 3", "פרמטרים שנשמרו: 2"]
         );
-        assert!(completed_target_metrics(Locale::En, &Value::Null).is_empty());
+        assert!(completed_target_metrics(super::Locale::En, &Value::Null).is_empty());
     }
 
     #[test]
