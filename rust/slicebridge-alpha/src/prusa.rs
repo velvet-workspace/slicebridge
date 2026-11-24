@@ -17,7 +17,7 @@ use std::fs::{self, File};
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 
-use crate::prusa_condition::evaluate_prusa_condition;
+use crate::prusa_condition::{evaluate_prusa_condition, parse_prusa_number};
 use crate::prusa_ini::{
     parse_prusa_ini, split_prusa_list, split_prusa_values, PrusaIni, PrusaSection,
     MAX_PRUSA_INI_BYTES,
@@ -644,10 +644,8 @@ impl PrusaIndex {
             if !matches!(prusa_compatible(&values, printer_name, printer), Ok(true)) {
                 continue;
             }
-            let Ok(height) = values
-                .get("layer_height")
-                .map_or("", |value| value.trim())
-                .parse::<f64>()
+            let Some(height) =
+                parse_prusa_number(values.get("layer_height").map_or("", |value| value.trim()))
             else {
                 continue;
             };
@@ -764,9 +762,8 @@ fn prusa_nozzle(raw: &str) -> Result<&'static str, String> {
                 .to_owned(),
         );
     };
-    let value: f64 = item
-        .parse()
-        .map_err(|_| "nozzle_diameter is not numeric".to_owned())?;
+    let value =
+        parse_prusa_number(item).ok_or_else(|| "nozzle_diameter is not numeric".to_owned())?;
     for supported in PRUSA_NOZZLES {
         let reference = supported.parse::<f64>().unwrap_or(f64::NAN);
         if (reference - value).abs() < 0.000001 {
@@ -1005,6 +1002,27 @@ mod tests {
             "inherits = X-Plus 4 0.4 nozzle\n[printer:Injected]\nnozzle_diameter = 0.4\n",
         );
         assert!(discover_prusa_at(&loc).targets.is_empty());
+    }
+
+    #[test]
+    fn discovery_numeric_syntax_matches_go_parser() {
+        let (root, loc) = qidi_fixture("go-number-syntax");
+        root.write(
+            "user/printer/QIDI Plus5 0.4 nozzle.ini",
+            "inherits = X-Plus 4 0.4 nozzle\nnozzle_diameter = 0.4_0\n",
+        );
+        root.write("user/print/Hex layer.ini", "layer_height = 0x1p-2\n");
+        root.write(
+            "user/PrusaSlicer.ini",
+            "[presets]\nprinter = QIDI Plus5 0.4 nozzle\nprint = Hex layer\n",
+        );
+        let discovery = discover_prusa_at(&loc);
+        assert_eq!(discovery.targets.len(), 1);
+        assert_eq!(discovery.targets[0].nozzle, "0.4");
+        assert_eq!(discovery.targets[0].print, "Hex layer");
+        assert!(!discovery.targets[0].ready);
+        assert!(prusa_nozzle("0._4").is_err());
+        assert!(prusa_nozzle("NaN").is_err());
     }
 
     #[test]

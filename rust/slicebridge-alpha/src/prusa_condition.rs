@@ -513,7 +513,7 @@ pub(crate) fn prusa_values_equal(a: &str, b: &str) -> bool {
 /// such as `0x1p-2` are numbers, and a sign may precede only `Inf` and `Infinity`,
 /// so a signed `nan` compares as text. Numeric underscores follow Go's
 /// digit-separator placement rules; malformed separators compare as text.
-fn parse_prusa_number(text: &str) -> Option<f64> {
+pub(crate) fn parse_prusa_number(text: &str) -> Option<f64> {
     // Go strconv.ParseFloat also accepts digit separators in valid positions.
     let cleaned = if text.contains('_') {
         Some(strip_go_numeric_underscores(text)?)
