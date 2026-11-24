@@ -3680,8 +3680,8 @@ mod integrations_tests {
 mod batch_result_tests {
     use super::desktop_layout::{
         batch_totals, completed_output_name, completed_target_detail, completed_target_metrics,
-        result_filament_colors, source_materials_text, source_metric_labels, source_nozzle_facts,
-        source_objects_text, source_plates_text, target_display_name,
+        nozzle_was_adapted, result_filament_colors, source_materials_text, source_metric_labels,
+        source_nozzle_facts, source_objects_text, source_plates_text, target_display_name,
     };
     use serde_json::{json, Value};
 
@@ -3851,6 +3851,22 @@ mod batch_result_tests {
             vec!["קובצי Slice ישנים שהוסרו: 3", "פרמטרים שנשמרו: 2"]
         );
         assert!(completed_target_metrics(super::Locale::En, &Value::Null).is_empty());
+    }
+
+    #[test]
+    fn result_nozzle_warning_requires_completed_known_different_diameters() {
+        let mut receipt =
+            json!({"source_nozzle":"0.6","target_nozzle":"0.4","source_nozzle_assumed":false});
+        assert!(nozzle_was_adapted("completed", &receipt));
+        assert!(!nozzle_was_adapted("failed", &receipt));
+        receipt["source_nozzle_assumed"] = json!(true);
+        assert!(!nozzle_was_adapted("completed", &receipt));
+        receipt["source_nozzle_assumed"] = json!(false);
+        receipt["source_nozzle"] = json!("0.40");
+        assert!(!nozzle_was_adapted("completed", &receipt));
+        receipt["source_nozzle"] = json!("unknown");
+        assert!(!nozzle_was_adapted("completed", &receipt));
+        assert!(!nozzle_was_adapted("completed", &Value::Null));
     }
 
     #[test]

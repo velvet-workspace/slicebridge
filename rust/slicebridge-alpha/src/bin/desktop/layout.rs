@@ -353,6 +353,23 @@ pub(super) fn completed_target_detail(receipt: &Value, nozzle_label: &str) -> Op
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
+// The stable UI warns when a known source diameter was changed for the target.
+pub(super) fn nozzle_was_adapted(phase: &str, receipt: &Value) -> bool {
+    if phase != "completed" || receipt["source_nozzle_assumed"] == true {
+        return false;
+    }
+    let diameter = |key: &str| {
+        receipt[key]
+            .as_str()
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|n| n.is_finite() && *n > 0.0)
+    };
+    match (diameter("source_nozzle"), diameter("target_nozzle")) {
+        (Some(source), Some(target)) => (source - target).abs() > 1e-9,
+        _ => false,
+    }
+}
+
 // Use the real Rust conversion receipt, not source estimates or zero defaults.
 pub(super) fn completed_target_metrics(locale: Locale, receipt: &Value) -> Vec<String> {
     let engine = &receipt["conversion"]["engine"];
@@ -1011,6 +1028,13 @@ pub(super) fn render_window(
                         target_report = target_report.child(caption(error, RED, rtl));
                     }
                     if state == "completed" {
+                        if nozzle_was_adapted(state, receipt) {
+                            target_report = target_report.child(caption(
+                                label(locale, "switchedNozzle"),
+                                INK,
+                                rtl,
+                            ));
+                        }
                         if let Some(colors) = result_filament_row(locale, item, rtl) {
                             target_report = target_report.child(colors);
                         }
@@ -1079,6 +1103,10 @@ pub(super) fn render_window(
                     file_report = file_report.child(caption(metric, MUTED, rtl));
                 }
                 if phase == "completed" {
+                    if nozzle_was_adapted(phase, receipt) {
+                        file_report =
+                            file_report.child(caption(label(locale, "switchedNozzle"), INK, rtl));
+                    }
                     if let Some(colors) = result_filament_row(locale, item, rtl) {
                         file_report = file_report.child(colors);
                     }
