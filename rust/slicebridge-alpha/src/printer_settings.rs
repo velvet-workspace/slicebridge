@@ -144,7 +144,9 @@ pub fn parse(raw: &[u8]) -> Result<Value, String> {
             .as_object()
             .ok_or("window settings must be an object")?;
         for (dimension, min, max) in [("width", 720, 2000), ("height", 500, 1400)] {
-            if let Some(input) = window.get(dimension) {
+            // Go unmarshals null into the zero-valued integer field; the
+            // range check then keeps the default for that dimension only.
+            if let Some(input) = window.get(dimension).filter(|value| !value.is_null()) {
                 let number = input
                     .as_i64()
                     .ok_or(format!("window {dimension} must be integer"))?;
@@ -163,8 +165,26 @@ pub fn parse(raw: &[u8]) -> Result<Value, String> {
     Ok(result)
 }
 
+// Match the stable Windows settings reader: transient sharing/lock
+// violations from antivirus or another reader should not prompt recovery.
+fn retry_settings_io<T>(mut operation: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    #[allow(unused_mut)]
+    let mut result = operation();
+    #[cfg(target_os = "windows")]
+    for _ in 0..20 {
+        if ![Some(32), Some(33)]
+            .contains(&result.as_ref().err().and_then(std::io::Error::raw_os_error))
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        result = operation();
+    }
+    result
+}
+
 pub fn read_one(path: &Path) -> Result<Option<Value>, String> {
-    let metadata = match fs::metadata(path) {
+    let metadata = match retry_settings_io(|| fs::metadata(path)) {
         Ok(meta) => meta,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(format!("read settings metadata: {err}")),
@@ -175,7 +195,8 @@ pub fn read_one(path: &Path) -> Result<Option<Value>, String> {
     if metadata.len() > MAX_BYTES {
         return Err("settings file is too large".into());
     }
-    let bytes = fs::read(path).map_err(|err| format!("read settings file: {err}"))?;
+    let bytes =
+        retry_settings_io(|| fs::read(path)).map_err(|err| format!("read settings file: {err}"))?;
     Ok(Some(parse(&bytes)?))
 }
 
@@ -469,19 +490,8 @@ pub fn set_developer_mode(enabled: bool) -> Result<Value, String> {
 static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn replace_atomic(from: &Path, to: &Path) -> Result<(), String> {
-    #[allow(unused_mut)] // Mutable for Windows transient sharing/lock retry.
-    let mut result = fs::rename(from, to);
-    #[cfg(target_os = "windows")]
-    for _ in 0..20 {
-        if ![Some(32), Some(33)]
-            .contains(&result.as_ref().err().and_then(std::io::Error::raw_os_error))
-        {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        result = fs::rename(from, to);
-    }
-    result.map_err(|err| format!("replace settings atomically: {err}"))
+    retry_settings_io(|| fs::rename(from, to))
+        .map_err(|err| format!("replace settings atomically: {err}"))
 }
 
 // Translate the original fixed physical-nozzle and installed-filament preferences
@@ -701,6 +711,42 @@ mod tests {
         );
         assert_eq!(saved["window"], json!({"width":1280,"height":900}));
     }
+    #[test]
+    fn migration_reads_null_window_dimensions_like_go() {
+        let saved = parse(br#"{"version":1,"window":{"width":null,"height":750},"printers":{"qidi":{"nozzle":"0.8"}}}"#).unwrap();
+        assert_eq!(saved["window"], json!({"width":1280,"height":750}));
+        assert_eq!(saved["printers"]["qidi"]["nozzle"], "0.8");
+        assert!(parse(br#"{"version":1,"window":{"width":"1280"}}"#).is_err());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn migration_reads_settings_after_transient_windows_sharing_violation() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "sb-settings-read-lock-{}-{}",
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("settings.json");
+        fs::write(&path, br#"{"version":1,"window":{"width":1100}}"#).unwrap();
+        let locked = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)
+            .unwrap();
+        assert_eq!(fs::read(&path).unwrap_err().raw_os_error(), Some(32));
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(15));
+            drop(locked);
+        });
+        let saved = read_one(&path);
+        release.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(saved.unwrap().unwrap()["window"]["width"], 1100);
+    }
+
     #[test]
     fn json_null_nozzle_and_slicer_read_as_auto_like_go_loader() {
         // Go json.Unmarshal keeps "" for JSON null in string fields, and
