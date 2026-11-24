@@ -300,6 +300,23 @@ pub(super) fn completed_target_detail(receipt: &Value, nozzle_label: &str) -> Op
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
+// Use the real Rust conversion receipt, not source estimates or zero defaults.
+pub(super) fn completed_target_metrics(locale: Locale, receipt: &Value) -> Vec<String> {
+    let engine = &receipt["conversion"]["engine"];
+    let mut metrics = Vec::new();
+    if let Some(removed) = engine["removed"].as_u64() {
+        metrics.push(format!("{}: {removed}", label(locale, "cacheRemoved")));
+    }
+    if let Some(preserved) = engine["preserved"].as_array() {
+        metrics.push(format!(
+            "{}: {}",
+            label(locale, "parameters"),
+            preserved.len()
+        ));
+    }
+    metrics
+}
+
 // Mirrors app.js renderTargets: the notice shows unless a ready printer is selected for conversion.
 pub(super) fn empty_target_notice_visible(
     ready_rows: &[(&str, &str)],
@@ -933,6 +950,9 @@ pub(super) fn render_window(
                     if let Some(detail) = completed_target_detail(receipt, &target_nozzle_label) {
                         target_report = target_report.child(caption(detail, MUTED, rtl));
                     }
+                    for metric in completed_target_metrics(locale, receipt) {
+                        target_report = target_report.child(caption(metric, MUTED, rtl));
+                    }
                     let error = receipt_error(receipt);
                     if !error.is_empty() {
                         target_report = target_report.child(caption(error, RED, rtl));
@@ -998,6 +1018,9 @@ pub(super) fn render_window(
                 }
                 if let Some(detail) = completed_target_detail(receipt, &target_nozzle_label) {
                     file_report = file_report.child(caption(detail, MUTED, rtl));
+                }
+                for metric in completed_target_metrics(locale, receipt) {
+                    file_report = file_report.child(caption(metric, MUTED, rtl));
                 }
             }
             if !message.is_empty() {

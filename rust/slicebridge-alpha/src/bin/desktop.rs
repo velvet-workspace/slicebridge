@@ -3679,9 +3679,9 @@ mod integrations_tests {
 #[cfg(test)]
 mod batch_result_tests {
     use super::desktop_layout::{
-        batch_totals, completed_output_name, completed_target_detail, source_materials_text,
-        source_metric_labels, source_nozzle_facts, source_objects_text, source_plates_text,
-        target_display_name,
+        batch_totals, completed_output_name, completed_target_detail, completed_target_metrics,
+        source_materials_text, source_metric_labels, source_nozzle_facts, source_objects_text,
+        source_plates_text, target_display_name,
     };
     use serde_json::{json, Value};
 
@@ -3819,6 +3819,20 @@ mod batch_result_tests {
             json!({"phase":"completed"}),
         ];
         assert_eq!(batch_totals(&items), (3, 2));
+    }
+
+    #[test]
+    fn completed_metrics_use_native_receipt_and_existing_translations() {
+        let receipt = json!({"conversion":{"engine":{"removed":3,"preserved":["layer_height","wall_loops"]}}});
+        assert_eq!(
+            completed_target_metrics(Locale::En, &receipt),
+            vec!["Stale sliced files removed: 3", "Preserved settings: 2"]
+        );
+        assert_eq!(
+            completed_target_metrics(Locale::He, &receipt),
+            vec!["קובצי Slice ישנים שהוסרו: 3", "פרמטרים שנשמרו: 2"]
+        );
+        assert!(completed_target_metrics(Locale::En, &Value::Null).is_empty());
     }
 
     #[test]
