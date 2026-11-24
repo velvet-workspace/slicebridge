@@ -146,8 +146,22 @@ pub(super) fn collect_source_files(inputs: Vec<PathBuf>) -> Result<Vec<PathBuf>,
     let mut seen = BTreeSet::new();
     let mut files = Vec::new();
     // A selected root directory is traversed, but hidden child directories are not.
-    let mut pending: Vec<(PathBuf, bool)> =
-        inputs.into_iter().rev().map(|path| (path, false)).collect();
+    // Go filepath.Abs cleans the selected path before Lstat or directory walk.
+    // Normalize once at the input boundary so validation and returned paths agree.
+    let mut pending: Vec<(PathBuf, bool)> = inputs
+        .into_iter()
+        .rev()
+        .map(|path| {
+            let absolute = if path.is_absolute() {
+                path
+            } else {
+                std::env::current_dir()
+                    .map_err(|error| error.to_string())?
+                    .join(path)
+            };
+            Ok((lexical_absolute(&absolute), false))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     while let Some((path, from_folder)) = pending.pop() {
         let metadata =
             fs::symlink_metadata(&path).map_err(|error| format!("{}: {error}", path.display()))?;
@@ -193,23 +207,14 @@ pub(super) fn collect_source_files(inputs: Vec<PathBuf>) -> Result<Vec<PathBuf>,
                 path.display()
             ));
         }
-        // Go filepath.Abs keeps symbolic parent spellings (e.g. /var on macOS).
-        // Do not canonicalize returned source paths or silently rewrite user paths.
-        let absolute = if path.is_absolute() {
-            path.clone()
-        } else {
-            std::env::current_dir()
-                .map_err(|error| error.to_string())?
-                .join(&path)
-        };
-        let absolute = lexical_absolute(&absolute);
+        // Input paths are already lexical absolute paths; do not resolve symlinks.
         let key = if cfg!(windows) {
-            absolute.to_string_lossy().to_lowercase()
+            path.to_string_lossy().to_lowercase()
         } else {
-            absolute.to_string_lossy().into_owned()
+            path.to_string_lossy().into_owned()
         };
         if seen.insert(key) {
-            files.push(absolute);
+            files.push(path);
             if files.len() > MAX_SOURCE_FILES {
                 return Err(format!(
                     "You can queue a maximum of {MAX_SOURCE_FILES} 3MF files"
@@ -265,6 +270,19 @@ mod tests {
         let files = collect_source_files(vec![alias, source.clone()]).unwrap();
         assert_eq!(files, vec![source]);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn lexical_parent_is_resolved_before_source_metadata_lookup() {
+        let dir = fixture("normalize-before-stat");
+        let source = dir.join("source.3mf");
+        fs::write(&source, b"fixture").unwrap();
+        let absent = dir.join("absent");
+        let alias = absent.join("..").join("source.3mf");
+        let folder_alias = absent.join("..");
+        let result = collect_source_files(vec![alias, folder_alias, source.clone()]);
+        fs::remove_dir_all(dir).unwrap();
+        assert_eq!(result.unwrap(), vec![source]);
     }
 
     #[test]
