@@ -618,6 +618,9 @@ pub fn options(target: &str, nozzle: &str, slicer: &str, material: &str) -> Resu
     if !nozzles.contains(&current_nozzle) {
         return Err(format!("unsupported physical nozzle {current_nozzle}"));
     }
+    // Match Wails PrinterOptions and ResolveSlicer for explicitly empty inputs.
+    let material = if material.is_empty() { "PLA" } else { material };
+    let slicer = if slicer.is_empty() { "auto" } else { slicer };
     if !["PLA", "PETG", "ABS", "ASA", "TPU"].contains(&material) {
         return Err(format!("invalid material {material}"));
     }
@@ -983,6 +986,14 @@ mod tests {
             Some(("PLA".into(), "Installed PLA".into()))
         );
     }
+    #[test]
+    fn options_explicit_empty_material_and_slicer_match_go_defaults() {
+        let expected = options("qidi", "0.4", "auto", "PLA").unwrap();
+        assert_eq!(options("qidi", "0.4", "", "").unwrap(), expected);
+        assert_eq!(options("qidi", "0.4", "auto", "").unwrap(), expected);
+        assert_eq!(options("qidi", "0.4", "", "PLA").unwrap(), expected);
+    }
+
     #[test]
     fn options_report_installed_profile_readiness_without_inventing_slicers() {
         let c5 = options("c5", "0.4", "auto", "PLA").unwrap();
