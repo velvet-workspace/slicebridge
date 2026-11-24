@@ -51,6 +51,36 @@ fn as_string<'a>(value: &'a Value, name: &str) -> Result<&'a str, String> {
     value.as_str().ok_or_else(|| format!("{name} must be text"))
 }
 
+// Match Go's slicerLocationsForOS: a nonempty explicit profile root
+// replaces normal installed-app choices, while an empty variable does not.
+fn slicer_selection_allowed(
+    allowed: &[&str],
+    slicer: &str,
+    override_root: Option<&std::ffi::OsStr>,
+) -> bool {
+    if slicer == "auto" {
+        return true;
+    }
+    if override_root.is_some_and(|root| !root.is_empty()) {
+        return slicer == "system";
+    }
+    slicer != "system" && allowed.contains(&slicer)
+}
+
+fn validate_slicer_selection(target: &str, allowed: &[&str], slicer: &str) -> Result<(), String> {
+    let root = std::env::var_os(format!(
+        "BRIDGE_SLICER_PROFILE_{}",
+        target.to_ascii_uppercase()
+    ));
+    if slicer_selection_allowed(allowed, slicer, root.as_deref()) {
+        Ok(())
+    } else if slicer == "system" {
+        Err(format!("{target}: system slicer override not configured"))
+    } else {
+        Err(format!("{target}: invalid slicer selection {slicer}"))
+    }
+}
+
 fn valid_setting(target: &str, pref: &Value) -> Result<Value, String> {
     let Some((_, nozzles, slicers)) = TARGETS.iter().find(|row| row.0 == target) else {
         return Err(format!("unknown saved printer: {target}"));
@@ -78,16 +108,7 @@ fn valid_setting(target: &str, pref: &Value) -> Result<Value, String> {
     if nozzle != "auto" && !nozzles.contains(&nozzle) {
         return Err(format!("{target}: unsupported physical nozzle {nozzle}"));
     }
-    if !slicers.contains(&slicer) {
-        return Err(format!("{target}: invalid slicer selection {slicer}"));
-    }
-    // The existing Go backend exposes a separate profile-root override.
-    // It is valid only if that trusted explicit override is configured.
-    if slicer == "system"
-        && std::env::var_os(format!("BRIDGE_SLICER_PROFILE_{}", target.to_uppercase())).is_none()
-    {
-        return Err(format!("{target}: system slicer override not configured"));
-    }
+    validate_slicer_selection(target, slicers, slicer)?;
     let filaments = input.get("filaments").filter(|value| !value.is_null());
     let mut selected = Map::new();
     if let Some(value) = filaments {
@@ -552,20 +573,7 @@ pub fn profile_choice(
     let pref = &settings["printers"][target];
     let saved_nozzle = pref["nozzle"].as_str().unwrap_or("auto");
     let slicer = pref["slicer"].as_str().unwrap_or("auto");
-    if !valid_slicers.contains(&slicer) {
-        return Err(format!("saved slicer {slicer} is not valid for {target}"));
-    }
-    if slicer == "system"
-        && std::env::var_os(format!(
-            "BRIDGE_SLICER_PROFILE_{}",
-            target.to_ascii_uppercase()
-        ))
-        .is_none()
-    {
-        return Err(format!(
-            "{target}: system slicer override is not configured"
-        ));
-    }
+    validate_slicer_selection(target, valid_slicers, slicer)?;
     if requested_nozzle != "auto" && saved_nozzle != "auto" && requested_nozzle != saved_nozzle {
         return Err(format!("requested {requested_nozzle}mm nozzle differs from saved physical {saved_nozzle}mm nozzle"));
     }
@@ -643,6 +651,24 @@ pub fn options(target: &str, nozzle: &str, slicer: &str, material: &str) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_profile_override_selection_matches_go() {
+        use std::ffi::OsStr;
+        let allowed = &["auto", "qidi-studio", "orca-slicer", "system"];
+        for root in [None, Some(OsStr::new(""))] {
+            assert!(slicer_selection_allowed(allowed, "auto", root));
+            assert!(slicer_selection_allowed(allowed, "qidi-studio", root));
+            assert!(slicer_selection_allowed(allowed, "orca-slicer", root));
+            assert!(!slicer_selection_allowed(allowed, "system", root));
+        }
+        let root = Some(OsStr::new("explicit-profile-root"));
+        assert!(slicer_selection_allowed(allowed, "auto", root));
+        assert!(slicer_selection_allowed(allowed, "system", root));
+        assert!(!slicer_selection_allowed(allowed, "qidi-studio", root));
+        assert!(!slicer_selection_allowed(allowed, "orca-slicer", root));
+        assert!(!slicer_selection_allowed(allowed, "unknown", root));
+    }
 
     #[test]
     fn stable_default_is_four_printers_and_1280x900() {
