@@ -3680,8 +3680,8 @@ mod integrations_tests {
 mod batch_result_tests {
     use super::desktop_layout::{
         batch_totals, completed_output_name, completed_target_detail, completed_target_metrics,
-        source_materials_text, source_metric_labels, source_nozzle_facts, source_objects_text,
-        source_plates_text, target_display_name,
+        result_filament_colors, source_materials_text, source_metric_labels, source_nozzle_facts,
+        source_objects_text, source_plates_text, target_display_name,
     };
     use serde_json::{json, Value};
 
@@ -3735,6 +3735,24 @@ mod batch_result_tests {
             source_objects_text(super::Locale::He, &json!({"source_facts":null})),
             None
         );
+    }
+
+    #[test]
+    fn result_filament_colors_preserve_order_and_repeated_material_slots() {
+        let item = json!({"source_summary":{"filaments":[
+            {"type":"PLA","color":"#FFFFFF"},
+            {"type":"PLA","color":"#12abCD"},
+            {"type":"PETG","color":"invalid"}
+        ]}});
+        assert_eq!(
+            result_filament_colors(&item),
+            vec![
+                ("PLA · #FFFFFF".into(), Some(0xFFFFFF)),
+                ("PLA · #12abCD".into(), Some(0x12ABCD)),
+                ("PETG · invalid".into(), None)
+            ]
+        );
+        assert!(result_filament_colors(&json!({})).is_empty());
     }
 
     #[test]
