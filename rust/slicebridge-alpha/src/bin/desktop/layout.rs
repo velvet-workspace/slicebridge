@@ -374,6 +374,18 @@ pub(super) fn nozzle_was_adapted(phase: &str, receipt: &Value) -> bool {
 pub(super) fn completed_target_metrics(locale: Locale, receipt: &Value) -> Vec<String> {
     let engine = &receipt["conversion"]["engine"];
     let mut metrics = Vec::new();
+    // Source slots are captured by the conversion engine; the target palette
+    // size is the validated OEM plan, not the number of source colors.
+    if let (Some(source), Some(target)) = (
+        engine["slots"].as_array(),
+        receipt["validation"]["slot_count"].as_u64(),
+    ) {
+        metrics.push(format!(
+            "{}: {} → {target}",
+            label(locale, "materialSlots"),
+            source.len()
+        ));
+    }
     if let Some(removed) = engine["removed"].as_u64() {
         metrics.push(format!("{}: {removed}", label(locale, "cacheRemoved")));
     }
