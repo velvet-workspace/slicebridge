@@ -396,6 +396,14 @@ pub(super) fn completed_target_metrics(locale: Locale, receipt: &Value) -> Vec<S
             preserved.len()
         ));
     }
+    // Use the actual OEM profile provider selected at conversion time, not
+    // the printer's default or the current settings.
+    if let Some(slicer) = receipt["native_slicer"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+    {
+        metrics.push(format!("{}: {slicer}", label(locale, "nativeProfile")));
+    }
     metrics
 }
 
