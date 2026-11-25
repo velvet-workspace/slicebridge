@@ -69,19 +69,30 @@ jobs:
           set -euo pipefail
           cargo build --locked --manifest-path rust/slicebridge-alpha/Cargo.toml --bin slicebridge-alpha
           node tests/nozzle-parity-check.cjs
-      - name: Retain isolated Windows QA executable, not a release
+      - name: Build and stage matching Rust conversion engine beside GPUI QA executable
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --manifest-path ../3mf-probe/Cargo.toml --target-dir ../3mf-probe/target
+          suffix=""
+          if [[ "$RUNNER_OS" == Windows ]]; then suffix=".exe"; fi
+          mkdir -p target/gpui-qa
+          cp "target/debug/slicebridge-desktop${suffix}" target/gpui-qa/
+          cp "../3mf-probe/target/release/slicebridge-3mf-probe${suffix}" target/gpui-qa/
+          test -s "target/gpui-qa/slicebridge-desktop${suffix}"
+          "target/gpui-qa/slicebridge-3mf-probe${suffix}" ../../tests/fixtures/bambu-one-color.3mf | node -e 'let s=""; process.stdin.on("data",d=>s+=d); process.stdin.on("end",()=>{const r=JSON.parse(s); if(!r.ok || !(r.facts?.triangles>0)) process.exit(1);});'
+      - name: Retain isolated Windows QA desktop and engine, not a release
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: slicebridge-gpui-qa-windows
-          path: rust/slicebridge-alpha/target/debug/slicebridge-desktop.exe
+          path: rust/slicebridge-alpha/target/gpui-qa/
           retention-days: 3
           if-no-files-found: error
-      - name: Retain isolated macOS QA executable, not a release
+      - name: Retain isolated macOS QA desktop and engine, not a release
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
           name: slicebridge-gpui-qa-macos
-          path: rust/slicebridge-alpha/target/debug/slicebridge-desktop
+          path: rust/slicebridge-alpha/target/gpui-qa/
           retention-days: 3
           if-no-files-found: error
