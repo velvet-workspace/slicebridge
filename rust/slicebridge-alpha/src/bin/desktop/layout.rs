@@ -386,6 +386,18 @@ pub(super) fn completed_target_metrics(locale: Locale, receipt: &Value) -> Vec<S
             source.len()
         ));
     }
+    let target_geometry = &receipt["target_geometry"];
+    let source_geometry = &receipt["source_geometry"];
+    if let Some(triangles) = target_geometry["triangles"].as_u64() {
+        metrics.push(format!("{}: {triangles}", label(locale, "triangles")));
+    }
+    for key in ["objects", "instances"] {
+        if let (Some(source), Some(target)) =
+            (source_geometry[key].as_u64(), target_geometry[key].as_u64())
+        {
+            metrics.push(format!("{}: {source} → {target}", label(locale, key)));
+        }
+    }
     if let Some(removed) = engine["removed"].as_u64() {
         metrics.push(format!("{}: {removed}", label(locale, "cacheRemoved")));
     }
