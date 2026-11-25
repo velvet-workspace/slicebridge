@@ -3,7 +3,8 @@
 use crate::{arg, busy, engine_path, oem, printer_settings, same_path, Registry, Session};
 use serde_json::{json, Value};
 use slicebridge_3mf_probe::{
-    inspect_source_details, inspect_source_nozzle, validate_native_autonomous_input, PackageFacts,
+    inspect_package, inspect_source_details, inspect_source_nozzle,
+    validate_native_autonomous_input, PackageFacts,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -690,7 +691,22 @@ fn execute_prepared(
                     let size = fs::metadata(output)
                         .map_err(|e| OutputAttemptError::Other(e.to_string()))?
                         .len();
+                    // Match the stable report: measure the written target instead of
+                    // assuming the conversion retained the source counts. A report-only
+                    // inspection failure does not invalidate a completed conversion.
+                    let target_geometry = inspect_package(output).ok().map(|facts| {
+                        json!({
+                            "triangles": facts.triangles,
+                            "objects": facts.objects,
+                            "instances": facts.instances
+                        })
+                    });
                     return Ok(json!({
+                        "source_geometry": {
+                            "objects": selected["data"]["objects"],
+                            "instances": selected["data"]["instances"]
+                        },
+                        "target_geometry": target_geometry,
                         "validation": validation,
                         "source_nozzle":ready.source_nozzle,
                         "source_nozzle_assumed":ready.source_nozzle_assumed,

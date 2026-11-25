@@ -3873,6 +3873,25 @@ mod batch_result_tests {
     }
 
     #[test]
+    fn completed_geometry_reports_measured_target_not_source_assumptions() {
+        let receipt = json!({
+            "source_geometry":{"objects":3,"instances":7},
+            "target_geometry":{"triangles":240,"objects":4,"instances":6}
+        });
+        assert_eq!(
+            completed_target_metrics(super::Locale::En, &receipt),
+            vec!["Triangles: 240", "Objects: 3 → 4", "Instances: 7 → 6"]
+        );
+        assert_eq!(
+            completed_target_metrics(super::Locale::He, &receipt),
+            vec!["משולשים: 240", "אובייקטים: 3 → 4", "מופעים: 7 → 6"]
+        );
+        let mut unavailable = receipt;
+        unavailable["target_geometry"] = Value::Null;
+        assert!(completed_target_metrics(super::Locale::En, &unavailable).is_empty());
+    }
+
+    #[test]
     fn completed_profile_uses_resolved_provider_not_requested_target() {
         let receipt = json!({"native_slicer":"OrcaSlicer","slicer_id":"orca-slicer"});
         assert_eq!(
