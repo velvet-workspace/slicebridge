@@ -3892,6 +3892,25 @@ mod batch_result_tests {
     }
 
     #[test]
+    fn completed_custom_material_presets_use_frozen_conversion_choices() {
+        let receipt =
+            json!({"native_filament_overrides":{"PETG":"Custom PETG","PLA":"Custom PLA","ABS":""}});
+        assert_eq!(
+            completed_target_metrics(super::Locale::En, &receipt),
+            vec!["Custom material presets: PETG: Custom PETG · PLA: Custom PLA"]
+        );
+        assert_eq!(
+            completed_target_metrics(super::Locale::He, &receipt),
+            vec!["פרופילי חומר מותאמים: PETG: Custom PETG · PLA: Custom PLA"]
+        );
+        assert_eq!(
+            completed_target_metrics(super::Locale::En, &json!({"native_filament_overrides":{}})),
+            vec!["Custom material presets: None"]
+        );
+        assert!(completed_target_metrics(super::Locale::En, &json!({})).is_empty());
+    }
+
+    #[test]
     fn completed_profile_uses_resolved_provider_not_requested_target() {
         let receipt = json!({"native_slicer":"OrcaSlicer","slicer_id":"orca-slicer"});
         assert_eq!(

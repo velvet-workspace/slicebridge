@@ -30,6 +30,7 @@ struct PreparedItem {
     source_nozzle: String,
     source_nozzle_assumed: bool,
     source_invalid: bool,
+    material_overrides: BTreeMap<String, String>,
     // Per-source OEM refusal is retained as a file result; other sources
     // can still use a valid variant, as in the original Go batch.
     resolved: Result<Arc<Value>, String>,
@@ -410,6 +411,7 @@ where
                     false,
                     true,
                     Err(format!("{}: {err}", path.display())),
+                    BTreeMap::new(),
                 ));
                 continue;
             }
@@ -428,6 +430,7 @@ where
                     assumed,
                     false,
                     Err(format!("{}: {err}", path.display())),
+                    BTreeMap::new(),
                 ));
                 continue;
             }
@@ -448,7 +451,7 @@ where
             result
         };
         variant_nozzles.push(Some(target_nozzle));
-        metadata.push((source_nozzle, assumed, false, resolved));
+        metadata.push((source_nozzle, assumed, false, resolved, overrides));
     }
     // Go's name/permission errors are per-file and per-target results.
     // A single saturated directory must not refuse the entire batch.
@@ -483,12 +486,22 @@ where
         .into_iter()
         .zip(metadata)
         .map(
-            |(item, (source_nozzle, source_nozzle_assumed, source_invalid, resolved))| {
+            |(
+                item,
+                (
+                    source_nozzle,
+                    source_nozzle_assumed,
+                    source_invalid,
+                    resolved,
+                    material_overrides,
+                ),
+            )| {
                 PreparedItem {
                     item,
                     source_nozzle,
                     source_nozzle_assumed,
                     source_invalid,
+                    material_overrides,
                     resolved,
                 }
             },
@@ -713,6 +726,7 @@ fn execute_prepared(
                         "target_nozzle":item.nozzle,
                         "slicer_id":bundle["slicer_id"],
                         "native_slicer":bundle["slicer"],
+                        "native_filament_overrides":ready.material_overrides,
                         "conversion":status["result"],
                         "output":output,
                         "bytes":size
@@ -1330,6 +1344,30 @@ mod tests {
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn prepared_batch_retains_custom_material_presets_used_by_resolver() {
+        let mut settings = printer_settings::defaults();
+        settings["printers"]["u1"]["nozzle"] = json!("0.4");
+        settings["printers"]["u1"]["filaments"] = json!({"PLA":"Custom PLA","PETG":""});
+        let ready = prepare_batch(
+            &[fixture("bambu-one-color.3mf")],
+            "u1",
+            &settings,
+            |target, nozzle, overrides| {
+                assert_eq!(
+                    overrides,
+                    &BTreeMap::from([("PLA".into(), "Custom PLA".into())])
+                );
+                Ok(json!({"target":target,"nozzle":nozzle}))
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            ready[0].material_overrides,
+            BTreeMap::from([("PLA".into(), "Custom PLA".into())])
+        );
     }
 
     #[test]

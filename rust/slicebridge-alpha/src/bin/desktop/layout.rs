@@ -416,6 +416,23 @@ pub(super) fn completed_target_metrics(locale: Locale, receipt: &Value) -> Vec<S
     {
         metrics.push(format!("{}: {slicer}", label(locale, "nativeProfile")));
     }
+    if let Some(overrides) = receipt["native_filament_overrides"].as_object() {
+        let presets = overrides
+            .iter()
+            .filter_map(|(material, preset)| {
+                preset
+                    .as_str()
+                    .filter(|p| !p.is_empty())
+                    .map(|p| format!("{material}: {p}"))
+            })
+            .collect::<Vec<_>>();
+        let detail = if presets.is_empty() {
+            label(locale, "none").to_owned()
+        } else {
+            presets.join(" · ")
+        };
+        metrics.push(format!("{}: {detail}", label(locale, "overridden")));
+    }
     metrics
 }
 
