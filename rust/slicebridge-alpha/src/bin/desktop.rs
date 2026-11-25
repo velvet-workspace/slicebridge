@@ -3854,6 +3854,25 @@ mod batch_result_tests {
     }
 
     #[test]
+    fn completed_material_slot_counts_use_engine_and_validated_target_palette() {
+        let receipt = json!({
+            "conversion":{"engine":{"slots":[{"id":1},{"id":2}]}},
+            "validation":{"slot_count":4}
+        });
+        assert_eq!(
+            completed_target_metrics(super::Locale::En, &receipt),
+            vec!["Material slots: 2 → 4"]
+        );
+        assert_eq!(
+            completed_target_metrics(super::Locale::He, &receipt),
+            vec!["סלילי חומר: 2 → 4"]
+        );
+        let mut incomplete = receipt.clone();
+        incomplete["validation"] = Value::Null;
+        assert!(completed_target_metrics(super::Locale::En, &incomplete).is_empty());
+    }
+
+    #[test]
     fn result_nozzle_warning_requires_completed_known_different_diameters() {
         let mut receipt =
             json!({"source_nozzle":"0.6","target_nozzle":"0.4","source_nozzle_assumed":false});
