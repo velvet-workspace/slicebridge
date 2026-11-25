@@ -696,6 +696,7 @@ fn execute_prepared(
                         "source_nozzle_assumed":ready.source_nozzle_assumed,
                         "target_nozzle":item.nozzle,
                         "slicer_id":bundle["slicer_id"],
+                        "native_slicer":bundle["slicer"],
                         "conversion":status["result"],
                         "output":output,
                         "bytes":size

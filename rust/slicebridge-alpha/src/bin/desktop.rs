@@ -3873,6 +3873,23 @@ mod batch_result_tests {
     }
 
     #[test]
+    fn completed_profile_uses_resolved_provider_not_requested_target() {
+        let receipt = json!({"native_slicer":"OrcaSlicer","slicer_id":"orca-slicer"});
+        assert_eq!(
+            completed_target_metrics(super::Locale::En, &receipt),
+            vec!["Slicer profile: OrcaSlicer"]
+        );
+        assert_eq!(
+            completed_target_metrics(super::Locale::He, &receipt),
+            vec!["פרופיל סלייסר: OrcaSlicer"]
+        );
+        assert!(
+            completed_target_metrics(super::Locale::En, &json!({"slicer_id":"orca-slicer"}))
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn result_nozzle_warning_requires_completed_known_different_diameters() {
         let mut receipt =
             json!({"source_nozzle":"0.6","target_nozzle":"0.4","source_nozzle_assumed":false});
