@@ -515,6 +515,16 @@ fn single_conversion_status(phase: &str, batch_total: u64) -> Option<(&'static s
     }
 }
 
+// Only the completed direct OEM receipt can expose the existing selected-slicer action.
+fn single_conversion_can_open_slicer(status: &Value) -> bool {
+    status["phase"] == "completed"
+        && status["installed_oem"] == true
+        && status["result"]["engine"]["ok"] == true
+        && status["output"]
+            .as_str()
+            .is_some_and(|output| !output.is_empty() && status["result"]["file"] == output)
+}
+
 // Direct Registry receipts have engine data, but no inspected target geometry.
 fn single_conversion_lines(locale: Locale, status: &Value) -> Vec<String> {
     let result = &status["result"];
@@ -551,7 +561,10 @@ fn single_conversion_lines(locale: Locale, status: &Value) -> Vec<String> {
 
 #[cfg(test)]
 mod single_conversion_tests {
-    use super::{label, single_conversion_lines, single_conversion_status, Locale};
+    use super::{
+        label, single_conversion_can_open_slicer, single_conversion_lines,
+        single_conversion_status, Locale,
+    };
     use serde_json::json;
 
     #[test]
@@ -571,6 +584,33 @@ mod single_conversion_tests {
         );
         assert_eq!(single_conversion_status("completed", 1), None);
         assert_eq!(single_conversion_status("idle", 0), None);
+    }
+
+    #[test]
+    fn direct_slicer_action_requires_completed_matching_installed_oem_receipt() {
+        let valid = json!({
+            "phase":"completed","installed_oem":true,"output":"/qa/converted.3mf",
+            "result":{"file":"/qa/converted.3mf","engine":{"ok":true}}
+        });
+        assert!(single_conversion_can_open_slicer(&valid));
+        for phase in ["idle", "running", "failed", "cancelled"] {
+            let mut invalid = valid.clone();
+            invalid["phase"] = json!(phase);
+            assert!(!single_conversion_can_open_slicer(&invalid));
+        }
+        for (field, value) in [
+            ("installed_oem", json!(false)),
+            ("output", json!("/qa/other.3mf")),
+            ("output", json!(null)),
+            ("output", json!("")),
+        ] {
+            let mut invalid = valid.clone();
+            invalid[field] = value;
+            assert!(!single_conversion_can_open_slicer(&invalid));
+        }
+        let mut invalid = valid;
+        invalid["result"]["engine"]["ok"] = json!(false);
+        assert!(!single_conversion_can_open_slicer(&invalid));
     }
 
     #[test]
@@ -1315,6 +1355,16 @@ pub(super) fn render_window(
             if let Some(colors) = result_filament_row(locale, &item, rtl) {
                 report = report.child(colors);
             }
+        }
+        if single_conversion_can_open_slicer(&status) {
+            report = report.child(
+                Button::new("open-direct-result-slicer")
+                    .disabled(running)
+                    .label(label(locale, "openSlicer"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.run("slicer.open_selected", json!({}), cx);
+                    })),
+            );
         }
         results_content = results_content.child(report);
     }
