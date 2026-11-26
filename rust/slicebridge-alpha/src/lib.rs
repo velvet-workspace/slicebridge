@@ -634,6 +634,7 @@ impl Registry {
                     return Err("cannot clear results during conversion".into());
                 }
                 state.last_result = None;
+                state.output = None;
                 state.batch = None;
                 if state.phase != "idle" {
                     state.phase = "idle".into();
@@ -912,6 +913,9 @@ impl Registry {
             }
             "slicer.open_selected" => {
                 let state = self.state.lock().map_err(|e| e.to_string())?;
+                if state.phase != "completed" {
+                    return Err("convert source before opening slicer".into());
+                }
                 if !state.installed_oem {
                     return Err("select an installed OEM printer before opening its slicer".into());
                 }
@@ -1627,6 +1631,8 @@ mod original_result_parity_tests {
             state.target = Some("qidi".into());
             state.phase = "completed".into();
             state.last_result = Some(json!({"success":true}));
+            state.output = Some(PathBuf::from("kept-output.3mf"));
+            state.installed_oem = true;
             state.batch = Some(json!({"phase":"completed","total":1}));
         }
         let result = registry.execute("results.clear", &json!({}));
@@ -1636,8 +1642,13 @@ mod original_result_parity_tests {
         assert_eq!(state["batch_selection"]["paths"][0], "kept-source.3mf");
         assert_eq!(state["target"], "qidi");
         assert!(state["result"].is_null());
+        assert!(state["output"].is_null());
         assert!(state["batch"].is_null());
         assert_eq!(state["phase"], "idle");
+        assert_eq!(state["installed_oem"], true);
+        let reopen = registry.execute("slicer.open_selected", &json!({}));
+        assert_eq!(reopen["ok"], false);
+        assert_eq!(reopen["error"], "convert source before opening slicer");
     }
 
     #[test]
