@@ -501,6 +501,104 @@ pub(super) fn converting_detail_text(locale: Locale, batch: &Value) -> String {
     }
 }
 
+// A direct Registry job exposes no intermediate progress. Only completed is 100%.
+fn single_conversion_status(phase: &str, batch_total: u64) -> Option<(&'static str, u64)> {
+    if batch_total != 0 {
+        return None;
+    }
+    match phase {
+        "running" => Some(("converting", 0)),
+        "completed" => Some(("finished", 100)),
+        "failed" => Some(("failed", 0)),
+        "cancelled" => Some(("conversionCancelled", 0)),
+        _ => None,
+    }
+}
+
+// Direct Registry receipts have engine data, but no inspected target geometry.
+fn single_conversion_lines(locale: Locale, status: &Value) -> Vec<String> {
+    let result = &status["result"];
+    let phase = status["phase"].as_str().unwrap_or("idle");
+    let mut lines = Vec::new();
+    for (field, key) in [("printer", "target"), ("nozzle", "nozzle")] {
+        if let Some(value) = status[field].as_str() {
+            let unit = if field == "nozzle" { " mm" } else { "" };
+            lines.push(format!("{}: {value}{unit}", label(locale, key)));
+        }
+    }
+    if phase == "completed" {
+        if let Some(output) = result["file"].as_str() {
+            lines.push(filename(output));
+        }
+        lines.extend(completed_target_metrics(
+            locale,
+            &json!({"conversion":{"engine":result["engine"]}}),
+        ));
+    } else if phase == "failed" {
+        if let Some(error) = result["error"]
+            .as_str()
+            .or_else(|| result["engine"]["error"].as_str())
+            .or_else(|| result["stderr"].as_str().filter(|s| !s.trim().is_empty()))
+        {
+            lines.push(error.to_owned());
+        }
+        if let Some(code) = result["exit_code"].as_i64() {
+            lines.push(format!("{}: {code}", label(locale, "commandError")));
+        }
+    }
+    lines
+}
+
+#[cfg(test)]
+mod single_conversion_tests {
+    use super::{label, single_conversion_lines, single_conversion_status, Locale};
+    use serde_json::json;
+
+    #[test]
+    fn single_status_does_not_override_batch_or_invent_progress() {
+        assert_eq!(
+            single_conversion_status("running", 0),
+            Some(("converting", 0))
+        );
+        assert_eq!(
+            single_conversion_status("completed", 0),
+            Some(("finished", 100))
+        );
+        assert_eq!(single_conversion_status("failed", 0), Some(("failed", 0)));
+        assert_eq!(
+            single_conversion_status("cancelled", 0),
+            Some(("conversionCancelled", 0))
+        );
+        assert_eq!(single_conversion_status("completed", 1), None);
+        assert_eq!(single_conversion_status("idle", 0), None);
+    }
+
+    #[test]
+    fn direct_receipt_uses_real_engine_fields_without_fabricated_geometry() {
+        let status = json!({
+            "phase":"completed","printer":"X-Plus 5","nozzle":"0.4",
+            "result":{"file":"/qa/converted.3mf","engine":{
+                "ok":true,"removed":3,"preserved":["brim_width","layer_height","wall_loops"],
+                "slots":[{"type":"PLA","color":"#FF0000"}]
+            }}
+        });
+        for locale in [Locale::En, Locale::He] {
+            let lines = single_conversion_lines(locale, &status);
+            assert!(lines.iter().any(|s| s == "converted.3mf"));
+            assert!(lines.iter().any(|s| s.contains("X-Plus 5")));
+            assert!(lines.contains(&format!("{}: 3", label(locale, "cacheRemoved"))));
+            assert!(lines.contains(&format!("{}: 3", label(locale, "parameters"))));
+            assert!(!lines
+                .iter()
+                .any(|s| s.starts_with(&label(locale, "triangles"))));
+        }
+        let failed = json!({"phase":"failed","result":{"engine":{"error":"invalid input"},"file":"/qa/old.3mf","exit_code":1}});
+        let lines = single_conversion_lines(Locale::En, &failed);
+        assert!(lines.iter().any(|s| s == "invalid input"));
+        assert!(!lines.iter().any(|s| s.contains("old.3mf")));
+    }
+}
+
 pub(super) fn render_window(
     view: &mut SliceBridgeWindow,
     _window: &mut Window,
@@ -520,7 +618,11 @@ pub(super) fn render_window(
     let batch_total = batch["total"].as_u64().unwrap_or(0);
     let batch_completed = batch["completed"].as_u64().unwrap_or(0);
     let batch_failures = batch["failures"].as_u64().unwrap_or(0);
-    let batch_percent = batch["progress_percent"].as_u64().unwrap_or(0).min(100);
+    let single_status = single_conversion_status(phase, batch_total);
+    let batch_percent = single_status.map_or_else(
+        || batch["progress_percent"].as_u64().unwrap_or(0).min(100),
+        |(_, percent)| percent,
+    );
     let running = phase == "running" || batch_phase == "running";
 
     let brand = line(rtl)
@@ -913,7 +1015,9 @@ pub(super) fn render_window(
         )
         .child(targets);
 
-    let status_result = if batch_total > 0 {
+    let status_result = if let Some((key, _)) = single_status {
+        label(locale, key)
+    } else if batch_total > 0 {
         if batch_failures > 0 {
             format!(
                 "{batch_completed}/{batch_total} · {batch_phase} · {batch_failures} {}",
@@ -965,7 +1069,7 @@ pub(super) fn render_window(
         .flex_col()
         .gap_3();
 
-    if let Some(items) = batch["items"].as_array() {
+    if let Some(items) = batch["items"].as_array().filter(|_| batch_total > 0) {
         for (idx, item) in items.iter().enumerate() {
             let name = item["source"]
                 .as_str()
@@ -1167,7 +1271,7 @@ pub(super) fn render_window(
             }
             results_content = results_content.child(file_report);
         }
-    } else if phase == "idle" || (result.is_null() && batch_total == 0) {
+    } else if single_status.is_none() {
         results_content = results_content.child(
             div()
                 .flex_1()
@@ -1191,15 +1295,28 @@ pub(super) fn render_window(
                 ),
         );
     } else {
-        results_content = results_content.child(
-            div()
-                .rounded_md()
-                .bg(rgb(PANEL_MUTED))
-                .p_3()
-                .text_sm()
-                .text_color(rgb(if phase == "failed" { RED } else { INK }))
-                .child(result.to_string()),
-        );
+        let mut report = div()
+            .rounded_md()
+            .bg(rgb(PANEL_MUTED))
+            .p_3()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(caption(
+                label(locale, single_status.map_or("emptyTitle", |(key, _)| key)),
+                if phase == "failed" { RED } else { INK },
+                rtl,
+            ));
+        for detail in single_conversion_lines(locale, &status) {
+            report = report.child(caption(detail, MUTED, rtl));
+        }
+        if phase == "completed" {
+            let item = json!({"source_summary":{"filaments":result["engine"]["slots"]}});
+            if let Some(colors) = result_filament_row(locale, &item, rtl) {
+                report = report.child(colors);
+            }
+        }
+        results_content = results_content.child(report);
     }
 
     let result_panel = panel()
@@ -1248,6 +1365,8 @@ pub(super) fn render_window(
 
     let activity_text = if running {
         label(locale, "converting")
+    } else if let Some((key, _)) = single_status {
+        label(locale, key)
     } else if batch_total > 0 && batch_phase == "completed" && batch_failures > 0 {
         label(locale, "summaryFailure")
     } else if batch_total > 0 && batch_phase == "completed" {
@@ -1264,7 +1383,17 @@ pub(super) fn render_window(
     let selected_printers = selected_ready_count(&ready_rows, &view.selected_batch_targets);
     // While converting, Go shows the live file, not the last UI message; last_message would be
     // the raw batch.start reply, which is not a progress line.
-    let activity_detail = if running {
+    let activity_detail = if let Some((key, _)) = single_status {
+        if phase == "completed" {
+            label(locale, "finishedHint")
+                .replace("{success}", "1")
+                .replace("{failed}", "0")
+        } else if phase == "failed" {
+            label(locale, "failedHint")
+        } else {
+            label(locale, key)
+        }
+    } else if running {
         converting_detail_text(locale, &batch)
     } else {
         activity_detail_text(locale, &view.last_message, file_count, selected_printers)
