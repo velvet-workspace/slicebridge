@@ -551,7 +551,8 @@ fn single_conversion_lines(locale: Locale, status: &Value) -> Vec<String> {
 
 #[cfg(test)]
 mod single_conversion_tests {
-    use super::*;
+    use super::{label, single_conversion_lines, single_conversion_status, Locale};
+    use serde_json::json;
 
     #[test]
     fn single_status_does_not_override_batch_or_invent_progress() {
