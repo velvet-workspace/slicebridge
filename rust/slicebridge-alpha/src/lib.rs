@@ -904,6 +904,7 @@ impl Registry {
                 if !output.is_file() {
                     return Err("converted output does not exist".into());
                 }
+                validate_recorded_3mf(&output)?;
                 if !slicer.is_file() {
                     return Err("slicer executable does not exist".into());
                 }
@@ -1590,6 +1591,44 @@ mod tests {
                 state.output = Some(path);
             }
             let result = registry.execute("slicer.open_selected", &json!({}));
+            assert_eq!(result["ok"], false);
+            assert_eq!(result["error"], expected);
+        }
+        fs::remove_file(empty).unwrap();
+    }
+
+    #[test]
+    fn opening_explicit_slicer_rejects_ineligible_output_before_launch() {
+        let registry = Registry::new();
+        let non_3mf = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let empty = std::env::temp_dir().join(format!(
+            "slicebridge-explicit-empty-output-{}-{}.3mf",
+            std::process::id(),
+            TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&empty)
+            .unwrap();
+        for (path, expected) in [
+            (non_3mf, "choose a generated .3mf file"),
+            (
+                empty.clone(),
+                "generated output must be a regular .3mf file up to 250 MB",
+            ),
+        ] {
+            let result = registry.execute(
+                "slicer.open",
+                &json!({"executable": empty.with_extension("missing"), "path": path}),
+            );
+            assert_eq!(result["ok"], false);
+            assert_eq!(result["error"], expected);
+            registry.state.lock().unwrap().output = Some(path);
+            let result = registry.execute(
+                "slicer.open",
+                &json!({"executable": empty.with_extension("missing")}),
+            );
             assert_eq!(result["ok"], false);
             assert_eq!(result["error"], expected);
         }
