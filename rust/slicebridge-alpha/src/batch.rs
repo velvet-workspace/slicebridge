@@ -1,6 +1,9 @@
 //! Sequential, non-overwriting, cancellable native Rust 3MF batch conversion.
 //! It orchestrates the existing verified Registry/3MF worker; no second converter.
-use crate::{arg, busy, engine_path, oem, printer_settings, same_path, Registry, Session};
+use crate::{
+    arg, busy, clear_conversion_results, engine_path, oem, printer_settings, same_path, Registry,
+    Session,
+};
 use serde_json::{json, Value};
 use slicebridge_3mf_probe::{
     inspect_package, inspect_source_details, inspect_source_nozzle,
@@ -1182,6 +1185,21 @@ impl Registry {
         if busy(&session) {
             return Err("cannot stage new sources while a conversion is active".into());
         }
+        // Stable app.js addFiles clears old results only when a new source
+        // enters the queue. A duplicate selection, reorder or removal alone
+        // must not discard the previous completed report. With no staged
+        // list, the desktop presents the current selected source as one row.
+        let previous = if session.batch_staged.is_empty() {
+            session.source.as_slice()
+        } else {
+            session.batch_staged.as_slice()
+        };
+        let added_source = paths
+            .iter()
+            .any(|path| !previous.iter().any(|old| same_path(old, path)));
+        if added_source {
+            clear_conversion_results(&mut session);
+        }
         session.batch_staged = paths;
         Ok(json!({"staged":session.batch_staged.len(),
             "paths":session.batch_staged}))
@@ -2292,6 +2310,106 @@ mod tests {
         assert!(registry.snapshot()["batch"].is_null());
         assert!(one.is_file());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn adding_a_new_source_clears_only_previous_results() {
+        let one = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/bambu-one-color.3mf");
+        let two = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/bambu-nozzle-0.6.3mf");
+        let one_before = fs::read(&one).unwrap();
+        let two_before = fs::read(&two).unwrap();
+        let registry = Registry::new();
+        {
+            let mut state = registry.state.lock().unwrap();
+            state.batch_staged = vec![one.clone()];
+            state.source = Some(one.clone());
+            state.target = Some("qidi".into());
+            state.installed_oem = true;
+            state.phase = "completed".into();
+            state.last_result = Some(json!({"success":true}));
+            state.output = Some(PathBuf::from("previous-output.3mf"));
+            state.batch = Some(json!({"phase":"completed","total":1}));
+        }
+        let before = registry.snapshot();
+        assert_eq!(
+            registry.execute("batch.stage", &json!({"paths":[one]}))["ok"],
+            true
+        );
+        assert_eq!(registry.snapshot(), before);
+        assert_eq!(
+            registry.execute("batch.stage", &json!({"paths":[one,two]}))["ok"],
+            true
+        );
+        let state = registry.snapshot();
+        assert_eq!(state["source"], json!(one));
+        assert_eq!(state["batch_selection"]["paths"], json!([one, two]));
+        assert_eq!(state["target"], "qidi");
+        assert_eq!(state["installed_oem"], true);
+        assert_eq!(state["phase"], "idle");
+        assert!(state["result"].is_null());
+        assert!(state["output"].is_null());
+        assert!(state["batch"].is_null());
+        assert_eq!(fs::read(&one).unwrap(), one_before);
+        assert_eq!(fs::read(&two).unwrap(), two_before);
+    }
+
+    #[test]
+    fn staging_existing_selected_source_and_removing_or_reordering_preserve_results() {
+        let one = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/bambu-one-color.3mf");
+        let two = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/bambu-nozzle-0.6.3mf");
+        let registry = Registry::new();
+        {
+            let mut state = registry.state.lock().unwrap();
+            state.source = Some(one.clone());
+            state.phase = "completed".into();
+            state.last_result = Some(json!({"success":true}));
+        }
+        assert_eq!(
+            registry.execute("batch.stage", &json!({"paths":[one]}))["ok"],
+            true
+        );
+        assert_eq!(registry.snapshot()["result"]["success"], true);
+        {
+            let mut state = registry.state.lock().unwrap();
+            state.batch_staged = vec![one.clone(), two.clone()];
+            state.batch = Some(json!({"phase":"completed","total":2}));
+        }
+        for paths in [json!([two, one]), json!([two])] {
+            assert_eq!(
+                registry.execute("batch.stage", &json!({"paths":paths}))["ok"],
+                true
+            );
+            assert_eq!(registry.snapshot()["result"]["success"], true);
+            assert_eq!(registry.snapshot()["batch"]["total"], 2);
+        }
+    }
+
+    #[test]
+    fn staging_new_source_cannot_discard_running_results() {
+        let one = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/bambu-one-color.3mf");
+        let registry = Registry::new();
+        for (phase, batch) in [
+            ("running", None),
+            ("idle", Some(json!({"phase":"running"}))),
+        ] {
+            {
+                let mut state = registry.state.lock().unwrap();
+                state.phase = phase.into();
+                state.batch = batch;
+                state.last_result = Some(json!({"progress":20}));
+            }
+            let before = registry.snapshot();
+            assert_eq!(
+                registry.execute("batch.stage", &json!({"paths":[one]}))["ok"],
+                false
+            );
+            assert_eq!(registry.snapshot(), before);
+        }
     }
 
     #[test]
