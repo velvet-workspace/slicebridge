@@ -90,6 +90,16 @@ fn busy(state: &Session) -> bool {
             == Some("running")
 }
 
+// Queue additions and explicit Clear results share the same session reset.
+fn clear_conversion_results(state: &mut Session) {
+    state.last_result = None;
+    state.output = None;
+    state.batch = None;
+    if state.phase != "idle" {
+        state.phase = "idle".into();
+    }
+}
+
 // Saving preferences for the active target invalidates the old resolved bundle.
 // Conversion cannot proceed until profile selection validates the new preferences.
 fn invalidate_active_settings_target(state: &mut Session, target: &str) {
@@ -633,12 +643,7 @@ impl Registry {
                 if busy(&state) {
                     return Err("cannot clear results during conversion".into());
                 }
-                state.last_result = None;
-                state.output = None;
-                state.batch = None;
-                if state.phase != "idle" {
-                    state.phase = "idle".into();
-                }
+                clear_conversion_results(&mut state);
                 Ok(json!({"cleared":true}))
             }
             "batch.directory" => self.batch_directory(params),
