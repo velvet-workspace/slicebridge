@@ -400,6 +400,11 @@ mod output_folder_opener_feedback_tests {
 }
 
 fn output_folder(status: &Value) -> Option<PathBuf> {
+    // Stable action bar disables this action during conversion, even after
+    // an earlier target completes. The click handler uses the same predicate.
+    if snapshot_running(status) {
+        return None;
+    }
     let batch_output = status["batch"]["items"].as_array().and_then(|items| {
         items.iter().rev().find_map(|entry| {
             // Multi-target files may have one successful printer even if
@@ -2472,6 +2477,20 @@ mod original_output_folder_tests {
     use super::output_folder;
     use serde_json::json;
     use std::path::PathBuf;
+
+    #[test]
+    fn running_conversion_never_exposes_output_folder() {
+        for status in [
+            json!({"phase":"running","output":"old/part.3mf","batch":null}),
+            json!({"phase":"idle","batch":{"phase":"running","items":[
+                {"phase":"completed","output":"outputs/part.3mf"},
+                {"phase":"running"}
+            ]}}),
+            json!({"phase":"completed","output":"old/part.3mf","batch":{"phase":"running","items":[]}}),
+        ] {
+            assert!(output_folder(&status).is_none());
+        }
+    }
 
     #[test]
     fn only_successful_conversion_exposes_output_folder() {
