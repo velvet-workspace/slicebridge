@@ -928,6 +928,7 @@ impl Registry {
                 if !output.is_file() {
                     return Err("converted output is missing".into());
                 }
+                validate_recorded_3mf(&output)?;
                 let slicer_id = state
                     .bundle
                     .as_ref()
@@ -1557,6 +1558,42 @@ mod tests {
             }),
         );
         assert_eq!(batch["ok"], false);
+    }
+
+    #[test]
+    fn opening_selected_slicer_rejects_ineligible_output_before_launch() {
+        let registry = Registry::new();
+        let non_3mf = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let empty = std::env::temp_dir().join(format!(
+            "slicebridge-empty-output-{}-{}.3mf",
+            std::process::id(),
+            TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&empty)
+            .unwrap();
+        for (path, expected) in [
+            (non_3mf, "choose a generated .3mf file"),
+            (
+                empty.clone(),
+                "generated output must be a regular .3mf file up to 250 MB",
+            ),
+        ] {
+            {
+                let mut state = registry.state.lock().unwrap();
+                state.phase = "completed".into();
+                state.installed_oem = true;
+                state.target = Some("qidi".into());
+                state.nozzle = Some("0.4".into());
+                state.output = Some(path);
+            }
+            let result = registry.execute("slicer.open_selected", &json!({}));
+            assert_eq!(result["ok"], false);
+            assert_eq!(result["error"], expected);
+        }
+        fs::remove_file(empty).unwrap();
     }
 
     #[test]
