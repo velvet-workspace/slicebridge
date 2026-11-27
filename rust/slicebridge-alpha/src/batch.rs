@@ -2344,7 +2344,7 @@ mod tests {
         );
         let state = registry.snapshot();
         assert_eq!(state["source"], json!(one));
-        assert_eq!(state["batch_selection"]["paths"], json!([one,two]));
+        assert_eq!(state["batch_selection"]["paths"], json!([one, two]));
         assert_eq!(state["target"], "qidi");
         assert_eq!(state["installed_oem"], true);
         assert_eq!(state["phase"], "idle");
@@ -2378,7 +2378,7 @@ mod tests {
             state.batch_staged = vec![one.clone(), two.clone()];
             state.batch = Some(json!({"phase":"completed","total":2}));
         }
-        for paths in [json!([two,one]), json!([two])] {
+        for paths in [json!([two, one]), json!([two])] {
             assert_eq!(
                 registry.execute("batch.stage", &json!({"paths":paths}))["ok"],
                 true
